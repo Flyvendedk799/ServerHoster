@@ -1,0 +1,10 @@
+{
+  "name": "@survhub/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/types.ts",
+  "scripts": {
+    "build": "node -e \"console.log('shared package: no build step')\""
+  }
+}

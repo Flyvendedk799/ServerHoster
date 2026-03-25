@@ -1,0 +1,195 @@
+import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { nowIso, getService, getServiceEnv, insertLog, serializeError, updateServiceStatus } from "../lib/core.js";
+import type { AppContext } from "../types.js";
+
+async function pullImage(ctx: AppContext, image: string): Promise<void> {
+  const stream = await ctx.docker.pull(image);
+  await new Promise<void>((resolve, reject) => {
+    ctx.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function getOrCreateContainer(ctx: AppContext, serviceId: string, image: string, command: string, port: number, envList: string[]) {
+  const containerName = `survhub-${serviceId}`;
+  try {
+    const existing = ctx.docker.getContainer(containerName);
+    await existing.inspect();
+    return existing;
+  } catch {
+    return ctx.docker.createContainer({
+      Image: image,
+      name: containerName,
+      Cmd: command ? command.split(/\s+/) : undefined,
+      Env: envList,
+      ExposedPorts: port ? { [`${port}/tcp`]: {} } : undefined,
+      HostConfig: {
+        PortBindings: port ? { [`${port}/tcp`]: [{ HostPort: String(port) }] } : undefined,
+        RestartPolicy: { Name: "unless-stopped" }
+      }
+    });
+  }
+}
+
+export async function withLock<T>(ctx: AppContext, serviceId: string, task: () => Promise<T>): Promise<T> {
+  if (ctx.actionLocks.has(serviceId)) throw new Error("Service action already in progress");
+  ctx.actionLocks.add(serviceId);
+  return task().finally(() => ctx.actionLocks.delete(serviceId));
+}
+
+async function startProcessService(ctx: AppContext, serviceId: string): Promise<void> {
+  const service = getService(ctx, serviceId);
+  if (ctx.runtimeProcesses.has(serviceId)) return;
+  if (service.type !== "process" && service.type !== "static") throw new Error("Service is not a process service");
+
+  const command = String(service.command ?? "").trim();
+  if (!command) throw new Error("Missing command for service");
+  const cwd = String(service.working_dir || process.cwd());
+  if (!fs.existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
+
+  ctx.manuallyStopped.delete(serviceId);
+  const child = spawn(command, { cwd, env: { ...process.env, ...getServiceEnv(ctx, serviceId) }, shell: true });
+  ctx.runtimeProcesses.set(serviceId, { process: child, serviceId });
+  ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
+  updateServiceStatus(ctx, serviceId, "running");
+  insertLog(ctx, serviceId, "info", `Started command: ${command}`);
+
+  child.stdout.on("data", (d) => insertLog(ctx, serviceId, "info", d.toString()));
+  child.stderr.on("data", (d) => insertLog(ctx, serviceId, "error", d.toString()));
+  child.on("exit", (code) => {
+    ctx.runtimeProcesses.delete(serviceId);
+    const cfg = ctx.db.prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?").get(serviceId) as
+      | { auto_restart: number; restart_count: number; max_restarts: number }
+      | undefined;
+    if (!cfg) return;
+    if (ctx.manuallyStopped.has(serviceId)) {
+      ctx.manuallyStopped.delete(serviceId);
+      updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
+      return;
+    }
+    if (cfg.auto_restart && cfg.restart_count < cfg.max_restarts) {
+      const nextCount = cfg.restart_count + 1;
+      ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
+      const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
+      updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
+      insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
+      setTimeout(() => {
+        void withLock(ctx, serviceId, () => startProcessService(ctx, serviceId)).catch((error) => {
+          insertLog(ctx, serviceId, "error", `Restart failed: ${serializeError(error)}`);
+          updateServiceStatus(ctx, serviceId, "crashed");
+        });
+      }, backoffMs);
+      return;
+    }
+    updateServiceStatus(ctx, serviceId, "stopped", code ?? 1);
+    insertLog(ctx, serviceId, "warn", "Service stopped.");
+  });
+}
+
+async function startDockerService(ctx: AppContext, serviceId: string): Promise<void> {
+  const service = getService(ctx, serviceId);
+  if (service.type !== "docker") throw new Error("Service is not a docker service");
+  const image = String(service.docker_image || "alpine:latest");
+  const command = String(service.command || "").trim();
+  const port = Number(service.port || 0);
+  const envList = Object.entries(getServiceEnv(ctx, serviceId)).map(([k, v]) => `${k}=${v}`);
+
+  try {
+    await pullImage(ctx, image);
+  } catch (error) {
+    insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
+  }
+  const container = await getOrCreateContainer(ctx, serviceId, image, command, port, envList);
+  try {
+    await container.start();
+  } catch (error) {
+    const msg = serializeError(error);
+    if (!msg.includes("already started")) throw error;
+  }
+  updateServiceStatus(ctx, serviceId, "running");
+  insertLog(ctx, serviceId, "info", `Docker container running with image ${image}`);
+}
+
+export async function stopService(ctx: AppContext, serviceId: string): Promise<void> {
+  const service = getService(ctx, serviceId);
+  ctx.manuallyStopped.add(serviceId);
+  if (service.type === "docker") {
+    const container = ctx.docker.getContainer(`survhub-${serviceId}`);
+    try { await container.stop({ t: 10 }); } catch {}
+    try { await container.remove({ force: false }); } catch {}
+  } else {
+    const runtime = ctx.runtimeProcesses.get(serviceId);
+    if (runtime) {
+      runtime.process.kill("SIGTERM");
+      setTimeout(() => runtime.process.kill("SIGKILL"), 5000);
+      ctx.runtimeProcesses.delete(serviceId);
+    }
+  }
+  updateServiceStatus(ctx, serviceId, "stopped", 0);
+}
+
+export async function startService(ctx: AppContext, serviceId: string): Promise<void> {
+  const service = getService(ctx, serviceId);
+  await withLock(ctx, serviceId, async () => {
+    if (service.type === "docker") {
+      await startDockerService(ctx, serviceId);
+    } else {
+      await startProcessService(ctx, serviceId);
+    }
+  });
+}
+
+export async function restartService(ctx: AppContext, serviceId: string): Promise<void> {
+  await withLock(ctx, serviceId, async () => {
+    await stopService(ctx, serviceId);
+    await startService(ctx, serviceId);
+  });
+}
+
+export function reconcileRuntimeStateOnBoot(ctx: AppContext): void {
+  const rows = ctx.db.prepare("SELECT id, status, start_mode FROM services").all() as Array<{ id: string; status: string; start_mode?: string }>;
+  for (const row of rows) {
+    if (row.status === "running") {
+      updateServiceStatus(ctx, row.id, "stopped");
+      insertLog(ctx, row.id, "warn", "Recovered from daemon restart. Service marked as stopped.");
+    }
+    if (row.start_mode === "auto") {
+      void startService(ctx, row.id).catch((error) => {
+        insertLog(ctx, row.id, "error", `Auto-start failed: ${serializeError(error)}`);
+      });
+    }
+  }
+}
+
+export function startHealthcheckLoop(ctx: AppContext): () => void {
+  const interval = setInterval(() => {
+    const rows = ctx.db.prepare(
+      "SELECT id, status, port, healthcheck_path FROM services WHERE status = 'running' AND healthcheck_path IS NOT NULL AND healthcheck_path != ''"
+    ).all() as Array<{ id: string; status: string; port?: number; healthcheck_path?: string }>;
+    for (const row of rows) {
+      const port = Number(row.port ?? 0);
+      if (!port) continue;
+      const path = row.healthcheck_path?.startsWith("/") ? row.healthcheck_path : `/${row.healthcheck_path ?? ""}`;
+      fetch(`http://127.0.0.1:${port}${path}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`Healthcheck status ${res.status}`);
+        })
+        .catch((error) => {
+          insertLog(ctx, row.id, "warn", `Healthcheck failed: ${serializeError(error)}`);
+          void restartService(ctx, row.id).catch((err) => insertLog(ctx, row.id, "error", `Healthcheck restart failed: ${serializeError(err)}`));
+        });
+    }
+  }, ctx.config.healthcheckIntervalMs);
+  return () => clearInterval(interval);
+}
+
+export async function gracefulShutdown(ctx: AppContext): Promise<void> {
+  for (const [serviceId, runtime] of ctx.runtimeProcesses.entries()) {
+    runtime.process.kill("SIGTERM");
+    insertLog(ctx, serviceId, "warn", "Service received shutdown signal.");
+  }
+  for (const task of ctx.shutdownTasks) {
+    await task();
+  }
+  await ctx.app.close();
+}
