@@ -6,6 +6,7 @@ import type { AppContext } from "../types.js";
 import { nowIso, parsePortMapping } from "../lib/core.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
 import { restartService, startService, stopService } from "../services/runtime.js";
+import { deployFromGit } from "../services/deploy.js";
 
 const serviceSchema = z.object({
   projectId: z.string(),
@@ -28,6 +29,13 @@ const composeImportSchema = z.object({
   composeFilePath: z.string().optional(),
   composeContent: z.string().optional(),
   workingDir: z.string().optional()
+});
+const directDeploySchema = z.object({
+  projectId: z.string(),
+  name: z.string().min(1),
+  repoUrl: z.string().url(),
+  port: z.number().int().optional(),
+  startAfterDeploy: z.boolean().default(false)
 });
 
 export function registerServiceRoutes(ctx: AppContext): void {
@@ -157,5 +165,39 @@ export function registerServiceRoutes(ctx: AppContext): void {
       created.push({ id, name: serviceName });
     }
     return { imported: created.length, services: created };
+  });
+
+  ctx.app.post("/services/deploy-from-github", async (req) => {
+    const p = directDeploySchema.parse(req.body);
+    const createdAt = nowIso();
+    const serviceId = nanoid();
+    ctx.db.prepare(`INSERT INTO services (
+      id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
+      auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      serviceId,
+      p.projectId,
+      p.name,
+      "process",
+      "",
+      "",
+      "",
+      "",
+      p.port ?? null,
+      "building",
+      1,
+      0,
+      5,
+      "manual",
+      createdAt,
+      createdAt
+    );
+
+    const deployment = await deployFromGit(ctx, serviceId, p.repoUrl);
+    if (p.startAfterDeploy && deployment.status === "success") {
+      await startService(ctx, serviceId);
+    }
+    const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId);
+    return { service, deployment };
   });
 }

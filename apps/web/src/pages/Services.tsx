@@ -44,6 +44,14 @@ export function ServicesPage() {
   const [envForm, setEnvForm] = useState({ key: "", value: "", isSecret: false });
   const [composeContent, setComposeContent] = useState("");
   const [template, setTemplate] = useState("node-api");
+  const [githubDeploy, setGithubDeploy] = useState({
+    projectId: "",
+    name: "",
+    repoUrl: "",
+    port: "",
+    startAfterDeploy: true
+  });
+  const [deployStatus, setDeployStatus] = useState("");
 
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
 
@@ -53,6 +61,9 @@ export function ServicesPage() {
     setServices(serviceData);
     if (!form.projectId && projectData.length > 0) {
       setForm((prev) => ({ ...prev, projectId: projectData[0].id }));
+    }
+    if (!githubDeploy.projectId && projectData.length > 0) {
+      setGithubDeploy((prev) => ({ ...prev, projectId: projectData[0].id }));
     }
   }
 
@@ -140,6 +151,27 @@ export function ServicesPage() {
     await load();
   }
 
+  async function deployFromGithubLink(): Promise<void> {
+    setDeployStatus("Deploying...");
+    try {
+      await api("/services/deploy-from-github", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: githubDeploy.projectId || projects[0]?.id,
+          name: githubDeploy.name,
+          repoUrl: githubDeploy.repoUrl,
+          port: githubDeploy.port ? Number(githubDeploy.port) : undefined,
+          startAfterDeploy: githubDeploy.startAfterDeploy
+        })
+      });
+      setDeployStatus("Deployment completed");
+      setGithubDeploy((prev) => ({ ...prev, name: "", repoUrl: "", port: "" }));
+      await load();
+    } catch {
+      setDeployStatus("Deployment failed");
+    }
+  }
+
   return (
     <section>
       <h2>Services</h2>
@@ -183,6 +215,41 @@ export function ServicesPage() {
           onChange={(event) => setForm((prev) => ({ ...prev, port: event.target.value }))}
         />
         <button onClick={() => void createService()}>Create service</button>
+      </div>
+      <div className="card form">
+        <h3>Deploy directly from GitHub repo</h3>
+        <select value={githubDeploy.projectId} onChange={(event) => setGithubDeploy((prev) => ({ ...prev, projectId: event.target.value }))}>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+        <input
+          placeholder="Service name"
+          value={githubDeploy.name}
+          onChange={(event) => setGithubDeploy((prev) => ({ ...prev, name: event.target.value }))}
+        />
+        <input
+          placeholder="GitHub repo URL (https://github.com/org/repo.git)"
+          value={githubDeploy.repoUrl}
+          onChange={(event) => setGithubDeploy((prev) => ({ ...prev, repoUrl: event.target.value }))}
+        />
+        <input
+          placeholder="Port (optional)"
+          value={githubDeploy.port}
+          onChange={(event) => setGithubDeploy((prev) => ({ ...prev, port: event.target.value }))}
+        />
+        <label>
+          <input
+            type="checkbox"
+            checked={githubDeploy.startAfterDeploy}
+            onChange={(event) => setGithubDeploy((prev) => ({ ...prev, startAfterDeploy: event.target.checked }))}
+          />
+          Start service after successful deploy
+        </label>
+        <button onClick={() => void deployFromGithubLink()}>Deploy from GitHub</button>
+        <p>{deployStatus}</p>
       </div>
       <div className="card form">
         <h3>Quick project template</h3>
@@ -264,8 +331,8 @@ export function ServicesPage() {
         {services.map((service) => (
           <div key={service.id} className="card">
             <h3>{service.name}</h3>
-            <p>Type: {service.type}</p>
-            <p>Status: {service.status}</p>
+            <p>Type: <span className="chip">{service.type}</span></p>
+            <p>Status: <span className={`chip status-${service.status}`}>{service.status}</span></p>
             <p>Project: {projectMap.get(service.project_id) ?? "Unknown"}</p>
             <div className="row">
               <button onClick={() => void serviceAction(service.id, "start")}>Start</button>

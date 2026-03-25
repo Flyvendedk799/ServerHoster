@@ -53,6 +53,11 @@ export async function deployFromGit(ctx: AppContext, serviceId: string, repoUrl:
       await git.clone(repoUrl, targetPath);
       buildLog += "Cloned repository.\n";
     }
+    const buildType = detectBuildType(targetPath);
+    const inferred = inferServiceRuntimeDefaults(buildType);
+    ctx.db.prepare(
+      "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+    ).run(inferred.type, inferred.command, targetPath, nowIso(), serviceId);
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
     const result = await runBuildPipeline(ctx, serviceId, targetPath);
     status = result.status;
@@ -75,6 +80,19 @@ export async function deployFromGit(ctx: AppContext, serviceId: string, repoUrl:
   ctx.db.prepare("INSERT INTO deployments (id, service_id, commit_hash, status, build_log, artifact_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .run(row.id, row.service_id, row.commit_hash, row.status, row.build_log, row.artifact_path, row.created_at);
   return row;
+}
+
+function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): { type: "process" | "docker" | "static"; command: string } {
+  if (buildType === "docker") {
+    return { type: "docker", command: "" };
+  }
+  if (buildType === "python") {
+    return { type: "process", command: "python app.py" };
+  }
+  if (buildType === "node") {
+    return { type: "process", command: "npm run start" };
+  }
+  return { type: "process", command: "" };
 }
 
 export async function rollbackDeployment(ctx: AppContext, serviceId: string, deploymentId: string) {

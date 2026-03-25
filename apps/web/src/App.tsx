@@ -1,4 +1,4 @@
-import { Link, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { DashboardPage } from "./pages/Dashboard";
 import { ServicesPage } from "./pages/Services";
 import { DatabasesPage } from "./pages/Databases";
@@ -12,14 +12,15 @@ export function App() {
     <div className="layout">
       <aside className="sidebar">
         <h1>SURVHub</h1>
+        <p className="muted">Local hosting control plane</p>
         <nav>
-          <Link to="/dashboard">Dashboard</Link>
-          <Link to="/services">Services</Link>
-          <Link to="/projects">Projects</Link>
-          <Link to="/databases">Databases</Link>
-          <Link to="/proxy">Proxy</Link>
-          <Link to="/deployments">Deployments</Link>
-          <Link to="/settings">Settings</Link>
+          <NavLink to="/dashboard" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Dashboard</NavLink>
+          <NavLink to="/services" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Services</NavLink>
+          <NavLink to="/projects" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Projects</NavLink>
+          <NavLink to="/databases" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Databases</NavLink>
+          <NavLink to="/proxy" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Proxy</NavLink>
+          <NavLink to="/deployments" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Deployments</NavLink>
+          <NavLink to="/settings" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>Settings</NavLink>
         </nav>
       </aside>
       <main className="content">
