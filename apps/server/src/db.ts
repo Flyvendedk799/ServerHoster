@@ -184,7 +184,9 @@ const migrations = [
     is_secret INTEGER NOT NULL DEFAULT 0,
     UNIQUE(project_id, key)
   )`,
-  "CREATE INDEX IF NOT EXISTS idx_project_env_vars_project ON project_env_vars(project_id)"
+  "CREATE INDEX IF NOT EXISTS idx_project_env_vars_project ON project_env_vars(project_id)",
+  "ALTER TABLE services ADD COLUMN tunnel_url TEXT",
+  "ALTER TABLE services ADD COLUMN quick_tunnel_enabled INTEGER NOT NULL DEFAULT 0"
 ];
 
 for (const statement of migrations) {

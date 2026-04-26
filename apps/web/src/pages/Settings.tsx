@@ -313,7 +313,10 @@ export function SettingsPage() {
       setMigrationStatus(JSON.stringify(result, null, 2));
     } catch {
       setMigrationStatus("PythonAnywhere import failed");
-    }  return (
+    }
+  }
+
+  return (
     <section>
       <div className="row" style={{ marginBottom: "var(--space-6)", justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>System Settings</h2>

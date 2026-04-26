@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import { spawn } from "node:child_process";
 import { nanoid } from "nanoid";
 import type { AppContext, BuildType, LogLevel } from "../types.js";
@@ -128,6 +129,19 @@ export async function runCommand(
       resolve({ code: code ?? 1, output: normalizeOutput(output) });
     });
   });
+}
+
+export async function findFreePort(start = 3000, end = 3999): Promise<number> {
+  for (let port = start; port <= end; port++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => server.close(() => resolve(true)));
+      server.listen(port, "127.0.0.1");
+    });
+    if (free) return port;
+  }
+  throw new Error(`No free port found in range ${start}–${end}`);
 }
 
 export function detectBuildType(projectPath: string): BuildType {

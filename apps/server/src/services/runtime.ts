@@ -82,11 +82,22 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   if (!fs.existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
 
   ctx.manuallyStopped.delete(serviceId);
-  const child = spawn(command, { cwd, env: { ...process.env, ...getServiceEnvWithLinks(ctx, serviceId) }, shell: true });
+  const serviceEnvFromLinks = getServiceEnvWithLinks(ctx, serviceId);
+  const portEnv = service.port && !serviceEnvFromLinks.PORT ? { PORT: String(service.port) } : {};
+  const child = spawn(command, { cwd, env: { ...process.env, ...portEnv, ...serviceEnvFromLinks }, shell: true });
   ctx.runtimeProcesses.set(serviceId, { process: child, serviceId });
   ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Started command: ${command}`);
+
+  // Auto-start quick tunnel if enabled (dynamic import avoids circular dependency)
+  const qtRow = ctx.db.prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
+    .get(serviceId) as { quick_tunnel_enabled?: number; port?: number } | undefined;
+  if (qtRow?.quick_tunnel_enabled && qtRow.port) {
+    import("./cloudflare.js").then(({ startQuickTunnel }) => {
+      try { startQuickTunnel(ctx, serviceId, qtRow.port!); } catch { /* ignore */ }
+    }).catch(() => { /* ignore */ });
+  }
 
   child.stdout.on("data", (d) => insertLog(ctx, serviceId, "info", d.toString()));
   child.stderr.on("data", (d) => insertLog(ctx, serviceId, "error", d.toString()));
@@ -144,7 +155,9 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   const image = String(service.docker_image || "alpine:latest");
   const command = String(service.command || "").trim();
   const port = Number(service.port || 0);
-  const envList = Object.entries(getServiceEnvWithLinks(ctx, serviceId)).map(([k, v]) => `${k}=${v}`);
+  const dockerServiceEnv = getServiceEnvWithLinks(ctx, serviceId);
+  if (port && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(port);
+  const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
 
   try {
     await pullImage(ctx, image);
@@ -160,11 +173,25 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   }
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Docker container running with image ${image}`);
+
+  // Auto-start quick tunnel if enabled
+  const qtRowDocker = ctx.db.prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
+    .get(serviceId) as { quick_tunnel_enabled?: number; port?: number } | undefined;
+  if (qtRowDocker?.quick_tunnel_enabled && qtRowDocker.port) {
+    import("./cloudflare.js").then(({ startQuickTunnel }) => {
+      try { startQuickTunnel(ctx, serviceId, qtRowDocker.port!); } catch { /* ignore */ }
+    }).catch(() => { /* ignore */ });
+  }
 }
 
 export async function stopService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
   ctx.manuallyStopped.add(serviceId);
+
+  // Stop quick tunnel if running
+  import("./cloudflare.js").then(({ stopQuickTunnel }) => {
+    try { stopQuickTunnel(ctx, serviceId); } catch { /* ignore */ }
+  }).catch(() => { /* ignore */ });
   if (service.type === "docker") {
     const container = ctx.docker.getContainer(`survhub-${serviceId}`);
     try { await container.stop({ t: 10 }); } catch {}
@@ -257,6 +284,9 @@ export async function restartService(ctx: AppContext, serviceId: string): Promis
 }
 
 export function reconcileRuntimeStateOnBoot(ctx: AppContext): void {
+  // Clear stale tunnel URLs from any previous session
+  ctx.db.prepare("UPDATE services SET tunnel_url = NULL WHERE tunnel_url IS NOT NULL").run();
+
   const rows = ctx.db.prepare("SELECT id, status, start_mode FROM services").all() as Array<{ id: string; status: string; start_mode?: string }>;
   for (const row of rows) {
     if (row.status === "running") {
@@ -294,6 +324,12 @@ export function startHealthcheckLoop(ctx: AppContext): () => void {
 }
 
 export async function gracefulShutdown(ctx: AppContext): Promise<void> {
+  // Stop all quick tunnels first
+  try {
+    const { stopAllQuickTunnels } = await import("./cloudflare.js");
+    stopAllQuickTunnels();
+  } catch { /* ignore */ }
+
   for (const [serviceId, runtime] of ctx.runtimeProcesses.entries()) {
     runtime.process.kill("SIGTERM");
     insertLog(ctx, serviceId, "warn", "Service received shutdown signal.");

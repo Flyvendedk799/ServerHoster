@@ -95,7 +95,7 @@ export function CreateDatabaseModal({ projects, onClose, onCreated }: Props) {
               <select 
                 value={form.engine} 
                 onChange={(e) => {
-                  const eng = e.target.value as any;
+                  const eng = e.target.value as keyof typeof ENGINE_DEFAULT_PORT;
                   setForm({ ...form, engine: eng, port: String(ENGINE_DEFAULT_PORT[eng]) });
                 }}
               >

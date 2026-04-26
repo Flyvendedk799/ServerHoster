@@ -27,6 +27,8 @@ export interface Service {
   maxRestarts: number;
   createdAt: string;
   updatedAt: string;
+  tunnelUrl?: string | null;
+  quickTunnelEnabled?: number;
 }
 
 export interface LogEntry {

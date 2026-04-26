@@ -7,6 +7,7 @@ import { GitHubDeployModal } from "../components/GitHubDeployModal";
 import { CreateServiceModal } from "../components/CreateServiceModal";
 import { TemplateModal } from "../components/TemplateModal";
 import { ComposeModal } from "../components/ComposeModal";
+import { QuickLaunchModal } from "../components/QuickLaunchModal";
 import { StatusBadge } from "../components/StatusBadge";
 import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
@@ -29,6 +30,8 @@ type Service = {
   environment?: string;
   depends_on?: string | null;
   linked_database_id?: string | null;
+  tunnel_url?: string | null;
+  quick_tunnel_enabled?: number;
 };
 
 const ENVIRONMENT_COLORS: Record<string, string> = {
@@ -68,6 +71,7 @@ export function ServicesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showComposeModal, setShowComposeModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showQuickLaunch, setShowQuickLaunch] = useState(false);
   const [envFilter, setEnvFilter] = useState<"all" | "production" | "staging" | "development">("all");
 
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
@@ -91,7 +95,7 @@ export function ServicesPage() {
       if (typed.type === "log") {
         setLogs((prev) => [payload as LogEntry, ...prev].slice(0, 300));
       }
-      if (typed.type === "service_status") {
+      if (typed.type === "service_status" || typed.type === "tunnel_url") {
         void load();
       }
     });
@@ -176,7 +180,6 @@ export function ServicesPage() {
 
   return (
     <section>
-    <section>
       <div className="row" style={{ marginBottom: "var(--space-6)", justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>Services</h2>
         <div className="row">
@@ -245,6 +248,20 @@ export function ServicesPage() {
             </div>
           </div>
           <button onClick={() => setShowComposeModal(true)} style={{ width: "100%" }}>Import Compose</button>
+        </div>
+
+        {/* Quick Launch */}
+        <div className="card" style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", border: "2px solid var(--success-soft)", background: "rgba(34,197,94,0.04)" }}>
+          <div className="row" style={{ gap: "0.75rem" }}>
+            <div style={{ color: "var(--success)", background: "var(--success-soft)", padding: "0.5rem", borderRadius: "var(--radius-sm)" }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>Quick Launch</div>
+              <div style={{ fontSize: "0.78rem", color: "var(--text-dim)" }}>Deploy + get public URL instantly</div>
+            </div>
+          </div>
+          <button className="primary" onClick={() => setShowQuickLaunch(true)} style={{ width: "100%" }}>Launch App</button>
         </div>
       </div>
 
@@ -318,6 +335,23 @@ export function ServicesPage() {
               )}
             </div>
 
+            {/* Quick tunnel URL display */}
+            {service.tunnel_url && (
+              <div className="row" style={{ gap: "0.4rem", background: "rgba(34,197,94,0.06)", padding: "0.4rem 0.6rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--success-soft)", flexWrap: "wrap" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                <a href={service.tunnel_url} target="_blank" rel="noreferrer" className="link" style={{ fontWeight: 600, fontSize: "0.78rem", color: "var(--success)", flexShrink: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "calc(100% - 6rem)" }}>
+                  {service.tunnel_url}
+                </a>
+                <button className="ghost" style={{ padding: "0.15rem 0.4rem", fontSize: "0.7rem", marginLeft: "auto" }} onClick={() => { void navigator.clipboard.writeText(service.tunnel_url!); toast.success("URL copied!"); }} title="Copy tunnel URL">Copy</button>
+                <button className="ghost" style={{ padding: "0.15rem 0.4rem", fontSize: "0.7rem", color: "var(--danger)" }} onClick={() => void api(`/cloudflare/quick-tunnel/${service.id}`, { method: "DELETE" }).then(() => load())} title="Stop quick tunnel">Stop</button>
+              </div>
+            )}
+            {!service.tunnel_url && service.status === "running" && (
+              <button className="ghost" style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", color: "var(--accent)", alignSelf: "flex-start" }} onClick={() => void api(`/cloudflare/quick-tunnel/${service.id}`, { method: "POST" }).then(() => load())}>
+                + Get public URL
+              </button>
+            )}
+
             <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
               {service.github_repo_url && (
                 <div className="row" style={{ gap: "0.5rem", fontSize: "0.78rem" }}>
@@ -357,7 +391,6 @@ export function ServicesPage() {
             </div>
           </div>
         ))}
-      </div>
 
       <div className="card">
         <h3>Live logs</h3>
@@ -406,6 +439,14 @@ export function ServicesPage() {
           projects={projects}
           onClose={() => setShowComposeModal(false)}
           onImported={() => void load()}
+        />
+      )}
+
+      {showQuickLaunch && (
+        <QuickLaunchModal
+          projects={projects}
+          onClose={() => setShowQuickLaunch(false)}
+          onLaunched={() => { setShowQuickLaunch(false); void load(); }}
         />
       )}
     </section>
