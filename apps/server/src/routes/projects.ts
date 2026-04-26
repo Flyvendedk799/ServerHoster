@@ -3,7 +3,9 @@ import path from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { nowIso } from "../lib/core.js";
+import { nowIso, serializeError } from "../lib/core.js";
+import { restartService, startService, stopService } from "../services/runtime.js";
+import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
 
 const projectSchema = z.object({
   name: z.string().min(1),
@@ -52,6 +54,77 @@ export function registerProjectRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM services WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM databases WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    return { ok: true };
+  });
+
+  // --- Project-level bulk actions (Phase 8.2) -------------------------------
+  async function runProjectAction(
+    ctx: AppContext,
+    projectId: string,
+    action: (serviceId: string) => Promise<void>
+  ): Promise<{ results: Array<{ serviceId: string; ok: boolean; error?: string }> }> {
+    const rows = ctx.db.prepare("SELECT id FROM services WHERE project_id = ?").all(projectId) as Array<{ id: string }>;
+    const results: Array<{ serviceId: string; ok: boolean; error?: string }> = [];
+    for (const row of rows) {
+      try {
+        await action(row.id);
+        results.push({ serviceId: row.id, ok: true });
+      } catch (error) {
+        results.push({ serviceId: row.id, ok: false, error: serializeError(error) });
+      }
+    }
+    return { results };
+  }
+
+  ctx.app.post("/projects/:id/start-all", async (req) =>
+    runProjectAction(ctx, (req.params as { id: string }).id, (sid) => startService(ctx, sid))
+  );
+  ctx.app.post("/projects/:id/stop-all", async (req) =>
+    runProjectAction(ctx, (req.params as { id: string }).id, (sid) => stopService(ctx, sid))
+  );
+  ctx.app.post("/projects/:id/restart-all", async (req) =>
+    runProjectAction(ctx, (req.params as { id: string }).id, (sid) => restartService(ctx, sid))
+  );
+  ctx.app.post("/projects/:id/deploy-all", async (req) => {
+    const { id } = req.params as { id: string };
+    const rows = ctx.db
+      .prepare("SELECT id, github_repo_url, github_branch FROM services WHERE project_id = ? AND github_repo_url IS NOT NULL")
+      .all(id) as Array<{ id: string; github_repo_url: string; github_branch?: string }>;
+    const results: Array<{ serviceId: string; ok: boolean; status?: string; error?: string }> = [];
+    for (const r of rows) {
+      try {
+        await stopServiceIfRunning(ctx, r.id);
+        const deployment = await deployFromGit(ctx, r.id, r.github_repo_url, r.github_branch || "main", "manual");
+        await applyPostDeployServiceState(ctx, r.id, deployment, { startAfterDeploy: true });
+        results.push({ serviceId: r.id, ok: deployment.status === "success", status: deployment.status });
+      } catch (error) {
+        results.push({ serviceId: r.id, ok: false, error: serializeError(error) });
+      }
+    }
+    return { results };
+  });
+
+  // --- Project env vars (inherited by all services in the project) ---------
+  ctx.app.get("/projects/:id/env", async (req) => {
+    const { id } = req.params as { id: string };
+    return ctx.db.prepare("SELECT id, key, value, is_secret FROM project_env_vars WHERE project_id = ? ORDER BY key ASC").all(id);
+  });
+
+  ctx.app.post("/projects/:id/env", async (req) => {
+    const { id } = req.params as { id: string };
+    const p = z.object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) }).parse(req.body);
+    const rowId = nanoid();
+    ctx.db
+      .prepare(
+        "INSERT INTO project_env_vars (id, project_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, is_secret = excluded.is_secret"
+      )
+      .run(rowId, id, p.key, p.value, p.isSecret ? 1 : 0);
+    return { ok: true };
+  });
+
+  ctx.app.delete("/projects/:id/env/:key", async (req) => {
+    const { id, key } = req.params as { id: string; key: string };
+    ctx.db.prepare("DELETE FROM project_env_vars WHERE project_id = ? AND key = ?").run(id, key);
     return { ok: true };
   });
 

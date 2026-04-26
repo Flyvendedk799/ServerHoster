@@ -2,10 +2,48 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { nowIso } from "../lib/core.js";
+import { activeChallenges } from "../services/ssl.js";
 
 const proxySchema = z.object({ serviceId: z.string(), domain: z.string().min(1), targetPort: z.number().int() });
 
 export function registerProxyRoutes(ctx: AppContext): void {
+  // Host-based reverse proxy: intercept any request whose Host header matches
+  // a registered proxy_route, and forward it to the target port. Runs before
+  // route matching so bare domain requests (not just /proxy/*) are routed.
+  ctx.app.addHook("onRequest", async (req, reply) => {
+    const url = req.raw.url ?? "";
+    // Let ACME challenges and the explicit /proxy/* admin routes fall through.
+    if (url.startsWith("/.well-known/acme-challenge/")) return;
+    const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
+    if (!host) return;
+    const route = ctx.db
+      .prepare("SELECT target_port FROM proxy_routes WHERE domain = ?")
+      .get(host) as { target_port?: number } | undefined;
+    if (!route?.target_port) return;
+    reply.hijack();
+    ctx.proxy.web(
+      req.raw,
+      reply.raw,
+      { target: `http://127.0.0.1:${route.target_port}` },
+      (error) => {
+        if (!reply.raw.headersSent) {
+          reply.raw.writeHead(502, { "content-type": "application/json" });
+        }
+        reply.raw.end(JSON.stringify({ error: `proxy_error: ${error.message}` }));
+      }
+    );
+  });
+
+  // ACME challenge handler - high priority
+  ctx.app.get("/.well-known/acme-challenge/:token", async (req, reply) => {
+    const { token } = req.params as { token: string };
+    const response = activeChallenges.get(token);
+    if (response) {
+      return reply.send(response);
+    }
+    return reply.code(404).send({ error: "Challenge not found" });
+  });
+
   ctx.app.get("/proxy/routes", async () => ctx.db.prepare("SELECT * FROM proxy_routes ORDER BY created_at DESC").all());
 
   ctx.app.post("/proxy/routes", async (req) => {

@@ -13,9 +13,14 @@ const bootstrapSchema = z.object({
   password: z.string().min(8)
 });
 
+function requestPath(url: string): string {
+  return url.split("?")[0] ?? url;
+}
+
 export function registerAuthRoutes(ctx: AppContext): void {
   ctx.app.addHook("onRequest", async (req, reply) => {
-    if (req.url === "/health" || req.url === "/auth/login" || req.url === "/onboarding") return;
+    const path = requestPath(req.url);
+    if (path === "/health" || path === "/auth/login" || path === "/onboarding" || path === "/auth/bootstrap") return;
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace(/^Bearer\s+/i, "") ?? "";
     if (!isAuthorizedToken(ctx, token)) {

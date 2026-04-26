@@ -1,65 +1,129 @@
-# SURVHub
+# LocalSURV
 
-SURVHub is a local-first hosting control plane for running projects on your own machine (Mac mini, Windows PC, Linux server) with a browser dashboard.
+**Self-hosted deploy platform for your own hardware.** Clone a repo, wire a domain, and ship — without handing your traffic or your wallet to Railway, Render, or Fly.
 
-## What It Covers
+LocalSURV runs on your Mac mini, Linux box, or Windows PC and gives you a browser dashboard that looks and feels like a hosted PaaS: GitHub deploys, live build logs, reverse proxy, Let's Encrypt or Cloudflare Tunnel SSL, per-service metrics, databases, and push-to-deploy webhooks. One binary, one SQLite file, no external services.
 
-- Project and service overview dashboard
-- Process services (`node`, `python`, static commands)
-- Docker-backed services and one-click local databases
-- Live logs via WebSocket stream
-- Reverse-proxy route management
-- Git deploy + build pipeline + rollback endpoint
-- Backup export/import
-- Structured audit log stream (`/ops/audit-logs`)
-- Migration import endpoints for Railway/PythonAnywhere metadata
+---
 
-## Quick Start
+## Features
 
-1. Install dependencies:
-   - `npm install`
-2. Start API server:
-   - `npm run dev -w @survhub/server`
-3. Start dashboard:
-   - `npm run dev -w @survhub/web`
-4. Open:
-   - Dashboard: `http://localhost:5173`
-   - API: `http://localhost:8787`
+| Area | What you get |
+| --- | --- |
+| **Deploy** | GitHub repo → clone → auto-detect build (Node / Python / Docker) → live-streamed build logs → run |
+| **Git** | HTTPS PAT auth, SSH keys, GitHub webhooks, 60s GitOps polling, redeploy, rollback |
+| **Routing** | Host-based reverse proxy, dynamic SNI, Let's Encrypt (HTTP-01 + DNS-01), Cloudflare Tunnel integration |
+| **Runtime** | Process services, Docker services, auto-restart with exponential backoff, healthchecks, dependency-ordered start |
+| **Observability** | Live WebSocket logs, build log streaming, CPU/memory metrics per service, system health score, notifications (in-app + Discord/Slack webhook) |
+| **Databases** | One-click Postgres/MySQL/Redis/Mongo containers, connection-string copy, auto-injected `DATABASE_URL`, `pg_dump`/`mysqldump` backups with one-click restore, SQL seed |
+| **Projects** | Project env vars inherited by services, environment tags (production/staging/dev), start-all/stop-all/deploy-all, docker-compose import (idempotent, preserves depends_on) |
+| **Security** | AES-256-GCM encrypted secrets, session auth + bootstrap user, rate-limited API, audit log, encrypted Cloudflare/GitHub token storage |
+| **UX** | Dark/light theme, collapsible sidebar, toast notifications, modal confirms, mobile-responsive layout |
 
-## Environment Variables
+---
 
-- `SURVHUB_PORT` - API port (default `8787`)
-- `SURVHUB_HOST` - bind host (default `0.0.0.0`)
-- `SURVHUB_AUTH_TOKEN` - shared login password and bearer token
-- `SURVHUB_SECRET_KEY` - encryption key for secret env vars (required in production)
-- `SURVHUB_ENABLE_HTTPS=1` - enable HTTPS listener when cert/key exist
-- `SURVHUB_CERT_PATH` and `SURVHUB_KEY_PATH` - TLS cert/key paths
-- `SURVHUB_WS_PATH` - websocket endpoint path (default `/ws`)
-- `SURVHUB_DATA_DIR` - data root (db/logs/projects/certs/scripts)
+## 5-minute quickstart
 
-## Security Configuration
+**Prerequisites:** Node 20+, Docker (optional but recommended for container services and databases), Git.
 
-- Set `SURVHUB_AUTH_TOKEN` to enforce bearer-token auth on all protected endpoints.
-- Set `SURVHUB_SECRET_KEY` to encrypt secret environment variables at rest.
-- Login endpoint (`/auth/login`) issues persistent session tokens stored in SQLite.
-- Admin bootstrap endpoint: `/auth/bootstrap` (first user only).
-- WebSocket logs require the same token parity as API calls.
+```bash
+# 1. clone
+git clone https://github.com/your-org/localsurv.git
+cd localsurv
 
-## Runtime Hardening Implemented
+# 2. install
+npm install
 
-- Service action locking to avoid concurrent start/stop race conditions
-- Crash backoff with capped exponential restart delay
-- Manual-stop protection to prevent unintended auto-restart loops
-- Runtime reconciliation after daemon restart (running -> stopped)
-- Log retention trimming per service
+# 3. generate a strong secret key (used to encrypt env vars at rest)
+export SURVHUB_SECRET_KEY=$(openssl rand -base64 32)
 
-## Build and Test
+# 4. build + run
+npm run build
+npm run dev -w @survhub/server   # API on :8787
+npm run dev -w @survhub/web      # dashboard on :5173
+```
 
-- Build all packages: `npm run build`
-- Server tests: `npm run test -w @survhub/server`
-- Web smoke tests: `npm run test:smoke -w @survhub/web`
+Open `http://localhost:5173`, click **Settings → Bootstrap admin user**, pick a username and an 8+ character password, log in, and you're running. Deploy your first service from the Services page — paste a GitHub URL, pick a branch, hit Deploy, and watch the build stream in.
 
-## Operator Docs
+Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
-- [Operations Guide](docs/operations.md)
-- [Cross-Platform QA Matrix](docs/qa-matrix.md)
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                 LocalSURV                        │
+│                                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐   │
+│  │Dashboard │  │ API      │  │ Host-based   │   │
+│  │ (React)  │──│ Fastify  │──│ reverse proxy│   │
+│  └──────────┘  │          │  │ (http-proxy) │   │
+│                │  ┌─────┐ │  └──────────────┘   │
+│                │  │SQLite│ │                      │
+│                │  └─────┘ │  ┌──────────────┐   │
+│                │          │  │ Cloudflare   │   │
+│                │  ┌─────┐ │  │ Tunnel       │   │
+│                │  │Docker│ │  │ (optional)   │   │
+│                │  └─────┘ │  └──────────────┘   │
+│                │          │                      │
+│                │  ┌─────┐ │  ┌──────────────┐   │
+│                │  │ Git │ │  │ Let's Encrypt│   │
+│                │  └─────┘ │  │ (HTTP-01 /   │   │
+│                └──────────┘  │  DNS-01)     │   │
+│                              └──────────────┘   │
+│                                                   │
+│  ┌──────────────────────────────────────────┐    │
+│  │           Background workers              │    │
+│  │  Healthcheck • Git poll • Metrics •       │    │
+│  │  Disk/Docker health • SSL renewal         │    │
+│  └──────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────┘
+```
+
+- Everything runs in a single Node process (plus the child processes and Docker containers your services spawn).
+- SQLite for state (`~/.survhub/survhub.db`). No Redis, no external queue.
+- The dashboard is a Vite/React SPA; in production it's built and served as static files by the same Fastify instance.
+
+---
+
+## Comparison
+
+| | **LocalSURV** | Railway | Coolify | CapRover |
+| --- | --- | --- | --- | --- |
+| Self-hosted | ✅ | ❌ | ✅ | ✅ |
+| GitHub auto-deploy | ✅ | ✅ | ✅ | ✅ |
+| SQLite state | ✅ single file | — | Postgres req. | LevelDB |
+| Cloudflare Tunnel built-in | ✅ | ❌ | ❌ | ❌ |
+| Live build log stream | ✅ | ✅ | ✅ | ⚠️ tail |
+| Docker + process services | ✅ both | Docker only | Docker only | Docker only |
+| Per-service metrics | ✅ | ✅ | ✅ | ✅ |
+| Single-binary deploy | ✅ (planned) | n/a | ❌ | ❌ |
+| Cost | free | $$ | free | free |
+
+---
+
+## Documentation
+
+- [Getting started](docs/getting-started.md) — zero to deployed in 5 minutes
+- [Configuration reference](docs/configuration.md) — every env var, schema, file layout
+- [API reference](docs/api-reference.md) — all HTTP endpoints
+- [Troubleshooting](docs/troubleshooting.md) — when things break
+- [Operations guide](docs/operations.md) — running LocalSURV in production
+- [QA matrix](docs/qa-matrix.md) — platform coverage
+
+---
+
+## Build and test
+
+```bash
+npm run build                     # tsc + vite build across all workspaces
+npm run test -w @survhub/server   # node:test against the Fastify app
+npm run test:smoke -w @survhub/web
+```
+
+---
+
+## License
+
+*Add the license of your choice here.*

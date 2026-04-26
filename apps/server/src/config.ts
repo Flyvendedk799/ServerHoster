@@ -21,5 +21,6 @@ export const config = {
   enableHttps: process.env.SURVHUB_ENABLE_HTTPS === "1",
   certPath: process.env.SURVHUB_CERT_PATH ?? path.join(dataRoot, "certs", "server-cert.pem"),
   keyPath: process.env.SURVHUB_KEY_PATH ?? path.join(dataRoot, "certs", "server-key.pem"),
-  healthcheckIntervalMs: Number(process.env.SURVHUB_HEALTHCHECK_INTERVAL_MS ?? 15000)
+  healthcheckIntervalMs: Number(process.env.SURVHUB_HEALTHCHECK_INTERVAL_MS ?? 15000),
+  gitPollIntervalMs: Number(process.env.SURVHUB_GIT_POLL_INTERVAL_MS ?? 60000)
 };

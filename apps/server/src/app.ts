@@ -1,4 +1,7 @@
 import fs from "node:fs";
+import path from "node:path";
+import tls from "node:tls";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -17,9 +20,18 @@ import { registerProxyRoutes } from "./routes/proxy.js";
 import { registerDeploymentRoutes } from "./routes/deployments.js";
 import { registerBackupRoutes } from "./routes/backup.js";
 import { registerMigrationRoutes } from "./routes/migrations.js";
+import { registerWebhookRoutes } from "./routes/webhooks.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerCloudflareRoutes } from "./routes/cloudflare.js";
+import { registerObservabilityRoutes } from "./routes/observability.js";
+import { startMetricsLoop } from "./services/metrics.js";
+import { startSystemHealthLoop } from "./services/health.js";
 import { enforceSecretPolicy } from "./services/auth.js";
 import { reconcileRuntimeStateOnBoot, startHealthcheckLoop } from "./services/runtime.js";
+import { startGitPollerLoop } from "./services/poller.js";
 import { writeAuditLog } from "./services/audit.js";
+
+const secureContextCache = new Map<string, tls.SecureContext>();
 
 export async function buildApp(): Promise<AppContext> {
   enforceSecretPolicy({
@@ -35,11 +47,34 @@ export async function buildApp(): Promise<AppContext> {
     shutdownTasks: []
   });
 
-  const httpsOptions = config.enableHttps && fs.existsSync(config.certPath) && fs.existsSync(config.keyPath)
+  const localCert = fs.existsSync(config.certPath) && fs.existsSync(config.keyPath)
+    ? { cert: fs.readFileSync(config.certPath), key: fs.readFileSync(config.keyPath) }
+    : null;
+
+  const httpsOptions = config.enableHttps
     ? {
         https: {
-          cert: fs.readFileSync(config.certPath),
-          key: fs.readFileSync(config.keyPath)
+          SNICallback: (servername: string, cb: (err: Error | null, ctx?: tls.SecureContext) => void) => {
+            const cached = secureContextCache.get(servername);
+            if (cached) return cb(null, cached);
+
+            const row = db.prepare("SELECT fullchain, privkey FROM certificates WHERE domain = ?").get(servername) as { fullchain: string, privkey: string } | undefined;
+            if (row) {
+              const sc = tls.createSecureContext({ cert: row.fullchain, key: row.privkey });
+              secureContextCache.set(servername, sc);
+              return cb(null, sc);
+            }
+
+            // Fallback to local self-signed cert
+            if (localCert) {
+              const sc = tls.createSecureContext(localCert);
+              return cb(null, sc);
+            }
+            cb(new Error("No certificate found for domain"));
+          },
+          // default keys if SNI fails or is not provided
+          cert: localCert?.cert,
+          key: localCert?.key
         }
       }
     : {};
@@ -74,6 +109,17 @@ export async function buildApp(): Promise<AppContext> {
   registerDeploymentRoutes(ctx);
   registerBackupRoutes(ctx);
   registerMigrationRoutes(ctx);
+  registerWebhookRoutes(ctx);
+  registerSettingsRoutes(ctx);
+  registerCloudflareRoutes(ctx);
+  registerObservabilityRoutes(ctx);
+
+  // --- Static dashboard bundle --------------------------------------------
+  // When SURVHub is distributed as a single binary/npm package, the built
+  // web dashboard is colocated under `../web-dist` relative to the server's
+  // compiled entry. Serve it from the root so users can open one URL.
+  // In dev the Vite dev server still handles the UI directly.
+  registerDashboardStatic(app);
 
   app.addHook("onResponse", async (req, reply) => {
     const method = req.method.toUpperCase();
@@ -95,5 +141,89 @@ export async function buildApp(): Promise<AppContext> {
   reconcileRuntimeStateOnBoot(ctx);
   const stopHealthLoop = startHealthcheckLoop(ctx);
   ctx.shutdownTasks.push(() => stopHealthLoop());
+  const stopGitLoop = startGitPollerLoop(ctx);
+  ctx.shutdownTasks.push(() => stopGitLoop());
+  const stopMetricsLoop = startMetricsLoop(ctx);
+  ctx.shutdownTasks.push(() => stopMetricsLoop());
+  const stopHealthLoopSys = startSystemHealthLoop(ctx);
+  ctx.shutdownTasks.push(() => stopHealthLoopSys());
   return ctx;
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8"
+};
+
+/**
+ * Serve the built React dashboard from `<serverDist>/../web-dist/` at the
+ * site root. Falls back to `index.html` for any unmatched non-API path so
+ * client-side routing works. Reserved paths (API namespaces, WebSocket,
+ * ACME challenge) are ignored and fall through to the Fastify router.
+ */
+function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // Search up to three candidate locations: alongside dist, one level up,
+  // and the repo's apps/web/dist for development convenience.
+  const candidates = [
+    path.resolve(here, "../web-dist"),
+    path.resolve(here, "../../web-dist"),
+    path.resolve(here, "../../../apps/web/dist")
+  ];
+  const webDist = candidates.find((p) => {
+    try {
+      return fs.existsSync(path.join(p, "index.html"));
+    } catch {
+      return false;
+    }
+  });
+  if (!webDist) return;
+
+  const reservedPrefixes = [
+    "/auth", "/projects", "/services", "/databases", "/deployments",
+    "/proxy", "/settings", "/cloudflare", "/notifications", "/metrics",
+    "/health", "/ops", "/github", "/webhooks", "/migrations", "/backup",
+    "/ws", "/.well-known", "/onboarding", "/service-templates", "/project-templates"
+  ];
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return;
+    const url = (req.raw.url ?? "/").split("?")[0];
+    if (reservedPrefixes.some((p) => url === p || url.startsWith(`${p}/`))) return;
+
+    // Security: strip any path traversal attempts and resolve within webDist
+    const clean = path.posix.normalize(url).replace(/^(\.\.(\/|\\|$))+/, "");
+    let target = path.join(webDist, clean);
+    if (!target.startsWith(webDist)) target = webDist;
+
+    let filePath = target;
+    try {
+      const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+      if (!stat || stat.isDirectory()) {
+        filePath = path.join(webDist, "index.html");
+      }
+    } catch {
+      filePath = path.join(webDist, "index.html");
+    }
+
+    if (!fs.existsSync(filePath)) return;
+    const ext = path.extname(filePath).toLowerCase();
+    const body = fs.readFileSync(filePath);
+    reply
+      .header("content-type", MIME_TYPES[ext] ?? "application/octet-stream")
+      .header("cache-control", ext === ".html" ? "no-cache" : "public, max-age=3600")
+      .send(body);
+  });
 }

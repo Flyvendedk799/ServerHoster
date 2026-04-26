@@ -2,6 +2,40 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { nowIso, getService, getServiceEnv, insertLog, serializeError, updateServiceStatus } from "../lib/core.js";
 import type { AppContext } from "../types.js";
+import { createNotification } from "./notifications.js";
+import { buildConnectionString, getDatabase } from "./databases.js";
+
+/**
+ * Merge project env, service env, and auto-injected DATABASE_URL.
+ * Precedence (low → high): project env → linked database URL → service env.
+ * Service-level values always win so users can override project defaults
+ * and the DATABASE_URL auto-injection.
+ */
+function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
+  const service = ctx.db
+    .prepare("SELECT project_id, linked_database_id, type FROM services WHERE id = ?")
+    .get(serviceId) as { project_id?: string; linked_database_id?: string; type?: string } | undefined;
+
+  const projectEnv: Record<string, string> = {};
+  if (service?.project_id) {
+    const rows = ctx.db
+      .prepare("SELECT key, value FROM project_env_vars WHERE project_id = ?")
+      .all(service.project_id) as Array<{ key: string; value: string }>;
+    for (const r of rows) projectEnv[r.key] = r.value;
+  }
+
+  const serviceEnv = getServiceEnv(ctx, serviceId);
+  const merged: Record<string, string> = { ...projectEnv };
+
+  if (service?.linked_database_id && !serviceEnv.DATABASE_URL) {
+    const db = getDatabase(ctx, service.linked_database_id);
+    if (db) {
+      const host = service.type === "docker" ? "host.docker.internal" : "localhost";
+      merged.DATABASE_URL = buildConnectionString(db, host);
+    }
+  }
+  return { ...merged, ...serviceEnv };
+}
 
 async function pullImage(ctx: AppContext, image: string): Promise<void> {
   const stream = await ctx.docker.pull(image);
@@ -48,7 +82,7 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   if (!fs.existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
 
   ctx.manuallyStopped.delete(serviceId);
-  const child = spawn(command, { cwd, env: { ...process.env, ...getServiceEnv(ctx, serviceId) }, shell: true });
+  const child = spawn(command, { cwd, env: { ...process.env, ...getServiceEnvWithLinks(ctx, serviceId) }, shell: true });
   ctx.runtimeProcesses.set(serviceId, { process: child, serviceId });
   ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
   updateServiceStatus(ctx, serviceId, "running");
@@ -73,6 +107,14 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
       const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
       updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
       insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
+      const serviceName = String((getService(ctx, serviceId).name ?? serviceId));
+      createNotification(ctx, {
+        kind: "service_crash",
+        severity: "warning",
+        title: `Service crashed: ${serviceName}`,
+        body: `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
+        serviceId
+      });
       setTimeout(() => {
         void withLock(ctx, serviceId, () => startProcessService(ctx, serviceId)).catch((error) => {
           insertLog(ctx, serviceId, "error", `Restart failed: ${serializeError(error)}`);
@@ -83,6 +125,16 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
     }
     updateServiceStatus(ctx, serviceId, "stopped", code ?? 1);
     insertLog(ctx, serviceId, "warn", "Service stopped.");
+    if ((code ?? 0) !== 0) {
+      const serviceName = String((getService(ctx, serviceId).name ?? serviceId));
+      createNotification(ctx, {
+        kind: "service_crash",
+        severity: "error",
+        title: `Service stopped abnormally: ${serviceName}`,
+        body: `Exit code ${code}. Auto-restart exhausted or disabled.`,
+        serviceId
+      });
+    }
   });
 }
 
@@ -92,7 +144,7 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   const image = String(service.docker_image || "alpine:latest");
   const command = String(service.command || "").trim();
   const port = Number(service.port || 0);
-  const envList = Object.entries(getServiceEnv(ctx, serviceId)).map(([k, v]) => `${k}=${v}`);
+  const envList = Object.entries(getServiceEnvWithLinks(ctx, serviceId)).map(([k, v]) => `${k}=${v}`);
 
   try {
     await pullImage(ctx, image);
@@ -129,6 +181,8 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
 }
 
 export async function startService(ctx: AppContext, serviceId: string): Promise<void> {
+  // Start dependencies first (already-running ones are skipped).
+  await startDependencies(ctx, serviceId, new Set());
   const service = getService(ctx, serviceId);
   await withLock(ctx, serviceId, async () => {
     if (service.type === "docker") {
@@ -137,6 +191,62 @@ export async function startService(ctx: AppContext, serviceId: string): Promise<
       await startProcessService(ctx, serviceId);
     }
   });
+}
+
+export function parseDependsOn(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String);
+  try {
+    const parsed = JSON.parse(String(raw));
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function startDependencies(
+  ctx: AppContext,
+  serviceId: string,
+  visiting: Set<string>
+): Promise<void> {
+  if (visiting.has(serviceId)) {
+    throw new Error(`Dependency cycle detected at service ${serviceId}`);
+  }
+  visiting.add(serviceId);
+  const row = ctx.db
+    .prepare("SELECT depends_on FROM services WHERE id = ?")
+    .get(serviceId) as { depends_on?: string } | undefined;
+  const deps = parseDependsOn(row?.depends_on);
+  for (const depId of deps) {
+    const dep = ctx.db
+      .prepare("SELECT id, status FROM services WHERE id = ?")
+      .get(depId) as { id: string; status: string } | undefined;
+    if (!dep) {
+      insertLog(ctx, serviceId, "warn", `Dependency ${depId} not found — skipping`);
+      continue;
+    }
+    if (dep.status === "running") continue;
+    insertLog(ctx, serviceId, "info", `Starting dependency ${depId}...`);
+    // Recurse through dependency tree, then start the dep itself.
+    await startDependencies(ctx, depId, visiting);
+    const svc = getService(ctx, depId);
+    await withLock(ctx, depId, async () => {
+      if (svc.type === "docker") await startDockerService(ctx, depId);
+      else await startProcessService(ctx, depId);
+    });
+  }
+  visiting.delete(serviceId);
+}
+
+/**
+ * Return service IDs that list `serviceId` in their `depends_on` array.
+ * Used when stopping a service to warn about downstream impact.
+ */
+export function getDependents(ctx: AppContext, serviceId: string): string[] {
+  const rows = ctx.db.prepare("SELECT id, depends_on FROM services").all() as Array<{ id: string; depends_on?: string }>;
+  return rows
+    .filter((r) => parseDependsOn(r.depends_on).includes(serviceId))
+    .map((r) => r.id);
 }
 
 export async function restartService(ctx: AppContext, serviceId: string): Promise<void> {

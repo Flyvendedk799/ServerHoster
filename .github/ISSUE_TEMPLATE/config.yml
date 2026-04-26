@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/your-org/localsurv/blob/main/docs/troubleshooting.md
+    about: Check this first — most problems have a documented fix.
+  - name: Documentation
+    url: https://github.com/your-org/localsurv/tree/main/docs
+    about: API reference, configuration, and getting started.

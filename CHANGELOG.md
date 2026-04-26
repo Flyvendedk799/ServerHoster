@@ -1,0 +1,45 @@
+# Changelog
+
+All notable changes to LocalSURV are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+
+- **Phase 1** — Full host-based reverse proxy, service deletion endpoint + UI, React error boundary, global toast-based API error handling, ACME HTTP-01 reachability preflight.
+- **Phase 2** — Live build log streaming via WebSocket, deployment progress phases (`cloning → installing → building → done`), `started_at` / `finished_at` / `branch` / `trigger_source` columns, dedicated service logs page with filter/search/download/auto-scroll, deployments page with duration, branch, trigger source, redeploy, color-coded status, PATCH validation with inline field errors.
+- **Phase 3** — Encrypted GitHub PAT storage, private repo cloning via URL injection, SSH key config with public-key display, paginated GitHub repo listing, idempotent webhook registration.
+- **Phase 4** — Cloudflared managed child process with auto-restart, Cloudflare Tunnel + DNS CNAME + ingress rule auto-registration, DNS-01 ACME challenge via Cloudflare DNS API, Settings UI with live tunnel output.
+- **Phase 5** — Enhanced dashboard with system score, disk/docker/memory cards, live service grid, recent deployments. Per-service metrics collector (30s) via `ps` / `docker stats`, 24h retention. Notifications table + bell + optional Discord/Slack webhook forwarder. System health loop emitting disk/docker warnings.
+- **Phase 6** — CSS design token system, Inter font, dark/light theme toggle with localStorage persistence, collapsible icon sidebar, `confirmDialog()` API replacing `window.confirm`, responsive mobile layout.
+- **Phase 7** — Database credentials captured on create, admin panel with live container status, `pg_dump`/`mysqldump`/`mongodump` backups with one-click restore, seed SQL runner, service → database linking that auto-injects `DATABASE_URL`.
+- **Phase 8** — Service dependency graph with ordered start + cycle detection, dependent stop warnings, project-level start-all/stop-all/restart-all/deploy-all, project env vars inherited by services, idempotent docker-compose re-import preserving `depends_on`, environment tags (production/staging/development) with filter + color-coded cards.
+- **Phase 9** — README rewrite, getting-started guide, full API reference, configuration reference, troubleshooting guide.
+- **Phase 10** — 18 new unit and integration tests, full test suite green (33 passing), ESLint flat config + Prettier config, GitHub Actions CI (build + test + lint + docker build).
+- **Phase 11** — Fastify now serves the built React dashboard statically (no extra deps), multi-stage Dockerfile bundling web + server with `tini` and Docker CLI, `install.sh` one-liner with systemd/launchd service installation, CLI with `init`/`start`/`version`/`help`, Homebrew formula.
+- **Phase 12** — LICENSE (MIT), CONTRIBUTING, CODE_OF_CONDUCT, issue/PR templates, release documentation, SVG favicon, landing page.
+
+### Fixed
+
+- Git poller was matching the literal string `\t` instead of a tab character, so it never detected remote changes.
+- `acme-client` was imported with the wrong shape (`{ acme, HttpClient }`); replaced with `import * as acme`.
+- `db.ts` had an unterminated multi-line string literal in the certificates migration; converted to a template literal.
+- `app.ts` referenced the `tls` namespace without importing it.
+- Deploy integration test fixtures now initialize with `git init -b main`, unblocking environments whose `init.defaultBranch` is `master`.
+
+### Security
+
+- AES-256-GCM encryption at rest for service env vars, GitHub PAT, Cloudflare API token, and Cloudflare tunnel token.
+- `ENCRYPTED_SETTINGS` whitelist refuses plaintext read of any encrypted key via the HTTP API.
+- `/settings/github/pat` and `/cloudflare/api-token` validate tokens against their upstream APIs before persisting.
+
+---
+
+## [0.0.1] - initial prototype
+
+- Project/service CRUD
+- Process + Docker services
+- Git deploy pipeline
+- Basic dashboard
+- Auth (token + session)
+- Backup export/import

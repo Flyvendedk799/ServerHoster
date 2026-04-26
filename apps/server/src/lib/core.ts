@@ -91,21 +91,38 @@ export function getServiceEnv(ctx: AppContext, serviceId: string, revealSecrets 
   return out;
 }
 
+export type RunCommandOptions = {
+  timeoutMs?: number;
+  onChunk?: (chunk: string, stream: "stdout" | "stderr") => void;
+};
+
 export async function runCommand(
   command: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
-  timeoutMs = 120000
+  timeoutOrOptions: number | RunCommandOptions = 120000
 ): Promise<{ code: number; output: string }> {
+  const opts: RunCommandOptions =
+    typeof timeoutOrOptions === "number" ? { timeoutMs: timeoutOrOptions } : timeoutOrOptions;
+  const timeoutMs = opts.timeoutMs ?? 120000;
   return new Promise((resolve) => {
     const child = spawn(command, { cwd, env, shell: true });
     let output = "";
     const timeout = setTimeout(() => {
       child.kill();
       output += "\nCommand timeout reached.";
+      opts.onChunk?.("\nCommand timeout reached.\n", "stderr");
     }, timeoutMs);
-    child.stdout.on("data", (d) => { output += d.toString(); });
-    child.stderr.on("data", (d) => { output += d.toString(); });
+    child.stdout.on("data", (d) => {
+      const s = d.toString();
+      output += s;
+      opts.onChunk?.(s, "stdout");
+    });
+    child.stderr.on("data", (d) => {
+      const s = d.toString();
+      output += s;
+      opts.onChunk?.(s, "stderr");
+    });
     child.on("close", (code) => {
       clearTimeout(timeout);
       resolve({ code: code ?? 1, output: normalizeOutput(output) });

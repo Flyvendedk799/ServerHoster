@@ -125,7 +125,66 @@ const migrations = [
   "ALTER TABLE services ADD COLUMN last_started_at TEXT",
   "ALTER TABLE services ADD COLUMN last_stopped_at TEXT",
   "ALTER TABLE sessions ADD COLUMN user_id TEXT",
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_routes_domain ON proxy_routes(domain)"
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_routes_domain ON proxy_routes(domain)",
+  "ALTER TABLE services ADD COLUMN github_repo_url TEXT",
+  "ALTER TABLE services ADD COLUMN github_branch TEXT",
+  "ALTER TABLE services ADD COLUMN github_auto_pull INTEGER DEFAULT 1",
+  `CREATE TABLE IF NOT EXISTS certificates (
+    id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL UNIQUE,
+    fullchain TEXT NOT NULL,
+    privkey TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  "ALTER TABLE services ADD COLUMN ssl_status TEXT DEFAULT 'none'",
+  "ALTER TABLE deployments ADD COLUMN started_at TEXT",
+  "ALTER TABLE deployments ADD COLUMN finished_at TEXT",
+  "ALTER TABLE deployments ADD COLUMN branch TEXT",
+  "ALTER TABLE deployments ADD COLUMN trigger_source TEXT DEFAULT 'manual'",
+  `CREATE TABLE IF NOT EXISTS metrics (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    cpu_percent REAL NOT NULL,
+    memory_mb REAL NOT NULL,
+    timestamp TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_metrics_service_ts ON metrics(service_id, timestamp DESC)",
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    service_id TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_notifications_read_created ON notifications(read, created_at DESC)",
+  "ALTER TABLE services ADD COLUMN linked_database_id TEXT",
+  "ALTER TABLE databases ADD COLUMN username TEXT",
+  "ALTER TABLE databases ADD COLUMN password TEXT",
+  "ALTER TABLE databases ADD COLUMN database_name TEXT",
+  `CREATE TABLE IF NOT EXISTS database_backups (
+    id TEXT PRIMARY KEY,
+    database_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  "ALTER TABLE services ADD COLUMN depends_on TEXT",
+  "ALTER TABLE services ADD COLUMN environment TEXT DEFAULT 'production'",
+  "ALTER TABLE services ADD COLUMN compose_service_name TEXT",
+  "ALTER TABLE services ADD COLUMN compose_file_hash TEXT",
+  `CREATE TABLE IF NOT EXISTS project_env_vars (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(project_id, key)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_project_env_vars_project ON project_env_vars(project_id)"
 ];
 
 for (const statement of migrations) {

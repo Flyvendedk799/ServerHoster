@@ -119,3 +119,22 @@ test("railway migration dry run", async () => {
     await gracefulShutdown(ctx);
   }
 });
+
+test("bootstrap without bearer when dashboard password is configured (no users yet)", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.db.prepare("DELETE FROM sessions").run();
+    ctx.db.prepare("DELETE FROM users").run();
+    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'gate-pass')").run();
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/bootstrap",
+      payload: { username: "bootstrap-gate-user", password: "longenough" }
+    });
+    assert.equal(res.statusCode, 200);
+    ctx.db.prepare("DELETE FROM users WHERE username = 'bootstrap-gate-user'").run();
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'dashboard_password'").run();
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
