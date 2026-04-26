@@ -1,7 +1,12 @@
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { createWriteStream } from "node:fs";
 import { execSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { AppContext } from "../types.js";
-import { broadcast, nowIso } from "../lib/core.js";
+import { broadcast, insertLog, nowIso } from "../lib/core.js";
 import { getSecretSetting, getSetting, setSetting } from "./settings.js";
 
 /**
@@ -15,6 +20,157 @@ type TunnelRuntime = {
 };
 
 const STATE: { tunnel: TunnelRuntime | null } = { tunnel: null };
+
+// ===== Per-service quick tunnel state =======================================
+
+type QuickTunnelRuntime = {
+  child: ChildProcessByStdio<null, Readable, Readable>;
+  serviceId: string;
+  tunnelUrl: string | null;
+  startedAt: string;
+  lastLines: string[];
+  stopRequested: boolean;
+};
+
+const QUICK_TUNNELS = new Map<string, QuickTunnelRuntime>();
+
+const CLOUDFLARED_RELEASES = "https://github.com/cloudflare/cloudflared/releases/latest/download";
+
+function getCloudflaredDownloadUrl(): string {
+  const platform = os.platform();
+  const arch = os.arch();
+  const platformMap: Record<string, Record<string, string>> = {
+    linux:  { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64" },
+    darwin: { x64: "cloudflared-darwin-amd64", arm64: "cloudflared-darwin-arm64" },
+    win32:  { x64: "cloudflared-windows-amd64.exe", arm64: "cloudflared-windows-arm64.exe" }
+  };
+  const filename = platformMap[platform]?.[arch];
+  if (!filename) throw new Error(`Unsupported platform for auto-install: ${platform}/${arch}`);
+  return `${CLOUDFLARED_RELEASES}/${filename}`;
+}
+
+export async function ensureCloudflared(ctx: AppContext): Promise<string> {
+  const existing = detectCloudflared(ctx);
+  if (existing.binary) return existing.binary;
+
+  const binDir = path.join(ctx.config.dataRoot, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const binaryName = os.platform() === "win32" ? "cloudflared.exe" : "cloudflared";
+  const binaryPath = path.join(binDir, binaryName);
+
+  if (fs.existsSync(binaryPath)) {
+    setSetting(ctx, "cloudflared_binary_path", binaryPath);
+    return binaryPath;
+  }
+
+  const url = getCloudflaredDownloadUrl();
+  broadcast(ctx, { type: "cloudflared_install", status: "downloading", url });
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to download cloudflared: HTTP ${response.status}`);
+  if (!response.body) throw new Error("No response body from cloudflared download");
+
+  const tmpPath = `${binaryPath}.tmp`;
+  await pipeline(response.body as Parameters<typeof pipeline>[0], createWriteStream(tmpPath));
+  if (os.platform() !== "win32") fs.chmodSync(tmpPath, 0o755);
+  fs.renameSync(tmpPath, binaryPath);
+
+  setSetting(ctx, "cloudflared_binary_path", binaryPath);
+  broadcast(ctx, { type: "cloudflared_install", status: "done", binaryPath });
+  return binaryPath;
+}
+
+const QUICK_TUNNEL_URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
+
+export function startQuickTunnel(ctx: AppContext, serviceId: string, port: number): void {
+  if (QUICK_TUNNELS.has(serviceId)) return;
+
+  const detected = detectCloudflared(ctx);
+  if (!detected.binary) {
+    throw new Error("cloudflared binary not found. Use POST /cloudflare/install-cloudflared to auto-install.");
+  }
+
+  const child = spawn(detected.binary, ["tunnel", "--no-autoupdate", "--url", `http://localhost:${port}`], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  const runtime: QuickTunnelRuntime = {
+    child,
+    serviceId,
+    tunnelUrl: null,
+    startedAt: nowIso(),
+    lastLines: [],
+    stopRequested: false
+  };
+  QUICK_TUNNELS.set(serviceId, runtime);
+
+  const onData = (data: Buffer): void => {
+    const chunk = data.toString();
+    for (const line of chunk.split("\n")) {
+      if (!line.trim()) continue;
+      runtime.lastLines.push(line);
+      if (runtime.lastLines.length > 200) runtime.lastLines.shift();
+      broadcast(ctx, { type: "quick_tunnel_log", serviceId, line, timestamp: nowIso() });
+      if (!runtime.tunnelUrl) {
+        const match = QUICK_TUNNEL_URL_RE.exec(line);
+        if (match) {
+          runtime.tunnelUrl = match[0];
+          ctx.db.prepare("UPDATE services SET tunnel_url = ?, updated_at = ? WHERE id = ?")
+            .run(runtime.tunnelUrl, nowIso(), serviceId);
+          broadcast(ctx, { type: "tunnel_url", serviceId, tunnelUrl: runtime.tunnelUrl });
+          insertLog(ctx, serviceId, "info", `Quick tunnel active: ${runtime.tunnelUrl}`);
+        }
+      }
+    }
+  };
+
+  child.stdout.on("data", onData);
+  child.stderr.on("data", onData);
+
+  child.on("exit", (code, signal) => {
+    const wasStop = runtime.stopRequested;
+    QUICK_TUNNELS.delete(serviceId);
+    ctx.db.prepare("UPDATE services SET tunnel_url = NULL, updated_at = ? WHERE id = ?")
+      .run(nowIso(), serviceId);
+    broadcast(ctx, { type: "tunnel_url", serviceId, tunnelUrl: null });
+    if (!wasStop) {
+      broadcast(ctx, { type: "quick_tunnel_exited", serviceId, code, signal });
+      insertLog(ctx, serviceId, "warn", `Quick tunnel exited (code=${code})`);
+    }
+  });
+
+  broadcast(ctx, { type: "quick_tunnel_started", serviceId, pid: child.pid });
+}
+
+export function stopQuickTunnel(ctx: AppContext, serviceId: string): void {
+  const runtime = QUICK_TUNNELS.get(serviceId);
+  if (!runtime) return;
+  runtime.stopRequested = true;
+  try { runtime.child.kill("SIGTERM"); } catch { /* ignore */ }
+}
+
+export function stopAllQuickTunnels(): void {
+  for (const [, runtime] of QUICK_TUNNELS.entries()) {
+    runtime.stopRequested = true;
+    try { runtime.child.kill("SIGTERM"); } catch { /* ignore */ }
+  }
+  QUICK_TUNNELS.clear();
+}
+
+export function getQuickTunnelStatus(serviceId: string): {
+  running: boolean;
+  tunnelUrl: string | null;
+  pid: number | null;
+  startedAt: string | null;
+} {
+  const runtime = QUICK_TUNNELS.get(serviceId);
+  return {
+    running: Boolean(runtime && !runtime.child.killed),
+    tunnelUrl: runtime?.tunnelUrl ?? null,
+    pid: runtime?.child.pid ?? null,
+    startedAt: runtime?.startedAt ?? null
+  };
+}
 
 export type TunnelStatus = {
   cloudflaredInstalled: boolean;

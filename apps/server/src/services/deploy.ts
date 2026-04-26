@@ -245,7 +245,7 @@ export async function stopServiceIfRunning(ctx: AppContext, serviceId: string): 
   }
 }
 
-function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): { type: "process" | "docker" | "static"; command: string } {
+export function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): { type: "process" | "docker" | "static"; command: string } {
   if (buildType === "docker") {
     return { type: "docker", command: "" };
   }
@@ -256,6 +256,77 @@ function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildTyp
     return { type: "process", command: "npm run start" };
   }
   return { type: "process", command: "" };
+}
+
+export async function deployFromLocalPath(
+  ctx: AppContext,
+  serviceId: string,
+  localPath: string,
+  trigger: DeployTrigger = "manual"
+) {
+  if (!fs.existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
+  if (!fs.statSync(localPath).isDirectory()) throw new Error(`Path is not a directory: ${localPath}`);
+
+  const deploymentId = nanoid();
+  const startedAt = nowIso();
+  let buildLog = `Source: local directory ${localPath}\n`;
+  let status: "success" | "failed" = "success";
+
+  ctx.db.prepare(
+    `INSERT INTO deployments
+     (id, service_id, commit_hash, status, build_log, artifact_path, created_at, started_at, branch, trigger_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(deploymentId, serviceId, "", "running", "", localPath, startedAt, startedAt, null, trigger);
+
+  emitProgress(ctx, serviceId, deploymentId, "installing");
+  broadcast(ctx, { type: "deployment_started", serviceId, deploymentId, branch: null, trigger });
+
+  try {
+    const buildType = detectBuildType(localPath);
+    const inferred = inferServiceRuntimeDefaults(buildType);
+    ctx.db.prepare(
+      "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+    ).run(inferred.type, inferred.command, localPath, nowIso(), serviceId);
+
+    emitBuildLog(ctx, serviceId, deploymentId, `Detected build type: ${buildType}\n`);
+    const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId });
+    status = result.status;
+    buildLog += result.buildLog;
+  } catch (error) {
+    status = "failed";
+    const msg = `Deploy failed: ${error instanceof Error ? error.message : String(error)}\n`;
+    buildLog += msg;
+    emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
+  }
+
+  const finishedAt = nowIso();
+  emitProgress(ctx, serviceId, deploymentId, status === "success" ? "done" : "failed");
+
+  ctx.db.prepare(
+    `UPDATE deployments SET status = ?, build_log = ?, artifact_path = ?, finished_at = ? WHERE id = ?`
+  ).run(status, buildLog, localPath, finishedAt, deploymentId);
+
+  broadcast(ctx, {
+    type: "deployment_finished",
+    serviceId,
+    deploymentId,
+    status,
+    durationMs: Date.parse(finishedAt) - Date.parse(startedAt)
+  });
+
+  return {
+    id: deploymentId,
+    service_id: serviceId,
+    commit_hash: "",
+    status,
+    build_log: buildLog,
+    artifact_path: localPath,
+    created_at: startedAt,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    branch: null,
+    trigger_source: trigger
+  };
 }
 
 export async function rollbackDeployment(ctx: AppContext, serviceId: string, deploymentId: string) {

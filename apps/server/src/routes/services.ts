@@ -1,14 +1,15 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { nowIso, parsePortMapping } from "../lib/core.js";
+import { nowIso, parsePortMapping, findFreePort } from "../lib/core.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
 import { getDependents, restartService, startService, stopService } from "../services/runtime.js";
 import { insertLog } from "../lib/core.js";
-import { applyPostDeployServiceState, deployFromGit } from "../services/deploy.js";
+import { applyPostDeployServiceState, deployFromGit, deployFromLocalPath } from "../services/deploy.js";
 
 const serviceSchema = z.object({
   projectId: z.string(),
@@ -22,7 +23,8 @@ const serviceSchema = z.object({
   autoRestart: z.boolean().default(true),
   maxRestarts: z.number().int().default(5),
   startMode: z.enum(["manual", "auto"]).default("manual"),
-  healthcheckPath: z.string().optional()
+  healthcheckPath: z.string().optional(),
+  quickTunnelEnabled: z.number().int().min(0).max(1).default(0).optional()
 });
 
 const envSchema = z.object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) });
@@ -43,11 +45,20 @@ const directDeploySchema = z.object({
   autoPull: z.boolean().default(true)
 });
 
+const localDeploySchema = z.object({
+  projectId: z.string(),
+  name: z.string().min(1),
+  localPath: z.string().min(1),
+  port: z.number().int().optional(),
+  startAfterDeploy: z.boolean().default(false),
+  enableQuickTunnel: z.boolean().default(false)
+});
+
 export function registerServiceRoutes(ctx: AppContext): void {
   ctx.app.get("/services", async () => {
     return ctx.db.prepare(`
-      SELECT 
-        s.*, 
+      SELECT
+        s.*,
         p.domain,
         (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash
       FROM services s
@@ -56,8 +67,56 @@ export function registerServiceRoutes(ctx: AppContext): void {
     `).all();
   });
 
+  ctx.app.get("/services/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const service = ctx.db.prepare(`
+      SELECT s.*, p.domain
+      FROM services s
+      LEFT JOIN proxy_routes p ON p.service_id = s.id
+      WHERE s.id = ?
+    `).get(id);
+    if (!service) throw new Error("Service not found");
+    return service;
+  });
+
+  ctx.app.post("/services/deploy-from-local", async (req) => {
+    const p = localDeploySchema.parse(req.body);
+    const createdAt = nowIso();
+    const serviceId = nanoid();
+    const assignedPort = p.port ?? await findFreePort(3000, 3999);
+
+    ctx.db.prepare(`INSERT INTO services (
+      id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
+      auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, quick_tunnel_enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        serviceId, p.projectId, p.name,
+        "process", "", p.localPath, "", "",
+        assignedPort, "building",
+        1, 0, 5, "manual",
+        createdAt, createdAt,
+        p.enableQuickTunnel ? 1 : 0
+      );
+
+    const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath);
+    await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
+
+    if (p.enableQuickTunnel && p.startAfterDeploy && deployment.status === "success") {
+      try {
+        const { startQuickTunnel } = await import("../services/cloudflare.js");
+        startQuickTunnel(ctx, serviceId, assignedPort);
+      } catch (err) {
+        insertLog(ctx, serviceId, "warn", `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId);
+    return { service, deployment };
+  });
+
   ctx.app.post("/services", async (req) => {
     const p = serviceSchema.parse(req.body);
+    const assignedPort = p.port ?? await findFreePort(3000, 3999);
     const row = {
       id: nanoid(),
       project_id: p.projectId,
@@ -67,23 +126,25 @@ export function registerServiceRoutes(ctx: AppContext): void {
       working_dir: p.workingDir ?? "",
       docker_image: p.dockerImage ?? "",
       dockerfile: p.dockerfile ?? "",
-      port: p.port ?? null,
+      port: assignedPort,
       status: "stopped",
       auto_restart: p.autoRestart ? 1 : 0,
       restart_count: 0,
       max_restarts: p.maxRestarts,
       healthcheck_path: p.healthcheckPath ?? "",
       start_mode: p.startMode,
+      quick_tunnel_enabled: p.quickTunnelEnabled ?? 0,
       created_at: nowIso(),
       updated_at: nowIso()
     };
     ctx.db.prepare(`INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
-      auto_restart, restart_count, max_restarts, healthcheck_path, start_mode, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      auto_restart, restart_count, max_restarts, healthcheck_path, start_mode, quick_tunnel_enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         row.id, row.project_id, row.name, row.type, row.command, row.working_dir, row.docker_image, row.dockerfile, row.port,
-        row.status, row.auto_restart, row.restart_count, row.max_restarts, row.healthcheck_path, row.start_mode, row.created_at, row.updated_at
+        row.status, row.auto_restart, row.restart_count, row.max_restarts, row.healthcheck_path, row.start_mode,
+        row.quick_tunnel_enabled, row.created_at, row.updated_at
       );
     return row;
   });
@@ -368,7 +429,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
       nameToId.set(serviceName, existing?.id ?? nanoid());
     }
 
-    const composeHash = require("node:crypto").createHash("sha1").update(composeRaw).digest("hex");
+    const composeHash = crypto.createHash("sha1").update(composeRaw).digest("hex");
     const created: Array<{ id: string; name: string; action: "created" | "updated" }> = [];
 
     for (const [serviceName, definition] of Object.entries(services)) {
@@ -479,6 +540,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = directDeploySchema.parse(req.body);
     const createdAt = nowIso();
     const serviceId = nanoid();
+    const assignedPort = p.port ?? await findFreePort(3000, 3999);
     ctx.db.prepare(`INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, github_repo_url, github_branch, github_auto_pull
@@ -491,7 +553,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
       "",
       "",
       "",
-      p.port ?? null,
+      assignedPort,
       "building",
       1,
       0,
@@ -510,9 +572,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
     if (p.domain) {
       const domain = p.domain.toLowerCase();
       const existingDomain = ctx.db.prepare("SELECT id FROM proxy_routes WHERE domain = ?").get(domain);
-      if (!existingDomain && p.port) {
+      if (!existingDomain) {
         ctx.db.prepare("INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)")
-          .run(nanoid(), serviceId, domain, p.port, nowIso());
+          .run(nanoid(), serviceId, domain, assignedPort, nowIso());
       }
     }
 

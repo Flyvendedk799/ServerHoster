@@ -16,7 +16,8 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
     command: "",
     workingDir: "",
     image: "",
-    port: ""
+    port: "",
+    enableQuickTunnel: false
   });
   const [loading, setLoading] = useState(false);
 
@@ -36,7 +37,8 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
           command: form.command || undefined,
           workingDir: form.workingDir || undefined,
           image: form.image || undefined,
-          port: form.port ? Number(form.port) : undefined
+          port: form.port ? Number(form.port) : undefined,
+          quickTunnelEnabled: form.enableQuickTunnel ? 1 : 0
         })
       });
       toast.success(`Service "${form.name}" created`);
@@ -135,6 +137,18 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
               </div>
             </>
           )}
+
+          <label className="gh-toggle" style={{ marginTop: "var(--space-3)" }}>
+            <input
+              type="checkbox"
+              checked={form.enableQuickTunnel}
+              onChange={(e) => setForm({ ...form, enableQuickTunnel: e.target.checked })}
+            />
+            <div className="gh-toggle-info">
+              <span className="gh-toggle-title">Enable quick tunnel</span>
+              <span className="gh-toggle-desc">Auto-start a public *.trycloudflare.com URL when this service starts</span>
+            </div>
+          </label>
         </div>
 
         <div className="gh-actions" style={{ marginTop: "var(--space-6)" }}>
