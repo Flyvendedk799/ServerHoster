@@ -95,16 +95,19 @@ test(
           projectId,
           name: `svc-ok-${Date.now()}`,
           repoUrl,
-          startAfterDeploy: false
+          startAfterDeploy: false,
+          enableQuickTunnel: true
         }
       });
       assert.equal(dep.statusCode, 200);
       const body = dep.json() as {
         deployment: { status: string };
-        service: { id: string; status: string };
+        service: { id: string; status: string; github_repo_url: string; quick_tunnel_enabled: number };
       };
       assert.equal(body.deployment.status, "success");
       assert.equal(body.service.status, "stopped");
+      assert.equal(body.service.github_repo_url, repoUrl);
+      assert.equal(body.service.quick_tunnel_enabled, 1);
 
       cleanupDeployArtifacts(ctx, body.service.id, projectId);
     } finally {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { FolderOpen, GitBranch, Globe2, Laptop, Loader2, Play, RefreshCw, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
+import { inferNameFromRepoUrl } from "../lib/repo";
 import { toast } from "../lib/toast";
 
 type Project = { id: string; name: string };
@@ -42,10 +43,32 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [buildLog, setBuildLog] = useState<string[]>([]);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const canLaunch =
+    Boolean(name.trim()) &&
+    (
+      source === "github"
+        ? Boolean(repoUrl.trim())
+        : Boolean(localPath.trim()) && (Boolean(command.trim()) || scan?.buildType === "docker")
+    );
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [buildLog]);
+
+  useEffect(() => {
+    if (!projectId && projects[0]?.id) {
+      setProjectId(projects[0].id);
+    }
+  }, [projectId, projects]);
+
+  function handleRepoUrlChange(value: string) {
+    const previousInferred = inferNameFromRepoUrl(repoUrl);
+    const nextInferred = inferNameFromRepoUrl(value);
+    setRepoUrl(value);
+    if (nextInferred && (!name.trim() || name === previousInferred)) {
+      setName(nextInferred);
+    }
+  }
 
   async function scanLocalPath() {
     if (!localPath.trim()) {
@@ -84,10 +107,22 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
     setStep(2);
 
     try {
+      let launchProjectId = projectId;
+      if (!launchProjectId) {
+        setBuildLog(prev => [...prev, "No project selected. Creating Default Project..."]);
+        const project = await api<Project>("/projects", {
+          method: "POST",
+          body: JSON.stringify({ name: "Default Project" })
+        });
+        launchProjectId = project.id;
+        setProjectId(project.id);
+        setBuildLog(prev => [...prev, "Default Project ready."]);
+      }
+
       const result = await api<any>(source === "local" ? "/services/deploy-from-local" : "/services/deploy-from-github", {
         method: "POST",
         body: JSON.stringify({
-          projectId,
+          projectId: launchProjectId,
           name: name.trim(),
           localPath: source === "local" ? localPath.trim() : undefined,
           repoUrl: source === "github" ? repoUrl.trim() : undefined,
@@ -143,7 +178,9 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
               </div>
               <h3>Quick Launch Pipeline</h3>
            </div>
-           <p className="hint">Import a folder, select the detected dev server, then run it locally or through a tunnel.</p>
+           <p className="hint">
+             Import a local folder or paste a GitHub repository URL, then run it locally or through a tunnel.
+           </p>
         </header>
 
         <div className="modal-body">
@@ -178,7 +215,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                           setLocalPath(e.target.value);
                           setScan(null);
                         } else {
-                          setRepoUrl(e.target.value);
+                          handleRepoUrlChange(e.target.value);
                         }
                       }}
                      />
@@ -250,6 +287,20 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                   </div>
                 )}
 
+                {source === "github" && (
+                  <div className="scan-panel">
+                    <div className="row">
+                      <GitBranch size={16} className="text-accent" />
+                      <div>
+                        <div className="font-bold text-primary">GitHub direct launch</div>
+                        <p className="muted small">
+                          LocalSURV will clone the URL, detect the runtime, run the build pipeline, and register the service.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="form-group">
                   <label>Exposure Mode</label>
                   <div className="mode-toggle">
@@ -288,6 +339,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                    <div className="form-group">
                       <label>Project</label>
                       <select value={projectId} onChange={e => setProjectId(e.target.value)}>
+                         {!projectId && projects.length === 0 && <option value="">Default Project will be created</option>}
                          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                    </div>
@@ -316,7 +368,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
 
         <footer className="modal-footer">
            <button className="ghost" onClick={onClose} aria-label="Close quick launch without saving" data-tooltip="Close without launching">Discard</button>
-           {step === 1 && <button className="primary" onClick={handleLaunch} disabled={!name || (!localPath && !repoUrl) || (source === "local" && !command.trim() && scan?.buildType !== "docker")} aria-label="Start the selected launch pipeline" data-tooltip="Create and start this service">Initialize Launch Sequence</button>}
+           {step === 1 && <button className="primary" onClick={handleLaunch} disabled={!canLaunch || loading} aria-label="Start the selected launch pipeline" data-tooltip="Create and start this service">Initialize Launch Sequence</button>}
            {step === 2 && <button className="primary" onClick={onLaunched} aria-label="Close launch monitor" data-tooltip="Return to services">Close Monitor</button>}
         </footer>
 

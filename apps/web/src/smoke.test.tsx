@@ -3,6 +3,7 @@ import { afterEach, describe, it, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
+import { inferNameFromRepoUrl } from "./lib/repo";
 
 class MockWebSocket {
   static OPEN = 1;
@@ -54,5 +55,10 @@ describe("App smoke", () => {
     expect(screen.getAllByText("Services").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Projects").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Settings").length).toBeGreaterThan(0);
+  });
+
+  it("infers launch names from GitHub URLs", () => {
+    expect(inferNameFromRepoUrl("https://github.com/acme/Fancy-App.git")).toBe("fancy-app");
+    expect(inferNameFromRepoUrl("git@github.com:acme/worker-api.git")).toBe("worker-api");
   });
 });
