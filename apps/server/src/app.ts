@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
 import { fileURLToPath } from "node:url";
@@ -34,11 +35,34 @@ import { writeAuditLog } from "./services/audit.js";
 
 const secureContextCache = new Map<string, tls.SecureContext>();
 
+function createDockerClient(): Docker {
+  const explicitHost = process.env.DOCKER_HOST;
+  if (explicitHost?.startsWith("unix://")) {
+    return new Docker({ socketPath: explicitHost.replace("unix://", "") });
+  }
+  if (explicitHost) {
+    return new Docker();
+  }
+
+  const defaultSocket = "/var/run/docker.sock";
+  if (fs.existsSync(defaultSocket)) {
+    return new Docker({ socketPath: defaultSocket });
+  }
+
+  const colimaSockets = [
+    path.join(os.homedir(), ".colima", "default", "docker.sock"),
+    path.join(os.homedir(), ".colima", "docker.sock")
+  ];
+  const socketPath = colimaSockets.find((candidate) => fs.existsSync(candidate));
+  return socketPath ? new Docker({ socketPath }) : new Docker();
+}
+
 export async function buildApp(): Promise<AppContext> {
+  const docker = createDockerClient();
   enforceSecretPolicy({
     app: {} as never,
     db,
-    docker: new Docker(),
+    docker,
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
     runtimeProcesses: new Map(),
@@ -87,7 +111,7 @@ export async function buildApp(): Promise<AppContext> {
   const ctx: AppContext = {
     app,
     db,
-    docker: new Docker(),
+    docker,
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
     runtimeProcesses: new Map(),

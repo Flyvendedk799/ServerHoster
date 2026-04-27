@@ -17,7 +17,12 @@ import {
   Filter,
   Search,
   ExternalLink,
-  Activity
+  Activity,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  XCircle,
+  Database as DatabaseIcon
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -28,6 +33,7 @@ import { CreateServiceModal } from "../components/CreateServiceModal";
 import { TemplateModal } from "../components/TemplateModal";
 import { ComposeModal } from "../components/ComposeModal";
 import { QuickLaunchModal } from "../components/QuickLaunchModal";
+import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
 import { StatusBadge } from "../components/StatusBadge";
 import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
@@ -47,6 +53,7 @@ type Service = {
   ssl_status?: string;
   environment?: string;
   tunnel_url?: string | null;
+  linked_database_id?: string | null;
 };
 
 type Project = {
@@ -54,16 +61,44 @@ type Project = {
   name: string;
 };
 
+type DatabaseResource = {
+  id: string;
+  project_id: string;
+  name: string;
+  engine: string;
+  port: number;
+  container_status?: { state?: string; health?: string | null };
+};
+
 type LogEntry = {
+  serviceId?: string;
   level?: string;
   message: string;
   timestamp?: string;
 };
 
+type ServiceOperation = {
+  action: "start" | "stop" | "restart";
+  stage: string;
+  status: "queued" | "active" | "success" | "error";
+  message: string;
+  startedAt: number;
+};
+
+type ServiceStack = {
+  id: string;
+  title: string;
+  services: Service[];
+  databases: DatabaseResource[];
+};
+
 export function ServicesPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [services, setServices] = useState<Service[]>([]);
+  const [databases, setDatabases] = useState<DatabaseResource[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [serviceLogs, setServiceLogs] = useState<Record<string, LogEntry[]>>({});
+  const [operations, setOperations] = useState<Record<string, ServiceOperation>>({});
   const [loading, setLoading] = useState(true);
 
   const [editingService, setEditingService] = useState<Service | null>(null);
@@ -72,6 +107,7 @@ export function ServicesPage() {
   const [showComposeModal, setShowComposeModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showQuickLaunch, setShowQuickLaunch] = useState(false);
+  const [databaseDraft, setDatabaseDraft] = useState<{ projectId: string; name: string } | null>(null);
 
   const [envFilter, setEnvFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -79,12 +115,21 @@ export function ServicesPage() {
 
   async function load(): Promise<void> {
     try {
-      const [projectData, serviceData] = await Promise.all([
+      const [projectData, serviceData, databaseData] = await Promise.all([
         api<Project[]>("/projects", { silent: true }),
-        api<Service[]>("/services", { silent: true })
+        api<Service[]>("/services", { silent: true }),
+        api<DatabaseResource[]>("/databases", { silent: true })
       ]);
       setProjects(projectData);
       setServices(serviceData);
+      setDatabases(databaseData);
+      const logPairs = await Promise.all(
+        serviceData.slice(0, 20).map(async (service) => {
+          const rows = await api<LogEntry[]>(`/services/${service.id}/logs`, { silent: true }).catch(() => []);
+          return [service.id, rows.slice(0, 8)] as const;
+        })
+      );
+      setServiceLogs((prev) => ({ ...prev, ...Object.fromEntries(logPairs) }));
     } catch (err) { /* silent */ } finally {
       setLoading(false);
     }
@@ -96,21 +141,111 @@ export function ServicesPage() {
       if (typeof payload !== "object" || payload === null) return;
       const typed = payload as { type?: string };
       if (typed.type === "log" && (payload as LogEntry).message) {
-         setLogs((prev) => [payload as LogEntry, ...prev].slice(0, 50));
+         const entry = payload as LogEntry;
+         setLogs((prev) => [entry, ...prev].slice(0, 50));
+         if (entry.serviceId) {
+           setServiceLogs((prev) => ({
+             ...prev,
+             [entry.serviceId!]: [entry, ...(prev[entry.serviceId!] ?? [])].slice(0, 8)
+           }));
+         }
       }
       if (typed.type === "service_status" || typed.type === "tunnel_url") {
+        if (typed.type === "service_status") {
+          const event = payload as { serviceId?: string; status?: string };
+          if (event.serviceId && event.status) {
+            setOperations((prev) => {
+              const status = event.status!;
+              const current = prev[event.serviceId!];
+              if (!current) return prev;
+              const done = status === "running" || status === "stopped";
+              const failed = status === "crashed" || status === "error";
+              return {
+                ...prev,
+                [event.serviceId!]: {
+                  ...current,
+                  stage: status,
+                  status: failed ? "error" : done ? "success" : "active",
+                  message: failed
+                    ? "The service reported an error. Open logs for details."
+                    : status === "running"
+                      ? "Service is live and accepting traffic."
+                      : status === "stopped"
+                        ? "Service stopped cleanly."
+                        : `Service is ${status}...`
+                }
+              };
+            });
+          }
+        }
         void load();
+      }
+      if (typed.type === "service_lifecycle") {
+        const event = payload as { serviceId?: string; stage?: string; action?: ServiceOperation["action"]; message?: string; status?: string; port?: number; containerPort?: number };
+        if (!event.serviceId) return;
+        setOperations((prev) => {
+          const current = prev[event.serviceId!] ?? {
+            action: event.action ?? "start",
+            stage: "queued",
+            status: "active" as const,
+            message: "Preparing service action...",
+            startedAt: Date.now()
+          };
+          const stage = event.stage ?? current.stage;
+          const message = event.message
+            ?? (stage === "queued" ? "Queued on the LocalSURV runtime."
+              : stage === "starting" ? "Starting runtime and preparing environment."
+              : stage === "pulling" ? "Pulling Docker image."
+              : stage === "container" ? event.containerPort && event.port && event.containerPort !== event.port
+                ? `Publishing localhost:${event.port} to container:${event.containerPort}.`
+                : "Creating or reusing Docker container."
+              : stage === "healthcheck" ? `Healthcheck is ${event.status ?? "running"}.`
+              : stage === "live" ? "Service is live and reachable."
+              : stage === "stopping" ? "Stopping runtime and cleaning up listeners."
+              : `Service stage: ${stage}`);
+          return {
+            ...prev,
+            [event.serviceId!]: {
+              ...current,
+              action: event.action ?? current.action,
+              stage,
+              status: stage === "live" ? "success" : "active",
+              message
+            }
+          };
+        });
       }
     });
     return () => ws.close();
   }, []);
 
   async function serviceAction(serviceId: string, action: "start" | "stop" | "restart"): Promise<void> {
+    setOperations((prev) => ({
+      ...prev,
+      [serviceId]: {
+        action,
+        stage: "queued",
+        status: "queued",
+        message: `${action[0].toUpperCase()}${action.slice(1)} request sent to LocalSURV...`,
+        startedAt: Date.now()
+      }
+    }));
     try {
       await api(`/services/${serviceId}/${action}`, { method: "POST" });
       await load();
-      toast.success(`Deployment ${action} sequence initiated`);
-    } catch { /* toasted */ }
+      toast.success(`Service ${action} sequence completed`);
+    } catch {
+      setOperations((prev) => ({
+        ...prev,
+        [serviceId]: {
+          ...(prev[serviceId] ?? { action, startedAt: Date.now() }),
+          action,
+          stage: "error",
+          status: "error",
+          message: "LocalSURV could not complete the action. Check the latest logs."
+        }
+      }));
+    }
   }
 
   async function bulkAction(action: "start" | "stop" | "restart"): Promise<void> {
@@ -127,6 +262,15 @@ export function ServicesPage() {
       toast.success(`Bulk ${action} sent to ${filteredServices.length} services`);
       await load();
     } catch { /* toasted */ }
+  }
+
+  async function stackAction(stack: ServiceStack, action: "start" | "stop" | "restart"): Promise<void> {
+    const serviceTargets = stack.services.filter((service) => action !== "start" || service.status !== "running");
+    if (serviceTargets.length === 0) return;
+    try {
+      await Promise.all(serviceTargets.map((service) => serviceAction(service.id, action)));
+      toast.success(`${stack.title} ${action} sent to ${serviceTargets.length} runtime${serviceTargets.length === 1 ? "" : "s"}`);
+    } catch { /* serviceAction handles toast/state */ }
   }
 
   async function deleteService(service: Service): Promise<void> {
@@ -170,6 +314,107 @@ export function ServicesPage() {
     })).filter((group) => group.services.length > 0);
   }, [filteredServices, groupByProject, projects]);
 
+  function serviceUrl(service: Service): string | null {
+    if (service.domain) return `http://${service.domain}`;
+    if (service.port) return `http://localhost:${service.port}`;
+    return null;
+  }
+
+  function operationIcon(operation: ServiceOperation | undefined, status: string) {
+    if (operation?.status === "error" || status === "crashed" || status === "error") return <XCircle size={16} className="text-danger" />;
+    if (operation?.status === "success" || status === "running") return <CheckCircle2 size={16} className="text-success" />;
+    if (operation || status === "starting" || status === "stopping" || status === "building") return <Loader2 size={16} className="animate-spin text-warning" />;
+    return <Clock size={16} className="text-muted" />;
+  }
+
+  function operationLabel(operation: ServiceOperation | undefined, service: Service): string {
+    if (operation?.message) return operation.message;
+    if (service.status === "running") return "Live. LocalSURV has confirmed the runtime is up.";
+    if (service.status === "starting") return "Starting. Runtime events will appear here.";
+    if (service.status === "stopping") return "Stopping. Waiting for cleanup to finish.";
+    if (service.status === "building") return "Building. Watch deployment logs for progress.";
+    if (service.status === "crashed") return "Crashed. Open logs to inspect the failure.";
+    return "Idle. Start the service to watch the launch sequence.";
+  }
+
+  function normalizeStackName(name: string): string {
+    return name
+      .replace(/\s+(api|backend|frontend|front-end|web|server|worker)$/i, "")
+      .replace(/[-_]+(api|backend|frontend|front-end|web|server|worker)$/i, "")
+      .trim();
+  }
+
+  function stackKey(service: Service): string {
+    return `${service.project_id}:${normalizeStackName(service.name).toLowerCase()}`;
+  }
+
+  function serviceRole(service: Service, stackSize = 1): string {
+    if (/\b(api|backend|server)\b/i.test(service.name)) return "API";
+    if (/\b(frontend|front-end|web)\b/i.test(service.name)) return "Frontend";
+    if (/\b(worker|queue|jobs)\b/i.test(service.name)) return "Worker";
+    if (stackSize > 1 && service.port && service.port >= 7000 && service.port <= 8999) return "API";
+    if (stackSize > 1) return "Frontend";
+    return service.type;
+  }
+
+  function stackStatus(stack: ServiceStack): string {
+    if (stack.services.some((service) => ["crashed", "error"].includes(service.status))) return "error";
+    if (stack.services.some((service) => ["starting", "stopping", "building"].includes(service.status))) return "starting";
+    if (stack.services.every((service) => service.status === "running")) return "running";
+    if (stack.services.some((service) => service.status === "running")) return "partial";
+    return "stopped";
+  }
+
+  function primaryStackUrl(stack: ServiceStack): string | null {
+    const frontend = stack.services.find((service) => serviceRole(service, stack.services.length) === "Frontend");
+    return serviceUrl(frontend ?? stack.services[0]);
+  }
+
+  function ServerNodeIcon({ role }: { role: string }) {
+    if (role === "Frontend") return <Globe size={16} />;
+    if (role === "API") return <Terminal size={16} />;
+    if (role === "Worker") return <Activity size={16} />;
+    return <Layers size={16} />;
+  }
+
+  function buildServiceStacks(rows: Service[]): ServiceStack[] {
+    const map = new Map<string, ServiceStack>();
+    for (const service of rows) {
+      const key = stackKey(service);
+      const title = normalizeStackName(service.name) || service.name;
+      const existing = map.get(key);
+      if (existing) {
+        existing.services.push(service);
+      } else {
+        map.set(key, { id: key, title, services: [service], databases: [] });
+      }
+    }
+    for (const db of databases) {
+      const linkedStack = [...map.values()].find((stack) =>
+        stack.services.some((service) => service.project_id === db.project_id && service.linked_database_id === db.id)
+      );
+      const namedStack = [...map.values()].find((stack) =>
+        stack.services.some((service) => service.project_id === db.project_id) &&
+        normalizeStackName(db.name).toLowerCase().startsWith(stack.title.toLowerCase())
+      );
+      (linkedStack ?? namedStack)?.databases.push(db);
+    }
+    return [...map.values()].map((stack) => ({
+      ...stack,
+      services: stack.services.sort((a, b) => {
+        const rank = (service: Service) => {
+          const role = serviceRole(service, stack.services.length);
+          if (role === "Frontend") return 0;
+          if (role === "API") return 1;
+          if (role === "Worker") return 2;
+          return 3;
+        };
+        return rank(a) - rank(b) || a.name.localeCompare(b.name);
+      }),
+      databases: stack.databases.sort((a, b) => a.name.localeCompare(b.name))
+    }));
+  }
+
   if (loading) {
     return (
       <div className="services-page">
@@ -191,8 +436,8 @@ export function ServicesPage() {
     <div className="services-page">
       <header className="page-header">
         <div className="title-group">
-          <h2>Services</h2>
-          <p className="muted">Manage and monitor your decentralized applications.</p>
+          <h2>Apps</h2>
+          <p className="muted">Manage each application as a stack of runtime, database, and endpoint resources.</p>
         </div>
         <div className="row wrap">
            <div className="search-box row" style={{ background: "var(--bg-sunken)", padding: "0.25rem 0.75rem", borderRadius: "var(--radius-md)", border: "1px solid var(--border-default)" }}>
@@ -317,8 +562,8 @@ export function ServicesPage() {
       <section className="services-section">
         <div className="section-title">
           <div className="row">
-             <h3>Active Services</h3>
-             <span className="badge accent">{filteredServices.length}</span>
+             <h3>Application Stacks</h3>
+             <span className="badge accent">{filteredServices.length} resources</span>
           </div>
           <div className="row">
              <button
@@ -334,21 +579,21 @@ export function ServicesPage() {
                onClick={() => void bulkAction("start")}
                disabled={filteredServices.length === 0}
                aria-label={`Start ${filteredServices.length} visible services`}
-               data-tooltip={filteredServices.length === 0 ? "No visible services to start" : "Start all visible services"}
+               data-tooltip={filteredServices.length === 0 ? "No visible runtimes to start" : "Start all visible runtime resources"}
              ><Play size={14} /> Start All</button>
              <button
                className="ghost xsmall"
                onClick={() => void bulkAction("stop")}
                disabled={filteredServices.length === 0}
                aria-label={`Stop ${filteredServices.length} visible services`}
-               data-tooltip={filteredServices.length === 0 ? "No visible services to stop" : "Stop all visible services"}
+               data-tooltip={filteredServices.length === 0 ? "No visible runtimes to stop" : "Stop all visible runtime resources"}
              ><Square size={14} /> Stop All</button>
              <button
                className="ghost xsmall"
                onClick={() => void bulkAction("restart")}
                disabled={filteredServices.length === 0}
                aria-label={`Restart ${filteredServices.length} visible services`}
-               data-tooltip={filteredServices.length === 0 ? "No visible services to restart" : "Restart all visible services"}
+               data-tooltip={filteredServices.length === 0 ? "No visible runtimes to restart" : "Restart all visible runtime resources"}
              ><RotateCw size={14} /> Restart All</button>
           </div>
         </div>
@@ -356,9 +601,9 @@ export function ServicesPage() {
         {filteredServices.length === 0 ? (
           <div className="card text-center" style={{ padding: "6rem 2rem", opacity: 0.8 }}>
              <Box size={60} className="text-muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
-             <h3 className="muted">No services detected in this environment.</h3>
+             <h3 className="muted">No app resources detected in this environment.</h3>
              <p className="muted small" style={{ maxWidth: "400px", margin: "1rem auto 2rem" }}>
-                Start by connecting a repository or using one of our platform templates to get your first node running.
+                Start by connecting a repository or importing a stack to create your first application workspace.
              </p>
              <button className="primary" onClick={() => setShowCreateModal(true)}>
                 <Plus size={18} /> Create Custom Service
@@ -369,9 +614,107 @@ export function ServicesPage() {
             {serviceGroups.map((group) => (
               <section key={group.id} className="service-group">
                 {groupByProject && <h4 className="service-group-title">{group.title}</h4>}
-                <div className="grid">
-            <AnimatePresence>
-              {group.services.map(service => (
+                <div className="app-stack-list">
+                  {buildServiceStacks(group.services).map((stack) => (
+                    <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
+                      <div className="app-stack-header">
+                        <div>
+                          <div className="row">
+                            <Layers size={18} className="text-accent" />
+                            <h4>{stack.title}</h4>
+                            <StatusBadge status={stackStatus(stack)} label={stackStatus(stack)} />
+                          </div>
+                          <p className="muted tiny">
+                            {stack.services.length === 1
+                              ? "Single runtime service"
+                              : `${stack.services.length} linked runtime services from one app`}
+                            {stack.databases.length > 0 ? ` • ${stack.databases.length} managed database${stack.databases.length === 1 ? "" : "s"}` : ""}
+                          </p>
+                        </div>
+                        <div className="stack-service-pills">
+                          {primaryStackUrl(stack) && (
+                            <a
+                              href={primaryStackUrl(stack)!}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="stack-service-pill stack-open-pill"
+                              data-tooltip="Open the primary app endpoint"
+                            >
+                              <ExternalLink size={12} />
+                              Open app
+                            </a>
+                          )}
+                          {stack.services.map((service) => (
+                            <span key={service.id} className="stack-service-pill">
+                              <StatusBadge status={service.status} dotOnly />
+                              {serviceRole(service, stack.services.length)}
+                            </span>
+                          ))}
+                          {stack.databases.map((db) => (
+                            <Link
+                              key={db.id}
+                              to="/databases"
+                              className="stack-service-pill database-pill"
+                              aria-label={`Open database ${db.name}`}
+                              data-tooltip={`${db.engine} database on port ${db.port}`}
+                            >
+                              <StatusBadge status={db.container_status?.state ?? "stopped"} dotOnly />
+                              <DatabaseIcon size={12} />
+                              {db.engine}
+                            </Link>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="app-stack-actions">
+                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "start")}><Play size={14} /> Start stack</button>
+                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "restart")}><RotateCw size={14} /> Restart stack</button>
+                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "stop")}><Square size={14} /> Stop stack</button>
+                        <button
+                          className="ghost xsmall"
+                          onClick={() => setDatabaseDraft({ projectId: stack.services[0]?.project_id ?? projects[0]?.id ?? "", name: `${stack.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-db` })}
+                          data-tooltip="Create a managed database in this app's project"
+                        >
+                          <DatabaseIcon size={14} /> Add database
+                        </button>
+                      </div>
+                      <div className="stack-resource-map">
+                        {stack.services.map((service) => (
+                          <div key={service.id} className={`resource-node ${service.status}`}>
+                            <ServerNodeIcon role={serviceRole(service, stack.services.length)} />
+                            <strong>{serviceRole(service, stack.services.length)}</strong>
+                            <span>{service.status}</span>
+                          </div>
+                        ))}
+                        {stack.databases.map((db) => (
+                          <Link key={db.id} to="/databases" className={`resource-node database ${db.container_status?.state ?? "stopped"}`}>
+                            <DatabaseIcon size={16} />
+                            <strong>{db.engine}</strong>
+                            <span>{db.container_status?.state ?? "stopped"}</span>
+                          </Link>
+                        ))}
+                      </div>
+                      {stack.databases.length > 0 && (
+                        <div className="stack-database-rail">
+                          {stack.databases.map((db) => (
+                            <Link key={db.id} to="/databases" className="stack-db-resource">
+                              <DatabaseIcon size={15} />
+                              <div>
+                                <strong>{db.name}</strong>
+                                <span>{db.engine} • localhost:{db.port} • {db.container_status?.state ?? "stopped"}</span>
+                              </div>
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                      <div className="grid stack-grid">
+                <AnimatePresence>
+              {stack.services.map(service => (
+                (() => {
+                  const op = operations[service.id];
+                  const url = serviceUrl(service);
+                  const recent = serviceLogs[service.id] ?? [];
+                  const actionBusy = op?.status === "queued" || op?.status === "active" || service.status === "starting" || service.status === "stopping";
+                  return (
                 <motion.div
                   key={service.id}
                   layout
@@ -382,17 +725,18 @@ export function ServicesPage() {
                 >
                   <div className="env-tag">{service.environment ?? "production"}</div>
 
-                  <div className="service-header">
-                    <div className="service-title-group">
-                      <div className="row">
-                         <h3>{service.name}</h3>
-                         <StatusBadge status={service.status} dotOnly />
-                      </div>
-                      <div className="service-meta" style={{ marginTop: "0.25rem" }}>
-                        <span className="tiny muted font-bold uppercase">{service.type}</span>
-                        {service.github_repo_url && <span className="tiny muted row"><GitBranch size={10} /> Sync Active</span>}
-                      </div>
-                    </div>
+	                  <div className="service-header">
+	                    <div className="service-title-group">
+	                      <div className="row">
+	                         <h3>{service.name}</h3>
+	                         <StatusBadge status={service.status} dotOnly />
+	                      </div>
+	                      <div className="service-meta" style={{ marginTop: "0.25rem" }}>
+	                        <span className="role-chip">{serviceRole(service, stack.services.length)}</span>
+	                        <span className="tiny muted font-bold uppercase">{service.type}</span>
+	                        {service.github_repo_url && <span className="tiny muted row"><GitBranch size={10} /> Sync Active</span>}
+	                      </div>
+	                    </div>
                     <button
                       className="ghost icon-only"
                       onClick={() => setEditingService(service)}
@@ -404,10 +748,10 @@ export function ServicesPage() {
                   </div>
 
                   <div className="service-body">
-                    {service.domain ? (
+                    {url ? (
                       <div className="list-link row small">
                         <Globe size={14} className="text-accent" />
-                        <a href={`http://${service.domain}`} target="_blank" rel="noreferrer" className="link font-bold">{service.domain}</a>
+                        <a href={url} target="_blank" rel="noreferrer" className="link font-bold">{service.domain ?? `localhost:${service.port}`}</a>
                         <ExternalLink size={10} className="muted" />
                       </div>
                     ) : <div className="muted tiny italic">No public endpoint attached</div>}
@@ -418,13 +762,44 @@ export function ServicesPage() {
                         <a href={service.tunnel_url} target="_blank" rel="noreferrer" className="text-truncate">{service.tunnel_url}</a>
                       </div>
                     )}
+
+                    <div className={`launch-panel ${op?.status ?? service.status}`}>
+                      <div className="launch-panel-head">
+                        <div className="row">
+                          {operationIcon(op, service.status)}
+                          <span className="tiny uppercase font-bold">{op?.stage ?? service.status}</span>
+                        </div>
+                        {url && service.status === "running" && (
+                          <a className="tiny link" href={url} target="_blank" rel="noreferrer">Open live app</a>
+                        )}
+                      </div>
+                      <p className="launch-message">{operationLabel(op, service)}</p>
+                      <div className="launch-steps">
+                        {["queued", "starting", "healthcheck", "live"].map((stage) => (
+                          <span
+                            key={stage}
+                            className={`launch-step ${op?.stage === stage || (stage === "live" && service.status === "running") ? "active" : ""} ${service.status === "running" && stage !== "queued" ? "complete" : ""}`}
+                          />
+                        ))}
+                      </div>
+                      {recent.length > 0 && (
+                        <div className="mini-log">
+                          {recent.slice(0, 3).map((log, index) => (
+                            <div key={`${log.timestamp ?? index}-${index}`} className={`mini-log-line ${log.level ?? "info"}`}>
+                              <span>{log.level ?? "info"}</span>
+                              <p>{log.message}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="service-footer">
                     <div className="row" style={{ gap: "0.25rem" }}>
-                       <button className="ghost xsmall" aria-label={`Start ${service.name}`} data-tooltip="Start service" onClick={() => serviceAction(service.id, "start")}><Play size={14}/></button>
-                       <button className="ghost xsmall" aria-label={`Stop ${service.name}`} data-tooltip="Stop service" onClick={() => serviceAction(service.id, "stop")}><Square size={14}/></button>
-                       <button className="ghost xsmall" aria-label={`Restart ${service.name}`} data-tooltip="Restart service" onClick={() => serviceAction(service.id, "restart")}><RotateCw size={14}/></button>
+                       <button className="ghost xsmall" disabled={actionBusy} aria-label={`Start ${service.name}`} data-tooltip="Start service and stream launch progress" onClick={() => serviceAction(service.id, "start")}><Play size={14}/></button>
+                       <button className="ghost xsmall" disabled={actionBusy} aria-label={`Stop ${service.name}`} data-tooltip="Stop service and show shutdown progress" onClick={() => serviceAction(service.id, "stop")}><Square size={14}/></button>
+                       <button className="ghost xsmall" disabled={actionBusy} aria-label={`Restart ${service.name}`} data-tooltip="Restart service with live progress" onClick={() => serviceAction(service.id, "restart")}><RotateCw size={14}/></button>
                     </div>
 
                     <Link to={`/services/${service.id}/logs`} className="button ghost xsmall" aria-label={`Open logs for ${service.name}`} data-tooltip="Open logs">
@@ -443,8 +818,13 @@ export function ServicesPage() {
                     </button>
                   </div>
                 </motion.div>
-              ))}
-            </AnimatePresence>
+                  );
+	                })()
+	              ))}
+	            </AnimatePresence>
+                      </div>
+                    </section>
+                  ))}
                 </div>
               </section>
             ))}
@@ -518,6 +898,15 @@ export function ServicesPage() {
           projects={projects}
           onClose={() => setShowQuickLaunch(false)}
           onLaunched={() => { setShowQuickLaunch(false); void load(); }}
+        />
+      )}
+      {databaseDraft && (
+        <CreateDatabaseModal
+          projects={projects}
+          initialProjectId={databaseDraft.projectId}
+          initialName={databaseDraft.name}
+          onClose={() => setDatabaseDraft(null)}
+          onCreated={() => { setDatabaseDraft(null); void load(); }}
         />
       )}
 

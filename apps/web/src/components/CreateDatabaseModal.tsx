@@ -6,6 +6,8 @@ type Props = {
   projects: Array<{ id: string; name: string }>;
   onClose: () => void;
   onCreated: () => void;
+  initialProjectId?: string;
+  initialName?: string;
 };
 
 const ENGINE_DEFAULT_PORT = {
@@ -15,10 +17,10 @@ const ENGINE_DEFAULT_PORT = {
   mongo: 27017
 };
 
-export function CreateDatabaseModal({ projects, onClose, onCreated }: Props) {
+export function CreateDatabaseModal({ projects, onClose, onCreated, initialProjectId, initialName }: Props) {
   const [form, setForm] = useState({
-    projectId: projects[0]?.id || "",
-    name: "",
+    projectId: initialProjectId || projects[0]?.id || "",
+    name: initialName || "",
     engine: "postgres" as "postgres" | "mysql" | "redis" | "mongo",
     port: "5432",
     username: "",

@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 
-type StatusType = "running" | "stopped" | "crashed" | "building" | "provisioning" | "secure" | "error" | "none";
+type StatusType = "running" | "stopped" | "crashed" | "building" | "starting" | "stopping" | "provisioning" | "secure" | "error" | "none";
 
 type Props = {
   status: StatusType | string;
@@ -22,6 +22,8 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
       case "error":
         return { bg: "var(--danger-soft)", border: "var(--danger)", text: "var(--danger)", glow: "var(--danger-glow)" };
       case "building":
+      case "starting":
+      case "stopping":
       case "provisioning":
         return { bg: "var(--warning-soft)", border: "var(--warning)", text: "var(--warning)", glow: "var(--warning-glow)" };
       default:

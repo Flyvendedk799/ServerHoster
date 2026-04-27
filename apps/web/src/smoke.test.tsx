@@ -52,7 +52,7 @@ describe("App smoke", () => {
       </MemoryRouter>
     );
     expect(screen.getAllByText("Dashboard").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Services").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Apps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Projects").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Settings").length).toBeGreaterThan(0);
   });

@@ -105,7 +105,7 @@ type SidebarService = { id: string; name: string; status: string };
 
 const routeLabels: Record<string, string> = {
   dashboard: "Dashboard",
-  services: "Services",
+  services: "Apps",
   projects: "Projects",
   databases: "Databases",
   proxy: "Edge Ingress",
@@ -231,8 +231,8 @@ export function App() {
           <NavLink to="/dashboard" aria-label="Dashboard" data-tooltip={collapsed ? "Dashboard" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
             <LayoutDashboard size={20} /><span className="sidebar-label">Dashboard</span>
           </NavLink>
-          <NavLink to="/services" aria-label="Services" data-tooltip={collapsed ? "Services" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Server size={20} /><span className="sidebar-label">Services</span>
+          <NavLink to="/services" aria-label="Apps" data-tooltip={collapsed ? "Apps" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
+            <Server size={20} /><span className="sidebar-label">Apps</span>
             {!collapsed && <ServicesCountBadge />}
           </NavLink>
           <NavLink to="/projects" aria-label="Projects" data-tooltip={collapsed ? "Projects" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>

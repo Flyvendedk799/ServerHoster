@@ -4,6 +4,7 @@ import { toast } from "../lib/toast";
 import { confirmDialog } from "../lib/confirm";
 import { StatusBadge } from "../components/StatusBadge";
 import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
+import { Copy, Database, FileClock, Link2, Play, RotateCw, ScrollText, Shield, Square, Trash2 } from "lucide-react";
 
 type DatabaseRow = {
   id: string;
@@ -12,11 +13,11 @@ type DatabaseRow = {
   engine: "postgres" | "mysql" | "redis" | "mongo";
   port: number;
   connection_string: string;
-  container_status?: { state: string };
+  container_status?: { state: string; health?: string | null; startedAt?: string | null };
 };
 
 type Project = { id: string; name: string };
-type Service = { id: string; name: string; linked_database_id?: string };
+type Service = { id: string; name: string; project_id?: string; linked_database_id?: string };
 type Backup = { id: string; filename: string; size_bytes: number; created_at: string };
 
 function fmtSize(bytes: number): string {
@@ -62,6 +63,7 @@ export function DatabasesPage() {
       return;
     }
     void api<Backup[]>(`/databases/${selectedDbId}/backups`).then(setBackups).catch(() => undefined);
+    void api<{ logs: string }>(`/databases/${selectedDbId}/logs?tail=160`).then((res) => setDbLogs(res.logs)).catch(() => undefined);
   }, [selectedDbId]);
 
   async function dbAction(id: string, action: "start" | "stop" | "restart"): Promise<void> {
@@ -146,13 +148,36 @@ export function DatabasesPage() {
   }
 
   const selectedDb = rows.find((r) => r.id === selectedDbId);
+  const runningCount = rows.filter((row) => row.container_status?.state === "running").length;
+  const linkedServices = selectedDb ? services.filter((service) => service.linked_database_id === selectedDb.id) : [];
 
   return (
     <div className="databases-page">
       <header className="page-header">
-        <h2>Persistence Layer</h2>
-        <button className="primary" onClick={() => setShowModal(true)}>+ Provision DB</button>
+        <div className="title-group">
+          <h2>Databases</h2>
+          <p className="muted">Managed persistence for your app stacks, with safe runtime controls.</p>
+        </div>
+        <button className="primary" onClick={() => setShowModal(true)}><Database size={18} /> Provision DB</button>
       </header>
+
+      <section className="database-summary">
+        <div className="database-summary-item">
+          <Database size={18} />
+          <strong>{rows.length}</strong>
+          <span>Total databases</span>
+        </div>
+        <div className="database-summary-item">
+          <Shield size={18} />
+          <strong>{runningCount}</strong>
+          <span>Running now</span>
+        </div>
+        <div className="database-summary-item">
+          <Link2 size={18} />
+          <strong>{services.filter((service) => service.linked_database_id).length}</strong>
+          <span>Service links</span>
+        </div>
+      </section>
 
       <div className="grid">
         {rows.length === 0 ? (
@@ -180,19 +205,31 @@ export function DatabasesPage() {
                   <div className="row">
                     <StatusBadge status={state} dotOnly />
                     <span className="chip xsmall">Port {row.port}</span>
+                    {row.container_status?.health && <span className="chip xsmall">{row.container_status.health}</span>}
                   </div>
                 </div>
 
                 <div className="service-body">
-                   <div className="connection-string font-mono tiny text-truncate" onClick={() => void copyConnection(row)}>
+                   <div className="connection-string font-mono tiny text-truncate" onClick={() => void copyConnection(row)} data-tooltip="Copy connection string">
                     {row.connection_string}
+                   </div>
+                   <div className="database-linked-services">
+                    {services.filter(s => s.linked_database_id === row.id).length === 0 ? (
+                      <span className="muted tiny">No services linked yet</span>
+                    ) : (
+                      services.filter(s => s.linked_database_id === row.id).map((service) => (
+                        <span key={service.id} className="stack-service-pill"><Link2 size={11} /> {service.name}</span>
+                      ))
+                    )}
                    </div>
                 </div>
 
                 <div className="service-footer">
-                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void dbAction(row.id, "restart"); }}>Restart</button>
-                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void copyConnection(row); }}>Copy URL</button>
-                  <button className="ghost logout xsmall" style={{ marginLeft: "auto" }} onClick={(e) => { e.stopPropagation(); void deleteDb(row); }}>Delete</button>
+                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void dbAction(row.id, "start"); }} data-tooltip="Start database"><Play size={14} /></button>
+                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void dbAction(row.id, "stop"); }} data-tooltip="Stop database"><Square size={14} /></button>
+                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void dbAction(row.id, "restart"); }} data-tooltip="Restart database"><RotateCw size={14} /></button>
+                  <button className="ghost xsmall" onClick={(e) => { e.stopPropagation(); void copyConnection(row); }} data-tooltip="Copy URL"><Copy size={14} /></button>
+                  <button className="ghost logout xsmall" style={{ marginLeft: "auto" }} onClick={(e) => { e.stopPropagation(); void deleteDb(row); }} data-tooltip="Delete database"><Trash2 size={14} /></button>
                 </div>
               </div>
             );
@@ -203,11 +240,32 @@ export function DatabasesPage() {
       {selectedDb && (
         <section className="card management-panel" style={{ marginTop: "3rem" }}>
           <header className="section-title">
-            <h3>Management: {selectedDb.name}</h3>
             <div className="row">
-              <button onClick={() => void runBackup(selectedDb.id)}>Manual Backup</button>
+              <Database size={18} />
+              <h3>Database Console: {selectedDb.name}</h3>
+              <StatusBadge status={selectedDb.container_status?.state ?? "stopped"} />
+            </div>
+            <div className="row">
+              <button onClick={() => void dbAction(selectedDb.id, "start")}><Play size={16} /> Start</button>
+              <button onClick={() => void dbAction(selectedDb.id, "restart")}><RotateCw size={16} /> Restart</button>
+              <button onClick={() => void runBackup(selectedDb.id)}><FileClock size={16} /> Manual Backup</button>
             </div>
           </header>
+
+          <div className="database-console-strip">
+            <div>
+              <span>Connection</span>
+              <button className="connection-copy" onClick={() => void copyConnection(selectedDb)}>{selectedDb.connection_string}</button>
+            </div>
+            <div>
+              <span>Linked services</span>
+              <strong>{linkedServices.length || "None"}</strong>
+            </div>
+            <div>
+              <span>Container</span>
+              <strong>{selectedDb.container_status?.health ?? selectedDb.container_status?.state ?? "unknown"}</strong>
+            </div>
+          </div>
 
           <div className="grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
              <div className="sub-section">
@@ -258,7 +316,7 @@ export function DatabasesPage() {
 
           {dbLogs && (
             <div className="logs-section" style={{ marginTop: "2rem", paddingTop: "2rem", borderTop: "1px solid var(--border-subtle)" }}>
-              <h4 className="metric-label">Live Output</h4>
+              <h4 className="metric-label"><ScrollText size={14} /> Container Logs</h4>
               <div className="logs-viewer" style={{ height: "150px" }}>{dbLogs}</div>
             </div>
           )}
@@ -268,6 +326,35 @@ export function DatabasesPage() {
       {showModal && <CreateDatabaseModal projects={projects} onClose={() => setShowModal(false)} onCreated={() => void load()} />}
 
       <style dangerouslySetInnerHTML={{ __html: `
+        .databases-page .database-summary {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 1rem;
+          margin-bottom: 2rem;
+        }
+        .databases-page .database-summary-item {
+          display: grid;
+          grid-template-columns: auto 1fr;
+          gap: 0.25rem 0.75rem;
+          align-items: center;
+          padding: 1rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-md);
+          background: var(--bg-card);
+        }
+        .databases-page .database-summary-item svg {
+          grid-row: span 2;
+          color: var(--accent);
+        }
+        .databases-page .database-summary-item strong {
+          color: var(--text-primary);
+          font-size: 1.4rem;
+          line-height: 1;
+        }
+        .databases-page .database-summary-item span {
+          color: var(--text-muted);
+          font-size: 0.75rem;
+        }
         .databases-page .active-border { border-color: var(--accent) !important; }
         .databases-page .connection-string { 
           background: var(--bg-sunken); 
@@ -277,10 +364,52 @@ export function DatabasesPage() {
           opacity: 0.7;
         }
         .databases-page .connection-string:hover { opacity: 1; color: var(--accent-light); }
+        .databases-page .database-linked-services {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.4rem;
+          min-height: 1.65rem;
+        }
+        .databases-page .database-console-strip {
+          display: grid;
+          grid-template-columns: minmax(0, 2fr) repeat(2, minmax(140px, 1fr));
+          gap: 1rem;
+          margin: 1rem 0 2rem;
+        }
+        .databases-page .database-console-strip > div {
+          padding: 1rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-md);
+          background: var(--bg-sunken);
+          min-width: 0;
+        }
+        .databases-page .database-console-strip span {
+          display: block;
+          color: var(--text-muted);
+          font-size: 0.72rem;
+          font-weight: 800;
+          text-transform: uppercase;
+          margin-bottom: 0.4rem;
+        }
+        .databases-page .connection-copy {
+          max-width: 100%;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: var(--text-primary);
+          font-family: var(--font-mono);
+          font-size: 0.75rem;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          display: block;
+        }
         .databases-page .list { display: flex; flex-direction: column; gap: 0.25rem; }
         .databases-page .list-item { padding: 0.5rem; border-bottom: 1px solid var(--border-subtle); }
         .databases-page .tiny { font-size: 0.7rem; }
         .databases-page .xsmall { padding: 0.2rem 0.5rem; font-size: 0.72rem; }
+        @media (max-width: 760px) {
+          .databases-page .database-console-strip { grid-template-columns: 1fr; }
+        }
       `}} />
     </div>
   );

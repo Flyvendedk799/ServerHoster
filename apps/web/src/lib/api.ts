@@ -20,15 +20,18 @@ export type ApiOptions = RequestInit & { silent?: boolean };
 export async function api<T>(path: string, init?: ApiOptions): Promise<T> {
   const token = getAuthToken();
   const { silent, ...fetchInit } = init ?? {};
+  const headers = new Headers(fetchInit.headers);
+  if (fetchInit.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   let response: Response;
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       ...fetchInit,
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(fetchInit.headers ?? {})
-      }
+      headers
     });
   } catch (networkError) {
     const msg = networkError instanceof Error ? networkError.message : String(networkError);

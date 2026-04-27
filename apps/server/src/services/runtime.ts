@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { nowIso, getService, getServiceEnv, insertLog, serializeError, updateServiceStatus } from "../lib/core.js";
+import { broadcast, nowIso, getService, getServiceEnv, insertLog, serializeError, updateServiceStatus } from "../lib/core.js";
 import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { buildConnectionString, getDatabase } from "./databases.js";
@@ -44,25 +44,83 @@ async function pullImage(ctx: AppContext, image: string): Promise<void> {
   });
 }
 
-async function getOrCreateContainer(ctx: AppContext, serviceId: string, image: string, command: string, port: number, envList: string[]) {
+function shouldPullImage(image: string): boolean {
+  return !image.startsWith("survhub-build-");
+}
+
+async function getContainerPort(ctx: AppContext, image: string, hostPort: number): Promise<number> {
+  if (!hostPort) return 0;
+  try {
+    const imageInfo = await ctx.docker.getImage(image).inspect();
+    const exposedPorts = Object.keys(imageInfo.Config?.ExposedPorts ?? {})
+      .map((key) => Number(key.split("/")[0]))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (exposedPorts.includes(hostPort)) return hostPort;
+    if (exposedPorts.length === 1) return exposedPorts[0];
+  } catch {
+    // If image inspection fails, fall back to the user-facing port.
+  }
+  return hostPort;
+}
+
+async function getOrCreateContainer(
+  ctx: AppContext,
+  serviceId: string,
+  image: string,
+  command: string,
+  hostPort: number,
+  containerPort: number,
+  envList: string[]
+) {
   const containerName = `survhub-${serviceId}`;
+  const exposedPort = containerPort ? `${containerPort}/tcp` : undefined;
   try {
     const existing = ctx.docker.getContainer(containerName);
-    await existing.inspect();
-    return existing;
+    const info = await existing.inspect();
+    const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
+    const mappedToRequestedPort = !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
+    if (mappedToRequestedPort) return existing;
+    try { await existing.stop({ t: 10 }); } catch {}
+    await existing.remove({ force: true });
+    insertLog(ctx, serviceId, "info", `Recreated Docker container to publish host port ${hostPort} to container port ${containerPort}.`);
   } catch {
-    return ctx.docker.createContainer({
-      Image: image,
-      name: containerName,
-      Cmd: command ? command.split(/\s+/) : undefined,
-      Env: envList,
-      ExposedPorts: port ? { [`${port}/tcp`]: {} } : undefined,
-      HostConfig: {
-        PortBindings: port ? { [`${port}/tcp`]: [{ HostPort: String(port) }] } : undefined,
-        RestartPolicy: { Name: "unless-stopped" }
-      }
-    });
+    // Container does not exist yet.
   }
+
+  return ctx.docker.createContainer({
+    Image: image,
+    name: containerName,
+    Cmd: command ? command.split(/\s+/) : undefined,
+    Env: envList,
+    ExposedPorts: exposedPort ? { [exposedPort]: {} } : undefined,
+    HostConfig: {
+      PortBindings: exposedPort && hostPort ? { [exposedPort]: [{ HostPort: String(hostPort) }] } : undefined,
+      RestartPolicy: { Name: "unless-stopped" }
+    }
+  });
+}
+
+async function waitForContainerReadiness(ctx: AppContext, serviceId: string, container: Awaited<ReturnType<typeof getOrCreateContainer>>): Promise<void> {
+  const deadline = Date.now() + 30000;
+  let lastHealth = "";
+
+  while (Date.now() < deadline) {
+    const info = await container.inspect();
+    const health = info.State?.Health?.Status;
+    if (health && health !== lastHealth) {
+      lastHealth = health;
+      insertLog(ctx, serviceId, health === "unhealthy" ? "warn" : "info", `Docker healthcheck: ${health}`);
+      broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "healthcheck", status: health });
+    }
+    if (health === "healthy") return;
+    if (!health && info.State?.Running) return;
+    if (info.State?.Status === "exited" || info.State?.Status === "dead") {
+      throw new Error(`Container exited during startup (${info.State.Status})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  insertLog(ctx, serviceId, "warn", "Docker container started, but health did not report healthy within 30s.");
 }
 
 export async function withLock<T>(ctx: AppContext, serviceId: string, task: () => Promise<T>): Promise<T> {
@@ -81,6 +139,9 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   const cwd = String(service.working_dir || process.cwd());
   if (!fs.existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
 
+  updateServiceStatus(ctx, serviceId, "starting");
+  insertLog(ctx, serviceId, "info", `Starting process service from ${cwd}`);
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", message: `Starting ${command}` });
   ctx.manuallyStopped.delete(serviceId);
   const serviceEnvFromLinks = getServiceEnvWithLinks(ctx, serviceId);
   const portEnv = service.port && !serviceEnvFromLinks.PORT ? { PORT: String(service.port) } : {};
@@ -153,26 +214,46 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   const service = getService(ctx, serviceId);
   if (service.type !== "docker") throw new Error("Service is not a docker service");
   const image = String(service.docker_image || "alpine:latest");
+  if (!service.docker_image) {
+    throw new Error(
+      "Docker image is not available for this service yet. Redeploy it now that Docker is installed so LocalSURV can build the image."
+    );
+  }
   const command = String(service.command || "").trim();
   const port = Number(service.port || 0);
   const dockerServiceEnv = getServiceEnvWithLinks(ctx, serviceId);
-  if (port && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(port);
-  const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
 
-  try {
-    await pullImage(ctx, image);
-  } catch (error) {
-    insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
+  updateServiceStatus(ctx, serviceId, "starting");
+  insertLog(ctx, serviceId, "info", `Starting Docker service with image ${image}`);
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", image, port });
+
+  if (shouldPullImage(image)) {
+    try {
+      insertLog(ctx, serviceId, "info", `Pulling Docker image ${image}...`);
+      broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "pulling", image });
+      await pullImage(ctx, image);
+    } catch (error) {
+      insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
+    }
   }
-  const container = await getOrCreateContainer(ctx, serviceId, image, command, port, envList);
+  const containerPort = await getContainerPort(ctx, image, port);
+  if (containerPort && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(containerPort);
+  const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
+  if (port && containerPort && port !== containerPort) {
+    insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
+  }
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
+  const container = await getOrCreateContainer(ctx, serviceId, image, command, port, containerPort, envList);
   try {
     await container.start();
   } catch (error) {
     const msg = serializeError(error);
     if (!msg.includes("already started")) throw error;
   }
+  await waitForContainerReadiness(ctx, serviceId, container);
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Docker container running with image ${image}`);
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "live", image, port, containerPort });
 
   // Auto-start quick tunnel if enabled
   const qtRowDocker = ctx.db.prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
@@ -187,6 +268,9 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
 export async function stopService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
   ctx.manuallyStopped.add(serviceId);
+  updateServiceStatus(ctx, serviceId, "stopping");
+  insertLog(ctx, serviceId, "info", "Stopping service...");
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "stopping" });
 
   // Stop quick tunnel if running
   import("./cloudflare.js").then(({ stopQuickTunnel }) => {
@@ -205,19 +289,24 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
     }
   }
   updateServiceStatus(ctx, serviceId, "stopped", 0);
+  insertLog(ctx, serviceId, "info", "Service stopped.");
 }
 
-export async function startService(ctx: AppContext, serviceId: string): Promise<void> {
+async function startServiceRuntime(ctx: AppContext, serviceId: string): Promise<void> {
   // Start dependencies first (already-running ones are skipped).
   await startDependencies(ctx, serviceId, new Set());
   const service = getService(ctx, serviceId);
-  await withLock(ctx, serviceId, async () => {
-    if (service.type === "docker") {
-      await startDockerService(ctx, serviceId);
-    } else {
-      await startProcessService(ctx, serviceId);
-    }
-  });
+  if (service.type === "docker") {
+    await startDockerService(ctx, serviceId);
+  } else {
+    await startProcessService(ctx, serviceId);
+  }
+}
+
+export async function startService(ctx: AppContext, serviceId: string): Promise<void> {
+  insertLog(ctx, serviceId, "info", "Start requested.");
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "queued", action: "start" });
+  await withLock(ctx, serviceId, () => startServiceRuntime(ctx, serviceId));
 }
 
 export function parseDependsOn(raw: unknown): string[] {
@@ -277,9 +366,11 @@ export function getDependents(ctx: AppContext, serviceId: string): string[] {
 }
 
 export async function restartService(ctx: AppContext, serviceId: string): Promise<void> {
+  insertLog(ctx, serviceId, "info", "Restart requested.");
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "queued", action: "restart" });
   await withLock(ctx, serviceId, async () => {
     await stopService(ctx, serviceId);
-    await startService(ctx, serviceId);
+    await startServiceRuntime(ctx, serviceId);
   });
 }
 

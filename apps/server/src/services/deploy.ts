@@ -52,6 +52,10 @@ export async function runBuildPipeline(
 ): Promise<{ status: "success" | "failed"; buildLog: string; artifactPath: string }> {
   const deploymentId = opts.deploymentId;
   const env = { ...process.env, ...getServiceEnv(ctx, serviceId) };
+  const serviceBuild = ctx.db
+    .prepare("SELECT dockerfile FROM services WHERE id = ?")
+    .get(serviceId) as { dockerfile?: string } | undefined;
+  const dockerfile = String(serviceBuild?.dockerfile ?? "").trim();
   const buildType = detectBuildType(projectPath);
   let buildLog = `Detected build type: ${buildType}\n`;
   let artifactPath = projectPath;
@@ -90,13 +94,16 @@ export async function runBuildPipeline(
   } else if (buildType === "docker") {
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
-    const imageTag = `survhub-build-${serviceId}:latest`;
-    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ docker build -t ${imageTag} .\n`, "stdout");
-    const build = await runCommand(`docker build -t ${imageTag} .`, projectPath, env, {
+    const imageSafeServiceId = serviceId.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
+    const imageTag = `survhub-build-${imageSafeServiceId}:latest`;
+    const dockerfileArg = dockerfile ? ` -f ${JSON.stringify(dockerfile)}` : "";
+    const buildCommand = `docker build${dockerfileArg} -t ${imageTag} .`;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${buildCommand}\n`, "stdout");
+    const build = await runCommand(buildCommand, projectPath, env, {
       timeoutMs: 240000,
       onChunk: stream
     });
-    buildLog += `\n$ docker build -t ${imageTag} .\n${build.output}\n`;
+    buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
     if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
     ctx.db.prepare("UPDATE services SET docker_image = ?, updated_at = ? WHERE id = ?").run(imageTag, nowIso(), serviceId);
   } else if (buildType === "unknown") {
@@ -154,10 +161,14 @@ export async function deployFromGit(
       emitBuildLog(ctx, serviceId, deploymentId, `Cloned repository branch: ${branch}.\n`);
     }
     const buildType = detectBuildType(targetPath);
+    const preferredDockerfile =
+      buildType === "docker" && fs.existsSync(path.join(targetPath, "Dockerfile.frontend"))
+        ? "Dockerfile.frontend"
+        : "";
     const inferred = inferServiceRuntimeDefaults(buildType);
     ctx.db.prepare(
-      "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
-    ).run(inferred.type, inferred.command, targetPath, nowIso(), serviceId);
+      "UPDATE services SET type = ?, command = ?, working_dir = ?, dockerfile = ?, updated_at = ? WHERE id = ?"
+    ).run(inferred.type, inferred.command, targetPath, preferredDockerfile, nowIso(), serviceId);
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
     const result = await runBuildPipeline(ctx, serviceId, targetPath, { deploymentId });
     status = result.status;
