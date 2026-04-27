@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { Download, Eraser, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
@@ -103,73 +104,65 @@ export function ServiceLogsPage() {
   }
 
   return (
-    <section>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-        <h2 style={{ margin: 0 }}>
-          Logs — {service?.name ?? serviceId} <Link to="/services" className="link" style={{ fontSize: "0.85rem", marginLeft: "1rem" }}>← back</Link>
-        </h2>
+    <section className="service-logs-page">
+      <div className="page-header">
+        <div className="title-group">
+          <h2>Terminal Pro</h2>
+          <p className="muted">Live logs for {service?.name ?? serviceId}</p>
+        </div>
+        <Link to="/services" className="button ghost small">Back to Services</Link>
       </div>
 
-      <div className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        <div className="row" style={{ gap: "0.75rem", flexWrap: "wrap" }}>
+      <div className="card terminal-card">
+        <div className="terminal-toolbar">
+          <Terminal size={16} className="text-accent" />
           <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value as LevelFilter)}>
             <option value="all">All levels</option>
             <option value="info">info</option>
             <option value="warn">warn</option>
             <option value="error">error</option>
           </select>
-          <input
-            placeholder="Search (grep)"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ flex: 1, minWidth: "200px" }}
-          />
-          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.9rem" }}>
+          <div className="terminal-search">
+            <Search size={15} />
+            <input
+              placeholder="Search logs..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <label className="toggle-inline">
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
             Auto-scroll
           </label>
-          <button onClick={downloadLogs}>Download .txt</button>
+          <button onClick={downloadLogs}><Download size={15} /> Export</button>
           <button
             onClick={() => setLogs([])}
-            style={{ background: "#334155" }}
             title="Clear buffer (does not delete from server)"
           >
-            Clear view
+            <Eraser size={15} /> Clear
           </button>
         </div>
 
-        <div
-          style={{
-            background: "#020617",
-            border: "1px solid #1e293b",
-            borderRadius: "6px",
-            padding: "0.75rem",
-            fontFamily: "'SFMono-Regular', Menlo, Consolas, monospace",
-            fontSize: "0.82rem",
-            height: "62vh",
-            overflowY: "auto",
-            lineHeight: 1.4
-          }}
-        >
-          {loading && <p style={{ color: "#64748b" }}>Loading logs…</p>}
+        <div className="logs-viewer terminal-pro">
+          {loading && <p className="muted">Loading logs...</p>}
           {!loading && filtered.length === 0 && (
-            <p style={{ color: "#64748b" }}>No log entries match the current filter.</p>
+            <p className="muted">No log entries match the current filter.</p>
           )}
           {filtered.map((log, i) => (
-            <div key={log.id ?? `${log.timestamp}-${i}`} style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              <span style={{ color: "#475569" }}>
+            <div key={log.id ?? `${log.timestamp}-${i}`} className={`log-line level-${log.level ?? "info"}`}>
+              <span className="log-time">
                 {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ""}
               </span>{" "}
-              <span style={{ color: levelColor(log.level), fontWeight: 600 }}>
+              <span className="log-level" style={{ color: levelColor(log.level) }}>
                 [{log.level ?? "info"}]
               </span>{" "}
-              <span style={{ color: "#e2e8f0" }}>{log.message}</span>
+              <span className="log-msg">{log.message}</span>
             </div>
           ))}
           <div ref={bottomRef} />
         </div>
 
-        <div style={{ fontSize: "0.8rem", color: "#64748b" }}>
+        <div className="muted small">
           Showing {filtered.length} of {logs.length} buffered lines. Server keeps the most recent 5000.
         </div>
       </div>

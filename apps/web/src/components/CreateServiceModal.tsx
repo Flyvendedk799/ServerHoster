@@ -44,31 +44,22 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
       toast.success(`Service "${form.name}" created`);
       onCreated();
       onClose();
-    } catch {
-      /* toasted */
-    } finally {
+    } catch { /* toasted */ } finally {
       setLoading(false);
     }
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="card github-deploy-modal" style={{ maxWidth: "540px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="gh-deploy-header">
-          <div className="gh-deploy-title-row">
-            <div style={{ background: "var(--accent-soft)", padding: "0.6rem", borderRadius: "var(--radius-sm)", color: "var(--accent)" }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M2 12h20"/></svg>
-            </div>
-            <div>
-              <h3 style={{ margin: 0 }}>Create New Service</h3>
-              <p className="gh-hint">Manually configure a process, docker container, or static site.</p>
-            </div>
-          </div>
-        </div>
+      <div className="modal-content" style={{ maxWidth: "540px" }} onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <h3>Create New Service</h3>
+          <p className="hint">Manually configure or deploy a custom runtime.</p>
+        </header>
 
-        <div className="gh-step-content">
-          <div className="gh-field-group">
-            <label className="gh-label">Target Project <span className="gh-required">*</span></label>
+        <div className="modal-body">
+          <div className="form-group">
+            <label>Target Project <span className="required">*</span></label>
             <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
@@ -76,17 +67,17 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
             </select>
           </div>
 
-          <div className="gh-field-row">
-            <div className="gh-field-group" style={{ flex: 2 }}>
-              <label className="gh-label">Service Name <span className="gh-required">*</span></label>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Service Name <span className="required">*</span></label>
               <input 
                 placeholder="e.g. my-api" 
                 value={form.name} 
                 onChange={(e) => setForm({ ...form, name: e.target.value })} 
               />
             </div>
-            <div className="gh-field-group" style={{ flex: 1 }}>
-              <label className="gh-label">Port <span className="gh-optional">(optional)</span></label>
+            <div className="form-group" style={{ maxWidth: "120px" }}>
+              <label>Port <span className="optional">(opt)</span></label>
               <input 
                 placeholder="8080" 
                 value={form.port} 
@@ -95,8 +86,8 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
             </div>
           </div>
 
-          <div className="gh-field-group">
-            <label className="gh-label">Service Type</label>
+          <div className="form-group">
+            <label>Deployment Type</label>
             <select 
               value={form.type} 
               onChange={(e) => setForm({ ...form, type: e.target.value as any })}
@@ -108,29 +99,28 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
           </div>
 
           {form.type === "docker" ? (
-            <div className="gh-field-group">
-              <label className="gh-label">Docker Image <span className="gh-required">*</span></label>
+            <div className="form-group">
+              <label>Image Reference <span className="required">*</span></label>
               <input 
-                placeholder="e.g. nginx:latest or my-user/my-repo:tags" 
+                placeholder="e.g. nginx:latest" 
                 value={form.image} 
                 onChange={(e) => setForm({ ...form, image: e.target.value })} 
               />
-              <p className="gh-hint">Supports public images or private ones if logged in via CLI</p>
             </div>
           ) : (
             <>
-              <div className="gh-field-group">
-                <label className="gh-label">Start Command <span className="gh-required">*</span></label>
+              <div className="form-group">
+                <label>Start Command <span className="required">*</span></label>
                 <input 
                   placeholder={form.type === "static" ? "e.g. serve -s dist" : "e.g. node index.js"} 
                   value={form.command} 
                   onChange={(e) => setForm({ ...form, command: e.target.value })} 
                 />
               </div>
-              <div className="gh-field-group">
-                <label className="gh-label">Working Directory <span className="gh-optional">(optional)</span></label>
+              <div className="form-group">
+                <label>Working Dir <span className="optional">(opt)</span></label>
                 <input 
-                  placeholder="/absolute/path/to/app" 
+                  placeholder="/var/www/app" 
                   value={form.workingDir} 
                   onChange={(e) => setForm({ ...form, workingDir: e.target.value })} 
                 />
@@ -138,25 +128,25 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
             </>
           )}
 
-          <label className="gh-toggle" style={{ marginTop: "var(--space-3)" }}>
+          <label className="toggle-group">
             <input
               type="checkbox"
               checked={form.enableQuickTunnel}
               onChange={(e) => setForm({ ...form, enableQuickTunnel: e.target.checked })}
             />
-            <div className="gh-toggle-info">
-              <span className="gh-toggle-title">Enable quick tunnel</span>
-              <span className="gh-toggle-desc">Auto-start a public *.trycloudflare.com URL when this service starts</span>
+            <div className="toggle-info">
+              <span className="toggle-title">Enable public tunnel</span>
+              <span className="toggle-desc">Generate an external Cloudflare URL instantly</span>
             </div>
           </label>
         </div>
 
-        <div className="gh-actions" style={{ marginTop: "var(--space-6)" }}>
+        <footer className="modal-footer">
           <button className="ghost" onClick={onClose} disabled={loading}>Cancel</button>
           <button className="primary" onClick={handleSubmit} disabled={loading}>
-            {loading ? "Creating..." : "Create Service"}
+            {loading ? "Creating..." : "Launch Service"}
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   );

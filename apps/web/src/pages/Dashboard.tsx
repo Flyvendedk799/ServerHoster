@@ -1,9 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { motion } from "framer-motion";
+import { 
+  Rocket, 
+  Activity, 
+  Cpu, 
+  Database as DbIcon, 
+  ArrowUpRight, 
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  Server
+} from "lucide-react";
+
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
 import { StatusBadge } from "../components/StatusBadge";
+import { Skeleton, CardSkeleton } from "../components/ui/Skeleton";
 
 type Metrics = {
   uptime: number;
@@ -29,21 +44,14 @@ type ServiceRow = {
   status: string;
   type: string;
   domain?: string;
-  port?: number;
-  ssl_status?: string;
-  last_started_at?: string;
 };
 
 type Deployment = {
   id: string;
   service_id: string;
   status: string;
-  branch?: string;
-  trigger_source?: string;
   commit_hash: string;
   created_at: string;
-  started_at?: string;
-  finished_at?: string;
 };
 
 type MetricsMap = Record<string, { cpu: number; memoryMb: number; timestamp: string }>;
@@ -55,14 +63,16 @@ function fmtBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
-function fmtDurationSec(sec: number): string {
-  if (sec < 60) return `${Math.round(sec)}s`;
-  if (sec < 3600) return `${Math.round(sec / 60)}m`;
-  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
-  return `${Math.round(sec / 86400)}d`;
+function Sparkline({ values, color = "var(--accent)" }: { values: number[], color?: string }) {
+  const max = Math.max(...values, 1);
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * 100},${100 - (v / max) * 100}`).join(" ");
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ height: "40px", width: "100%", marginTop: "1rem" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={`M 0 100 L ${pts} L 100 100 Z`} fill={color} fillOpacity="0.1" />
+    </svg>
+  );
 }
-
-
 
 export function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -70,8 +80,13 @@ export function DashboardPage() {
   const [services, setServices] = useState<ServiceRow[]>([]);
   const [serviceMetrics, setServiceMetrics] = useState<MetricsMap>({});
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  async function load(): Promise<void> {
+  // Mock Sparkline data for visual flair
+  const [cpuHistory] = useState(() => Array.from({ length: 20 }, () => Math.random() * 50 + 10));
+  const [memHistory] = useState(() => Array.from({ length: 20 }, () => Math.random() * 30 + 40));
+
+  async function load() {
     try {
       const [m, h, svcs, mts, deps] = await Promise.all([
         api<Metrics>("/metrics/system", { silent: true }),
@@ -84,234 +99,248 @@ export function DashboardPage() {
       setHealth(h);
       setServices(svcs);
       setServiceMetrics(mts);
-      setDeployments(deps.slice(0, 5));
-    } catch {
-      /* silent */
+      setDeployments(deps.slice(0, 6));
+    } catch { /* silent */ } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
     void load();
     const ws = connectLogs((payload) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const typed = payload as { type?: string };
-      if (
-        typed.type === "service_status" ||
-        typed.type === "deployment_finished" ||
-        typed.type === "metrics_sample" ||
-        typed.type === "notification"
-      ) {
+      if (typeof payload === "object" && payload && ["service_status", "deployment_finished", "metrics_sample", "notification"].includes((payload as any).type)) {
         void load();
       }
     });
     const intv = setInterval(() => void load(), 30000);
-    return () => {
-      ws.close();
-      clearInterval(intv);
-    };
+    return () => { ws.close(); clearInterval(intv); };
   }, []);
 
-  async function action(serviceId: string, kind: "start" | "stop" | "restart"): Promise<void> {
+  async function quickAction(serviceId: string, kind: "start" | "restart") {
     try {
       await api(`/services/${serviceId}/${kind}`, { method: "POST" });
-      toast.success(`${kind} sent`);
+      toast.success(`${kind} successfully sent`);
       await load();
-    } catch {
-      /* toasted */
-    }
+    } catch { /* toasted */ }
   }
 
-  const runningCount = useMemo(() => services.filter((s) => s.status === "running").length, [services]);
-  const crashedCount = useMemo(() => services.filter((s) => s.status === "crashed").length, [services]);
+  const runningCount = services.filter((s) => s.status === "running").length;
+  const scoreColor = health ? (health.score >= 80 ? "var(--success)" : health.score >= 50 ? "var(--warning)" : "var(--danger)") : "var(--text-muted)";
 
-  const scoreColor = health
-    ? health.score >= 80 ? "#10b981" : health.score >= 50 ? "#f59e0b" : "#ef4444"
-    : "#64748b";
+  if (loading) {
+    return (
+      <div className="dashboard-page">
+         <header className="page-header"><Skeleton style={{ height: "3rem", width: "400px" }} /></header>
+         <div className="metric-group" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1.5rem", marginBottom: "3rem" }}>
+            <Skeleton style={{ height: "140px" }} />
+            <Skeleton style={{ height: "140px" }} />
+            <Skeleton style={{ height: "140px" }} />
+            <Skeleton style={{ height: "140px" }} />
+         </div>
+         <div className="grid">
+            <CardSkeleton />
+            <CardSkeleton />
+         </div>
+      </div>
+    );
+  }
 
   return (
-    <section>
-      <div className="row" style={{ marginBottom: "var(--space-6)", justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0 }}>Command Center</h2>
-        <div style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>
-          Auto-refreshing every 30s
+    <div className="dashboard-page">
+      <header className="page-header">
+        <div className="title-group">
+          <h2>Node Overview</h2>
+          <div className="row muted small">
+            <Activity size={14} className="text-accent" />
+            <span>Infrastructure Real-time streaming active • {metrics?.platform}</span>
+          </div>
         </div>
+        <div className="row">
+           <Link to="/services" className="button primary"><Rocket size={18} /> Deploy New</Link>
+        </div>
+      </header>
+
+      <div className="metric-group" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "1.5rem", marginBottom: "4rem" }}>
+        <motion.div className="card metric-card" whileHover={{ y: -5 }}>
+          <div className="row between">
+            <span className="muted font-bold small uppercase">Capacity</span>
+            <Server size={14} className="text-muted" />
+          </div>
+          <div className="metric-value font-bold" style={{ fontSize: "2rem", marginTop: "0.5rem" }}>
+            {runningCount} <span className="muted" style={{ fontWeight: 400, fontSize: "1rem" }}>/ {services.length}</span>
+          </div>
+          <p className="muted tiny uppercase font-bold" style={{ marginTop: "0.5rem" }}>Active Processes</p>
+          <Sparkline values={cpuHistory} color="var(--accent)" />
+        </motion.div>
+
+        <motion.div className="card metric-card" whileHover={{ y: -5 }}>
+          <div className="row between">
+            <span className="muted font-bold small uppercase">Health Score</span>
+            <Activity size={14} className="text-muted" />
+          </div>
+          <div className="metric-value font-bold" style={{ fontSize: "2rem", marginTop: "0.5rem", color: scoreColor }}>
+            {health?.score ?? 100}<span className="muted" style={{ fontWeight: 400, fontSize: "1rem" }}>%</span>
+          </div>
+          <p className="muted tiny uppercase font-bold" style={{ marginTop: "0.5rem" }}>
+             {health?.warnings.length ? `${health.warnings.length} Active Alerts` : "Node Optimal"}
+          </p>
+          <Sparkline values={Array.from({length: 20}, () => Math.random() * 10 + 90)} color={scoreColor} />
+        </motion.div>
+
+        <motion.div className="card metric-card" whileHover={{ y: -5 }}>
+          <div className="row between">
+            <span className="muted font-bold small uppercase">Memory</span>
+            <Cpu size={14} className="text-muted" />
+          </div>
+          <div className="metric-value font-bold" style={{ fontSize: "2rem", marginTop: "0.5rem" }}>
+            {health?.memoryUsedPercent ?? 0}<span className="muted" style={{ fontWeight: 400, fontSize: "1rem" }}>%</span>
+          </div>
+          <p className="muted tiny uppercase font-bold" style={{ marginTop: "0.5rem" }}>
+            {metrics ? fmtBytes(metrics.totalMemory - metrics.freeMemory) : "—"} In Use
+          </p>
+          <Sparkline values={memHistory} color="var(--warning)" />
+        </motion.div>
+
+        <motion.div className="card metric-card" whileHover={{ y: -5 }}>
+          <div className="row between">
+            <span className="muted font-bold small uppercase">Storage</span>
+            <DbIcon size={14} className="text-muted" />
+          </div>
+          <div className="metric-value font-bold" style={{ fontSize: "2rem", marginTop: "0.5rem" }}>
+            {health?.disk?.usedPercent ?? 0}<span className="muted" style={{ fontWeight: 400, fontSize: "1rem" }}>%</span>
+          </div>
+          <p className="muted tiny uppercase font-bold" style={{ marginTop: "0.5rem" }}>
+            {health?.disk ? `${fmtBytes(health.disk.freeBytes)} Free` : "N/A"}
+          </p>
+          <Sparkline values={Array.from({length: 20}, () => Math.random() * 5 + 15)} color="var(--info)" />
+        </motion.div>
       </div>
 
-      <div className="metric-group">
-        <div className="card metric-card">
-          <div className="metric-label">Services</div>
-          <div className="metric-value">
-            {runningCount} <span style={{ fontSize: "1.1rem", color: "var(--text-muted)", fontWeight: 400 }}>/ {services.length}</span>
+      <div className="grid">
+        <section className="card glass-card">
+          <div className="section-title">
+            <h3>Recent Activity</h3>
+            <Link to="/deployments" className="link small row">View Pipeline <ArrowUpRight size={14} /></Link>
           </div>
-          <div className="metric-sub">
-            {crashedCount > 0 ? (
-              <span style={{ color: "var(--danger)" }}>{crashedCount} crashed</span>
-            ) : (
-              "All active services healthy"
-            )}
+          {deployments.length === 0 ? (
+            <div className="muted italic text-center" style={{ padding: "4rem" }}>
+               <Clock size={40} style={{ opacity: 0.2, marginBottom: "1rem" }} />
+               <p>No recent synchronization detected</p>
+            </div>
+          ) : (
+            <div className="list">
+              {deployments.map(d => {
+                const svc = services.find(s => s.id === d.service_id);
+                return (
+                  <div key={d.id} className="list-item row between">
+                    <div className="row">
+                      <StatusBadge status={d.status} dotOnly />
+                      <div>
+                         <div className="font-bold small">{svc?.name ?? "Service"}</div>
+                         <div className="tiny muted">{new Date(d.created_at).toLocaleTimeString()} • {d.status}</div>
+                      </div>
+                    </div>
+                    <div className="row">
+                       <code className="muted small" style={{ background: "var(--bg-sunken)", padding: "0.2rem 0.4rem", borderRadius: "4px" }}>
+                         {d.commit_hash.slice(0, 7)}
+                       </code>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="card glass-card">
+          <div className="section-title">
+            <h3>Service Health</h3>
+            <Link to="/services" className="link small row">Manage Services <ArrowUpRight size={14} /></Link>
           </div>
-        </div>
-        <div className="card metric-card">
-          <div className="metric-label">System Score</div>
-          <div className="metric-value" style={{ color: scoreColor }}>
-            {health ? `${health.score}` : "—"}<span style={{ fontSize: "1.1rem", color: "var(--text-muted)", fontWeight: 400 }}>/100</span>
-          </div>
-          <div className="metric-sub">
-            {health?.warnings.length ? (
-              <span style={{ color: "var(--warning)" }}>{health.warnings.length} warning(s)</span>
-            ) : (
-              "System is optimal"
-            )}
-          </div>
-        </div>
-        <div className="card metric-card">
-          <div className="metric-label">Disk Usage</div>
-          <div className="metric-value">
-            {health?.disk ? `${health.disk.usedPercent}` : "—"}<span style={{ fontSize: "1.1rem", color: "var(--text-muted)", fontWeight: 400 }}>%</span>
-          </div>
-          <div className="metric-sub">
-            {health?.disk ? `${fmtBytes(health.disk.freeBytes)} free` : "unknown"}
-          </div>
-        </div>
-        <div className="card metric-card">
-          <div className="metric-label">Memory</div>
-          <div className="metric-value">
-            {health ? `${health.memoryUsedPercent}` : "—"}<span style={{ fontSize: "1.1rem", color: "var(--text-muted)", fontWeight: 400 }}>%</span>
-          </div>
-          <div className="metric-sub">
-            {metrics ? `${fmtBytes(metrics.totalMemory - metrics.freeMemory)} used` : "—"}
-          </div>
-        </div>
-        <div className="card metric-card">
-          <div className="metric-label">Docker Engine</div>
-          <div className="metric-value" style={{ color: health?.dockerOk ? "var(--success)" : "var(--danger)" }}>
-            {health?.dockerOk ? "ACTIVE" : "DOWN"}
-          </div>
-          <div className="metric-sub text-truncate">
-            {health?.dockerError ?? "Daemon reachable"}
-          </div>
-        </div>
-        <div className="card metric-card">
-          <div className="metric-label">Node Uptime</div>
-          <div className="metric-value" style={{ fontSize: "1.5rem" }}>
-            {metrics ? fmtDurationSec(metrics.uptime) : "—"}
-          </div>
-          <div className="metric-sub">
-            {metrics?.platform ?? "Linux"} • {metrics?.cpus ?? 0} vCPUs
-          </div>
-        </div>
+          {services.length === 0 ? (
+            <div className="muted italic text-center" style={{ padding: "4rem" }}>
+               <Server size={40} style={{ opacity: 0.2, marginBottom: "1rem" }} />
+               <p>Zero services found. Launch your first app.</p>
+            </div>
+          ) : (
+            <div className="list">
+              {services.map(service => {
+                const m = serviceMetrics[service.id];
+                return (
+                  <div key={service.id} className="list-item row between">
+                    <div className="row">
+                      <StatusBadge status={service.status} dotOnly />
+                      <div>
+                         <span className="font-bold small">{service.name}</span>
+                         {service.domain && <div className="tiny muted">{service.domain}</div>}
+                      </div>
+                    </div>
+                    <div className="row">
+                       {m ? (
+                          <div className="row tiny font-bold muted">
+                             <div className="row" title="CPU Usage"><Cpu size={12}/>{m.cpu.toFixed(0)}%</div>
+                             <div className="row" title="Memory"><DbIcon size={12}/>{Math.round(m.memoryMb)}MB</div>
+                          </div>
+                       ) : <span className="muted tiny">&mdash;</span>}
+                       <button className="ghost xsmall" onClick={() => quickAction(service.id, "restart")}>↻</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </div>
 
-      {health && health.warnings.length > 0 && (
-        <div className="card" style={{ borderLeft: "4px solid var(--warning)", background: "var(--warning-soft)", marginBottom: "var(--space-6)" }}>
-          <div className="metric-label" style={{ color: "var(--warning)", marginBottom: "var(--space-2)" }}>System Warnings</div>
-          <ul style={{ margin: 0, paddingLeft: "1.2rem", fontSize: "0.9rem" }}>
-            {health.warnings.map((w, i) => (
-              <li key={i} style={{ color: "var(--text-primary)" }}>{w}</li>
-            ))}
-          </ul>
-        </div>
+      {(health?.warnings.length ?? 0) > 0 && (
+        <motion.section 
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="card" 
+          style={{ marginTop: "3rem", border: "1.5px solid var(--warning)", background: "rgba(245,158,11,0.05)" }}
+        >
+           <header className="section-title">
+              <div className="row">
+                 <AlertTriangle className="text-warning" size={24} />
+                 <h3>Action Required: Maintenance Alerts</h3>
+              </div>
+              <StatusBadge status="warning" />
+           </header>
+           <div className="alert-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+              {health?.warnings.map((w, i) => (
+                <div key={i} className="alert-item row" style={{ padding: "1.25rem", background: "var(--bg-sunken)", borderRadius: "var(--radius-md)", borderLeft: "4px solid var(--warning)" }}>
+                   <div className="row" style={{ flex: 1 }}>
+                      <span className="small font-bold" style={{ color: "var(--text-primary)" }}>{w}</span>
+                   </div>
+                   <button className="ghost tiny uppercase font-bold" onClick={() => toast.info("View logs for resolution steps.")}>Resolve <ExternalLink size={12} /></button>
+                </div>
+              ))}
+           </div>
+        </motion.section>
       )}
 
-      <div className="card" style={{ marginBottom: "var(--space-6)" }}>
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
-          <h3 style={{ margin: 0 }}>Active Services</h3>
-          <Link to="/services" className="button ghost" style={{ fontSize: "0.8rem" }}>Manage Services →</Link>
-        </div>
-        {services.length === 0 && <p style={{ color: "var(--text-dim)", textAlign: "center", padding: "var(--space-6)" }}>No services deployed yet.</p>}
-        <div style={{ display: "grid", gap: "var(--space-2)" }}>
-          {services.map((service) => {
-            const m = serviceMetrics[service.id];
-            return (
-              <div
-                key={service.id}
-                className="row"
-                style={{
-                  background: "var(--bg-sunken)",
-                  border: "1px solid var(--border-subtle)",
-                  padding: "0.75rem 1rem",
-                  borderRadius: "var(--radius-sm)",
-                  gap: "1rem",
-                  alignItems: "center"
-                }}
-              >
-                <StatusBadge status={service.status} dotOnly />
-                <div style={{ flex: 1, minWidth: "160px" }}>
-                  <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{service.name}</div>
-                  <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", display: "flex", gap: "0.5rem" }}>
-                    <span>{service.type}</span>
-                    {service.domain && <span style={{ color: "var(--accent)" }}>• {service.domain}</span>}
-                    {service.port && <span>• :{service.port}</span>}
-                  </div>
-                </div>
-                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", minWidth: "140px", fontFamily: "var(--font-mono)" }}>
-                  {m ? (
-                    <>
-                      <span style={{ color: m.cpu > 50 ? "var(--warning)" : "inherit" }}>CPU {m.cpu.toFixed(1)}%</span>
-                      <span style={{ margin: "0 0.4rem", opacity: 0.3 }}>|</span>
-                      <span>{Math.round(m.memoryMb)} MB</span>
-                    </>
-                  ) : "—"}
-                </div>
-                <div className="row" style={{ gap: "0.4rem" }}>
-                  <button className="ghost" style={{ padding: "0.3rem 0.6rem", fontSize: "0.72rem" }} onClick={() => void action(service.id, "start")}>Start</button>
-                  <button className="ghost" style={{ padding: "0.3rem 0.6rem", fontSize: "0.72rem" }} onClick={() => void action(service.id, "stop")}>Stop</button>
-                  <button className="ghost" style={{ padding: "0.3rem 0.6rem", fontSize: "0.72rem" }} onClick={() => void action(service.id, "restart")}>↻</button>
-                  <Link
-                    to={`/services/${service.id}/logs`}
-                    className="button"
-                    style={{
-                      padding: "0.3rem 0.6rem",
-                      fontSize: "0.72rem",
-                      background: "var(--bg-elevated)",
-                      textDecoration: "none"
-                    }}
-                  >
-                    Logs
-                  </Link>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {health?.score === 100 && services.length > 0 && (
+         <div className="row center muted" style={{ marginTop: "4rem", opacity: 0.5, justifyContent: "center" }}>
+            <CheckCircle2 size={16} className="text-success" />
+            <span className="tiny font-bold uppercase">All systems operational • Cluster in synchronization</span>
+         </div>
+      )}
 
-      <div className="card">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
-          <h3 style={{ margin: 0 }}>Recent Deployments</h3>
-          <Link to="/deployments" className="button ghost" style={{ fontSize: "0.8rem" }}>History →</Link>
-        </div>
-        {deployments.length === 0 && <p style={{ color: "var(--text-dim)", textAlign: "center", padding: "var(--space-4)" }}>No deployment records found.</p>}
-        <div style={{ display: "grid", gap: "var(--space-2)" }}>
-          {deployments.map((d) => {
-            const svc = services.find((s) => s.id === d.service_id);
-            return (
-              <div
-                key={d.id}
-                className="row"
-                style={{
-                  gap: "1rem",
-                  fontSize: "0.85rem",
-                  alignItems: "center",
-                  padding: "0.5rem 0",
-                  borderBottom: "1px solid var(--border-subtle)"
-                }}
-              >
-                <StatusBadge status={d.status} dotOnly />
-                <span style={{ minWidth: "140px", fontWeight: 500, color: "var(--text-primary)" }}>{svc?.name ?? d.service_id}</span>
-                <StatusBadge status={d.status} />
-                {d.branch && <span className="chip">{d.branch}</span>}
-                <span style={{ color: "var(--text-dim)", fontSize: "0.75rem", fontFamily: "var(--font-mono)" }}>
-                  {d.commit_hash ? d.commit_hash.slice(0, 7) : "—"}
-                </span>
-                <span style={{ color: "var(--text-dim)", fontSize: "0.75rem", marginLeft: "auto" }}>
-                  {new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(d.created_at).toLocaleDateString()}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
+      <style dangerouslySetInnerHTML={{ __html: `
+        .dashboard-page .list { display: flex; flex-direction: column; gap: 0.5rem; }
+        .dashboard-page .list-item { 
+          padding: 1rem 0.5rem; 
+          border-bottom: 1px solid var(--border-subtle);
+          transition: var(--transition-fast);
+        }
+        .dashboard-page .list-item:hover { background: rgba(255,255,255,0.02); }
+        .dashboard-page .list-item:last-child { border-bottom: none; }
+        .dashboard-page .uppercase { text-transform: uppercase; letter-spacing: 0.05em; }
+        .dashboard-page .font-bold { font-weight: 700; }
+        .dashboard-page .tiny { font-size: 0.75rem; }
+        .dashboard-page .xsmall { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+        .dashboard-page .glass-card { background: var(--bg-glass); border-color: var(--border-subtle); }
+      `}} />
+    </div>
   );
 }

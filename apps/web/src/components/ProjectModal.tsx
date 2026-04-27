@@ -46,50 +46,44 @@ export function ProjectModal({ project, onClose, onSaved }: Props) {
       }
       onSaved();
       onClose();
-    } catch {
-      /* toasted */
-    } finally {
+    } catch { /* toasted */ } finally {
       setLoading(false);
     }
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="card premium-modal" style={{ maxWidth: "500px" }} onClick={(e) => e.stopPropagation()}>
-        <div className="gh-deploy-header">
-          <div className="gh-deploy-title-row">
-            <div style={{ background: "var(--accent-soft)", padding: "0.6rem", borderRadius: "var(--radius-sm)", color: "var(--accent)" }}>
+      <div className="modal-content" style={{ maxWidth: "500px" }} onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+           <div className="row">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            </div>
-            <div>
-              <h3 style={{ margin: 0 }}>{project ? "Edit Project" : "New Project"}</h3>
-              <p className="gh-hint">Organize your services into logical groups.</p>
-            </div>
-          </div>
-        </div>
+              <h3>{project ? "Modify Project" : "New Environment"}</h3>
+           </div>
+           <p className="hint">Group related services and databases into a single workspace.</p>
+        </header>
 
-        <div className="gh-step-content">
-          <div className="gh-field-group">
-            <label className="gh-label">Project Name <span className="gh-required">*</span></label>
+        <div className="modal-body">
+          <div className="form-group">
+            <label>Workspace Name <span className="required">*</span></label>
             <input 
-              placeholder="e.g. Production API" 
+              placeholder="e.g. My Website" 
               value={form.name} 
               onChange={(e) => setForm({ ...form, name: e.target.value })} 
             />
           </div>
 
-          <div className="gh-field-group">
-            <label className="gh-label">Description <span className="gh-optional">(optional)</span></label>
+          <div className="form-group">
+            <label>Purpose / Description</label>
             <textarea 
-              placeholder="What is this project for?" 
+              placeholder="Primary production stack for client X..." 
               value={form.description} 
               onChange={(e) => setForm({ ...form, description: e.target.value })} 
               rows={3}
             />
           </div>
 
-          <div className="gh-field-group">
-            <label className="gh-label">Git Repository URL <span className="gh-optional">(optional)</span></label>
+          <div className="form-group">
+            <label>Meta: Repository URL <span className="optional">(opt)</span></label>
             <input 
               placeholder="https://github.com/user/project" 
               value={form.gitUrl} 
@@ -98,12 +92,12 @@ export function ProjectModal({ project, onClose, onSaved }: Props) {
           </div>
         </div>
 
-        <div className="gh-actions">
+        <footer className="modal-footer">
           <button className="ghost" onClick={onClose} disabled={loading}>Cancel</button>
           <button className="primary" onClick={handleSubmit} disabled={loading}>
-            {loading ? "Saving..." : project ? "Save Project" : "Create Project"}
+            {loading ? "Saving..." : project ? "Update Project" : "Create Project"}
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   );

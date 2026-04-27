@@ -42,17 +42,147 @@ const directDeploySchema = z.object({
   port: z.number().int().optional(),
   startAfterDeploy: z.boolean().default(false),
   domain: z.string().optional(),
-  autoPull: z.boolean().default(true)
+  autoPull: z.boolean().default(true),
+  enableQuickTunnel: z.boolean().default(false)
 });
 
 const localDeploySchema = z.object({
   projectId: z.string(),
   name: z.string().min(1),
   localPath: z.string().min(1),
+  command: z.string().optional(),
   port: z.number().int().optional(),
   startAfterDeploy: z.boolean().default(false),
   enableQuickTunnel: z.boolean().default(false)
 });
+
+const localProjectScanSchema = z.object({
+  localPath: z.string().min(1)
+});
+
+type DevServerCandidate = {
+  id: string;
+  label: string;
+  command: string;
+  source: string;
+  port?: number;
+  recommended?: boolean;
+};
+
+function normalizeProjectName(localPath: string): string {
+  return path.basename(localPath).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "local-app";
+}
+
+function extractPort(command: string): number | undefined {
+  const envMatch = command.match(/\bPORT=(\d{2,5})\b/);
+  if (envMatch) return Number(envMatch[1]);
+  const flagMatch = command.match(/(?:--port|-p)\s+(\d{2,5})\b/);
+  if (flagMatch) return Number(flagMatch[1]);
+  return undefined;
+}
+
+function pushCandidate(candidates: DevServerCandidate[], candidate: DevServerCandidate): void {
+  if (candidates.some((item) => item.command === candidate.command)) return;
+  candidates.push(candidate);
+}
+
+function scanLocalProject(localPath: string): {
+  name: string;
+  buildType: string;
+  candidates: DevServerCandidate[];
+  warnings: string[];
+  files: string[];
+} {
+  const resolved = path.resolve(localPath);
+  if (!fs.existsSync(resolved)) throw new Error(`Local path does not exist: ${resolved}`);
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) throw new Error(`Path is not a directory: ${resolved}`);
+
+  const files = fs.readdirSync(resolved).slice(0, 200);
+  const candidates: DevServerCandidate[] = [];
+  const warnings: string[] = [];
+  const packagePath = path.join(resolved, "package.json");
+  const hasDockerfile = files.includes("Dockerfile");
+  const hasRequirements = files.includes("requirements.txt");
+  const hasPyproject = files.includes("pyproject.toml");
+
+  if (fs.existsSync(packagePath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8")) as {
+        scripts?: Record<string, string>;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      const scripts = pkg.scripts ?? {};
+      const preferred = ["dev", "start", "serve", "preview", "watch"];
+      for (const scriptName of preferred) {
+        if (!scripts[scriptName]) continue;
+        const command = `npm run ${scriptName}`;
+        pushCandidate(candidates, {
+          id: `npm-${scriptName}`,
+          label: `npm script: ${scriptName}`,
+          command,
+          source: scripts[scriptName],
+          port: extractPort(scripts[scriptName]),
+          recommended: candidates.length === 0 && (scriptName === "dev" || scriptName === "start")
+        });
+      }
+      for (const [scriptName, scriptValue] of Object.entries(scripts)) {
+        if (preferred.includes(scriptName)) continue;
+        if (!/(dev|serve|start|preview|watch|server)/i.test(scriptName) && !/(vite|next|astro|nuxt|remix|svelte|serve|node|tsx|ts-node)/i.test(scriptValue)) continue;
+        pushCandidate(candidates, {
+          id: `npm-${scriptName}`,
+          label: `npm script: ${scriptName}`,
+          command: `npm run ${scriptName}`,
+          source: scriptValue,
+          port: extractPort(scriptValue)
+        });
+      }
+      const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+      if (deps.vite && !candidates.some((item) => item.command === "npm run dev")) {
+        pushCandidate(candidates, { id: "vite-dev", label: "Vite dev server", command: "npm run dev", source: "vite", port: 5173, recommended: true });
+      }
+      if (deps.next && !candidates.some((item) => item.command === "npm run dev")) {
+        pushCandidate(candidates, { id: "next-dev", label: "Next.js dev server", command: "npm run dev", source: "next dev", port: 3000, recommended: true });
+      }
+    } catch (error) {
+      warnings.push(`package.json could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (hasRequirements || hasPyproject) {
+    if (files.includes("main.py")) {
+      pushCandidate(candidates, { id: "python-main", label: "Python app", command: "python main.py", source: "main.py", recommended: candidates.length === 0 });
+    }
+    if (files.includes("app.py")) {
+      pushCandidate(candidates, { id: "python-app", label: "Python app", command: "python app.py", source: "app.py", recommended: candidates.length === 0 });
+    }
+    if (files.includes("manage.py")) {
+      pushCandidate(candidates, { id: "django", label: "Django dev server", command: "python manage.py runserver 0.0.0.0:$PORT", source: "manage.py", port: 8000 });
+    }
+    if (files.includes("main.py") || files.includes("app.py")) {
+      const moduleName = files.includes("main.py") ? "main" : "app";
+      pushCandidate(candidates, { id: "uvicorn", label: "Uvicorn ASGI server", command: `python -m uvicorn ${moduleName}:app --host 0.0.0.0 --port $PORT`, source: `${moduleName}.py`, port: 8000 });
+    }
+  }
+
+  if (hasDockerfile) {
+    pushCandidate(candidates, { id: "docker", label: "Dockerfile", command: "", source: "Dockerfile", recommended: candidates.length === 0 });
+  }
+
+  if (candidates.length === 0) {
+    warnings.push("No obvious dev server script was found. Add a command manually before launching.");
+  }
+
+  const buildType = hasDockerfile ? "docker" : fs.existsSync(packagePath) ? "node" : hasRequirements || hasPyproject ? "python" : "unknown";
+  return {
+    name: normalizeProjectName(resolved),
+    buildType,
+    candidates,
+    warnings,
+    files
+  };
+}
 
 export function registerServiceRoutes(ctx: AppContext): void {
   ctx.app.get("/services", async () => {
@@ -79,6 +209,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     return service;
   });
 
+  ctx.app.post("/services/scan-local-project", async (req) => {
+    const p = localProjectScanSchema.parse(req.body);
+    return scanLocalProject(p.localPath);
+  });
+
   ctx.app.post("/services/deploy-from-local", async (req) => {
     const p = localDeploySchema.parse(req.body);
     const createdAt = nowIso();
@@ -98,7 +233,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
         p.enableQuickTunnel ? 1 : 0
       );
 
-    const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath);
+    const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath, "manual", { command: p.command });
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
 
     if (p.enableQuickTunnel && p.startAfterDeploy && deployment.status === "success") {
@@ -543,8 +678,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const assignedPort = p.port ?? await findFreePort(3000, 3999);
     ctx.db.prepare(`INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
-      auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, github_repo_url, github_branch, github_auto_pull
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, github_repo_url, github_branch, github_auto_pull,
+      quick_tunnel_enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       serviceId,
       p.projectId,
       p.name,
@@ -563,11 +699,21 @@ export function registerServiceRoutes(ctx: AppContext): void {
       createdAt,
       p.repoUrl,
       p.branch,
-      p.autoPull ? 1 : 0
+      p.autoPull ? 1 : 0,
+      p.enableQuickTunnel ? 1 : 0
     );
 
     const deployment = await deployFromGit(ctx, serviceId, p.repoUrl, p.branch);
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
+
+    if (p.enableQuickTunnel && p.startAfterDeploy && deployment.status === "success") {
+      try {
+        const { startQuickTunnel } = await import("../services/cloudflare.js");
+        startQuickTunnel(ctx, serviceId, assignedPort);
+      } catch (err) {
+        insertLog(ctx, serviceId, "warn", `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     if (p.domain) {
       const domain = p.domain.toLowerCase();

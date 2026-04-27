@@ -7,6 +7,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import Docker from "dockerode";
 import httpProxy from "http-proxy";
+import { ZodError } from "zod";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import type { AppContext } from "./types.js";
@@ -97,6 +98,14 @@ export async function buildApp(): Promise<AppContext> {
   };
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        error: "Validation failed",
+        fields: error.flatten().fieldErrors,
+        details: error.errors
+      });
+    }
+    app.log.error(error);
     reply.code(500).send({ error: serializeError(error) });
   });
 
@@ -198,7 +207,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/ws", "/.well-known", "/onboarding", "/service-templates", "/project-templates"
   ];
 
-  app.addHook("onRequest", async (req, reply) => {
+  app.addHook("onRequest", async (req: any, reply: any) => {
     if (req.method !== "GET" && req.method !== "HEAD") return;
     const url = (req.raw.url ?? "/").split("?")[0];
     if (reservedPrefixes.some((p) => url === p || url.startsWith(`${p}/`))) return;

@@ -18,9 +18,14 @@ function requestPath(url: string): string {
 }
 
 export function registerAuthRoutes(ctx: AppContext): void {
+  ctx.app.get("/auth/status", async () => {
+    const userCount = ctx.db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
+    return { bootstrapped: userCount.count > 0 };
+  });
+
   ctx.app.addHook("onRequest", async (req, reply) => {
     const path = requestPath(req.url);
-    if (path === "/health" || path === "/auth/login" || path === "/onboarding" || path === "/auth/bootstrap") return;
+    if (path === "/health" || path === "/auth/login" || path === "/onboarding" || path === "/auth/bootstrap" || path === "/auth/status") return;
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace(/^Bearer\s+/i, "") ?? "";
     if (!isAuthorizedToken(ctx, token)) {

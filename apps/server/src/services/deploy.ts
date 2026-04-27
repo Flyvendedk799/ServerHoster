@@ -262,7 +262,8 @@ export async function deployFromLocalPath(
   ctx: AppContext,
   serviceId: string,
   localPath: string,
-  trigger: DeployTrigger = "manual"
+  trigger: DeployTrigger = "manual",
+  options: { command?: string } = {}
 ) {
   if (!fs.existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
   if (!fs.statSync(localPath).isDirectory()) throw new Error(`Path is not a directory: ${localPath}`);
@@ -284,9 +285,10 @@ export async function deployFromLocalPath(
   try {
     const buildType = detectBuildType(localPath);
     const inferred = inferServiceRuntimeDefaults(buildType);
+    const command = options.command !== undefined ? options.command : inferred.command;
     ctx.db.prepare(
       "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
-    ).run(inferred.type, inferred.command, localPath, nowIso(), serviceId);
+    ).run(inferred.type, command, localPath, nowIso(), serviceId);
 
     emitBuildLog(ctx, serviceId, deploymentId, `Detected build type: ${buildType}\n`);
     const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId });

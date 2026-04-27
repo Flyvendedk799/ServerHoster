@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, it, expect } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
 
@@ -42,15 +42,17 @@ globalThis.localStorage = {
 } as Storage;
 
 describe("App smoke", () => {
+  afterEach(() => cleanup());
+
   it("renders primary navigation", () => {
     render(
       <MemoryRouter>
         <App />
       </MemoryRouter>
     );
-    expect(screen.getByText("Dashboard")).toBeTruthy();
-    expect(screen.getByText("Services")).toBeTruthy();
-    expect(screen.getByText("Projects")).toBeTruthy();
-    expect(screen.getByText("Settings")).toBeTruthy();
+    expect(screen.getAllByText("Dashboard").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Services").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Projects").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Settings").length).toBeGreaterThan(0);
   });
 });

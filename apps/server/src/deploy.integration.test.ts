@@ -233,3 +233,106 @@ test(
     }
   }
 );
+
+test("scan-local-project detects npm dev servers", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-local-scan-"));
+  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({
+    name: "scan-fixture",
+    version: "1.0.0",
+    private: true,
+    scripts: {
+      dev: "vite --host 0.0.0.0 --port 5177",
+      start: "node server.js"
+    },
+    devDependencies: { vite: "^6.0.0" }
+  }, null, 2));
+
+  const ctx = await buildApp();
+  try {
+    ctx.db.prepare("DELETE FROM sessions").run();
+    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { password: "test-pass" } });
+    const token = login.json().token as string;
+
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: "/services/scan-local-project",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { localPath: tmp }
+    });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as {
+      name: string;
+      buildType: string;
+      candidates: Array<{ command: string; port?: number; recommended?: boolean }>;
+    };
+    assert.equal(body.name, path.basename(tmp).toLowerCase());
+    assert.equal(body.buildType, "node");
+    assert.ok(body.candidates.some((candidate) => candidate.command === "npm run dev" && candidate.port === 5177 && candidate.recommended));
+    assert.ok(body.candidates.some((candidate) => candidate.command === "npm run start"));
+  } finally {
+    await gracefulShutdown(ctx);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("deploy-from-local stores selected command and tunnel mode", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-local-deploy-"));
+  fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({
+    name: "local-deploy-fixture",
+    version: "1.0.0",
+    private: true,
+    scripts: {
+      dev: "node server.js",
+      build: "node -e \"process.exit(0)\""
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(tmp, "server.js"), "console.log('fixture server');\n");
+
+  const ctx = await buildApp();
+  try {
+    ctx.db.prepare("DELETE FROM sessions").run();
+    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
+    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { password: "test-pass" } });
+    const token = login.json().token as string;
+
+    const proj = await ctx.app.inject({
+      method: "POST",
+      url: "/projects",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: `local-deploy-${Date.now()}` }
+    });
+    assert.equal(proj.statusCode, 200);
+    const projectId = (proj.json() as { id: string }).id;
+
+    const dep = await ctx.app.inject({
+      method: "POST",
+      url: "/services/deploy-from-local",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        projectId,
+        name: `local-svc-${Date.now()}`,
+        localPath: tmp,
+        command: "npm run dev",
+        port: 5177,
+        startAfterDeploy: false,
+        enableQuickTunnel: true
+      }
+    });
+    assert.equal(dep.statusCode, 200);
+    const body = dep.json() as {
+      deployment: { status: string };
+      service: { id: string; command: string; working_dir: string; quick_tunnel_enabled: number; status: string };
+    };
+    assert.equal(body.deployment.status, "success");
+    assert.equal(body.service.command, "npm run dev");
+    assert.equal(body.service.working_dir, tmp);
+    assert.equal(body.service.quick_tunnel_enabled, 1);
+    assert.equal(body.service.status, "stopped");
+
+    cleanupDeployArtifacts(ctx, body.service.id, projectId);
+  } finally {
+    await gracefulShutdown(ctx);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -49,9 +49,8 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
     linkedDatabaseId: service.linked_database_id ?? ""
   });
   const [loading, setLoading] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [otherServices, setOtherServices] = useState<AllService[]>([]);
   const [databases, setDatabases] = useState<Database[]>([]);
+  const [otherServices, setOtherServices] = useState<AllService[]>([]);
 
   useEffect(() => {
     void Promise.all([
@@ -65,7 +64,6 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
 
   async function save() {
     setLoading(true);
-    setFieldErrors({});
     try {
       await api(`/services/${service.id}`, {
         method: "PATCH",
@@ -81,19 +79,10 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
           linkedDatabaseId: form.linkedDatabaseId || null
         })
       });
-      toast.success("Service settings saved");
+      toast.success("Settings updated");
       onUpdated();
       onClose();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Attempt to parse the validation error fields bag
-      try {
-        const parsed = JSON.parse(msg) as { fields?: Record<string, string> };
-        if (parsed.fields) setFieldErrors(parsed.fields);
-      } catch {
-        /* non-JSON error, already toasted by api() */
-      }
-    } finally {
+    } catch { /* toasted */ } finally {
       setLoading(false);
     }
   }
@@ -108,98 +97,92 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Settings: {service.name}</h3>
-        <div className="form">
-          <label>Name</label>
-          <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" style={{ maxWidth: "600px" }} onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <h3>Service Settings</h3>
+          <p className="hint">Configuring <span style={{ color: "var(--accent-light)" }}>{service.name}</span></p>
+        </header>
 
-          <label>Type</label>
-          <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
-            <option value="process">process</option>
-            <option value="docker">docker</option>
-            <option value="static">static</option>
-          </select>
-
-          <label>Environment</label>
-          <select
-            value={form.environment}
-            onChange={(e) => setForm((f) => ({ ...f, environment: e.target.value as "production" | "staging" | "development" }))}
-          >
-            <option value="production">production</option>
-            <option value="staging">staging</option>
-            <option value="development">development</option>
-          </select>
-
-          <label>Domain (Optional)</label>
-          <input value={form.domain} onChange={(e) => setForm((f) => ({ ...f, domain: e.target.value }))} placeholder="myapp.com" />
-          {fieldErrors.domain && <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>{fieldErrors.domain}</div>}
-
-          <label>Internal Port</label>
-          <input value={form.port} onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))} placeholder="3000" />
-          {fieldErrors.port && <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>{fieldErrors.port}</div>}
-
-          <label>Command</label>
-          <input value={form.command} onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))} placeholder="npm start" />
-
-          <label>Working Directory</label>
-          <input value={form.workingDir} onChange={(e) => setForm((f) => ({ ...f, workingDir: e.target.value }))} />
-          {fieldErrors.workingDir && <div style={{ color: "var(--danger)", fontSize: "0.8rem" }}>{fieldErrors.workingDir}</div>}
-
-          <label>Linked database</label>
-          <select
-            value={form.linkedDatabaseId}
-            onChange={(e) => setForm((f) => ({ ...f, linkedDatabaseId: e.target.value }))}
-          >
-            <option value="">— none —</option>
-            {databases.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} ({d.engine})
-              </option>
-            ))}
-          </select>
-
-          <label>Depends on (starts these first)</label>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
-            {otherServices.length === 0 && (
-              <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                No other services in this project.
-              </span>
-            )}
-            {otherServices.map((s) => (
-              <label
-                key={s.id}
-                style={{
-                  fontSize: "0.8rem",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "0.3rem",
-                  padding: "0.25rem 0.5rem",
-                  border: "1px solid var(--border-strong)",
-                  borderRadius: "999px",
-                  cursor: "pointer",
-                  background: form.dependsOn.includes(s.id) ? "var(--accent-soft)" : "transparent"
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={form.dependsOn.includes(s.id)}
-                  onChange={() => toggleDep(s.id)}
-                  style={{ width: "auto" }}
-                />
-                {s.name}
-              </label>
-            ))}
+        <div className="modal-body">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Service Name</label>
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div className="form-group">
+              <label>Runtime Type</label>
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                <option value="process">Binary Process</option>
+                <option value="docker">Docker Image</option>
+                <option value="static">Static Web</option>
+              </select>
+            </div>
           </div>
 
-          <div className="row" style={{ marginTop: "1rem", justifyContent: "flex-end" }}>
-            <button className="btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
-            <button onClick={() => void save()} disabled={loading}>
-              {loading ? "Saving..." : "Save changes"}
-            </button>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Environment</label>
+              <select value={form.environment} onChange={(e) => setForm({ ...form, environment: e.target.value as any })}>
+                <option value="production">Production</option>
+                <option value="staging">Staging</option>
+                <option value="development">Development</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Internal Port</label>
+              <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} placeholder="3000" />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Custom Domain</label>
+            <input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="app.myserver.com" />
+          </div>
+
+          <div className="form-group">
+            <label>Start Command</label>
+            <input value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} placeholder="npm run start" />
+          </div>
+
+          <div className="form-group">
+             <label>Database Link</label>
+             <select value={form.linkedDatabaseId} onChange={(e) => setForm({ ...form, linkedDatabaseId: e.target.value })}>
+                <option value="">— No active link —</option>
+                {databases.map(db => (
+                   <option key={db.id} value={db.id}>{db.name} ({db.engine})</option>
+                ))}
+             </select>
+          </div>
+
+          <div className="form-group">
+            <label>Dependencies (Start Priority)</label>
+            <div className="row wrap" style={{ gap: "0.5rem", marginTop: "0.25rem" }}>
+              {otherServices.length === 0 && <span className="muted tiny">No other project services found.</span>}
+              {otherServices.map(s => (
+                <button 
+                  key={s.id} 
+                  className={`ghost xsmall ${form.dependsOn.includes(s.id) ? 'active-chip' : ''}`}
+                  onClick={() => toggleDep(s.id)}
+                  style={{ borderRadius: "var(--radius-full)", padding: "0.3rem 0.8rem", border: "1px solid var(--border-default)" }}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
+
+        <footer className="modal-footer">
+          <button className="ghost" onClick={onClose} disabled={loading}>Discard</button>
+          <button className="primary" onClick={save} disabled={loading}>
+            {loading ? "Saving..." : "Save Settings"}
+          </button>
+        </footer>
+
+        <style dangerouslySetInnerHTML={{ __html: `
+          .active-chip { background: var(--accent-gradient) !important; color: white !important; border-color: transparent !important; }
+        `}} />
       </div>
     </div>
   );

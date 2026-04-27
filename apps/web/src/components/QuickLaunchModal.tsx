@@ -1,360 +1,344 @@
 import { useState, useEffect, useRef } from "react";
+import { FolderOpen, GitBranch, Globe2, Laptop, Loader2, Play, RefreshCw, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
-import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
 
 type Project = { id: string; name: string };
-
 type Props = {
   projects: Project[];
   onClose: () => void;
   onLaunched: () => void;
 };
 
-type Step = 1 | 2 | 3 | 4;
-type LaunchStatus = "idle" | "launching" | "success" | "failed";
+type DevServerCandidate = {
+  id: string;
+  label: string;
+  command: string;
+  source: string;
+  port?: number;
+  recommended?: boolean;
+};
+
+type LocalProjectScan = {
+  name: string;
+  buildType: string;
+  candidates: DevServerCandidate[];
+  warnings: string[];
+};
 
 export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
-  const [step, setStep] = useState<Step>(1);
+  const [step, setStep] = useState<1 | 2>(1);
   const [source, setSource] = useState<"local" | "github">("local");
+  const [exposure, setExposure] = useState<"local" | "online">("local");
   const [localPath, setLocalPath] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
   const [name, setName] = useState("");
   const [port, setPort] = useState("");
+  const [command, setCommand] = useState("");
+  const [scan, setScan] = useState<LocalProjectScan | null>(null);
+  const [scanning, setScanning] = useState(false);
   const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
-  const [enableTunnel, setEnableTunnel] = useState(true);
-  const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
+  const [loading, setLoading] = useState(false);
   const [buildLog, setBuildLog] = useState<string[]>([]);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
-  const [serviceId, setServiceId] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
-  const wsRef = useRef<ReturnType<typeof connectLogs> | null>(null);
 
-  // Auto-scroll build log
   useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
-    }
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [buildLog]);
 
-  // Connect WebSocket when on step 4
-  useEffect(() => {
-    if (step !== 4) return;
-    const ws = connectLogs((payload) => {
-      if (typeof payload !== "object" || payload === null) return;
-      const typed = payload as Record<string, unknown>;
-      if (typed.type === "build_log" && typeof typed.line === "string") {
-        setBuildLog((prev) => [...prev, typed.line as string]);
+  async function scanLocalPath() {
+    if (!localPath.trim()) {
+      toast.error("Local folder path is required");
+      return;
+    }
+    setScanning(true);
+    try {
+      const result = await api<LocalProjectScan>("/services/scan-local-project", {
+        method: "POST",
+        body: JSON.stringify({ localPath: localPath.trim() })
+      });
+      setScan(result);
+      if (!name.trim()) setName(result.name);
+      const recommended = result.candidates.find((item) => item.recommended) ?? result.candidates[0];
+      if (recommended) {
+        setCommand(recommended.command);
+        if (!port && recommended.port) setPort(String(recommended.port));
       }
-      if (typed.type === "build_progress" && typeof typed.phase === "string") {
-        setBuildLog((prev) => [...prev, `▶ Phase: ${typed.phase as string}`]);
-      }
-      if (typed.type === "tunnel_url" && typed.serviceId === serviceId && typeof typed.tunnelUrl === "string") {
-        setTunnelUrl(typed.tunnelUrl as string);
-      }
-    });
-    wsRef.current = ws;
-    return () => { ws.close(); wsRef.current = null; };
-  }, [step, serviceId]);
-
-  function canAdvance(): boolean {
-    if (step === 1) return source === "local" ? localPath.trim().length > 0 : repoUrl.trim().length > 0;
-    if (step === 2) return name.trim().length > 0 && Boolean(projectId);
-    return true;
+      toast.success(`Found ${result.candidates.length} launch candidate${result.candidates.length === 1 ? "" : "s"}`);
+    } catch {
+      setScan(null);
+    } finally {
+      setScanning(false);
+    }
   }
 
-  async function handleLaunch(): Promise<void> {
-    setStep(4);
-    setLaunchStatus("launching");
-    setBuildLog([]);
-    setTunnelUrl(null);
-    setServiceId(null);
+  async function handleLaunch() {
+    const allowsEmptyCommand = source === "local" && scan?.buildType === "docker";
+    if (source === "local" && !command.trim() && !allowsEmptyCommand) {
+      toast.error("Choose or enter a dev server command");
+      return;
+    }
+    setLoading(true);
+    setBuildLog(["Initializing deployment environment..."]);
+    setStep(2);
 
     try {
-      let result: { service?: { id?: string }; deployment?: { status?: string } };
+      const result = await api<any>(source === "local" ? "/services/deploy-from-local" : "/services/deploy-from-github", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId,
+          name: name.trim(),
+          localPath: source === "local" ? localPath.trim() : undefined,
+          repoUrl: source === "github" ? repoUrl.trim() : undefined,
+          command: source === "local" ? command.trim() : undefined,
+          port: port ? Number(port) : undefined,
+          startAfterDeploy: true,
+          enableQuickTunnel: exposure === "online"
+        })
+      });
 
-      if (source === "local") {
-        result = await api<typeof result>("/services/deploy-from-local", {
-          method: "POST",
-          body: JSON.stringify({
-            projectId,
-            name: name.trim(),
-            localPath: localPath.trim(),
-            port: port ? Number(port) : undefined,
-            startAfterDeploy: true,
-            enableQuickTunnel: enableTunnel
-          })
-        });
-      } else {
-        result = await api<typeof result>("/services/deploy-from-github", {
-          method: "POST",
-          body: JSON.stringify({
-            projectId,
-            name: name.trim(),
-            repoUrl: repoUrl.trim(),
-            port: port ? Number(port) : undefined,
-            startAfterDeploy: true,
-            autoPull: true
-          })
-        });
-        // For GitHub deploys, start quick tunnel separately if enabled
-        if (enableTunnel && result?.service?.id && result?.deployment?.status === "success") {
-          try {
-            await api(`/cloudflare/quick-tunnel/${result.service.id}`, { method: "POST" });
-          } catch { /* ignore — tunnel is best-effort */ }
-        }
-      }
-
-      const svcId = result?.service?.id ?? null;
-      setServiceId(svcId);
-
-      if (result?.deployment?.status !== "success") {
-        setLaunchStatus("failed");
+      const svcId = result?.service?.id;
+      if (!svcId) {
+        setBuildLog(prev => [...prev, "Deployment failed: Service ID not returned"]);
         return;
       }
 
-      setLaunchStatus("success");
+      setBuildLog(prev => [...prev, "Service registered. Waiting for activation..."]);
 
-      // Poll for tunnel URL if tunnel was requested
-      if (enableTunnel && svcId) {
-        for (let i = 0; i < 20; i++) {
-          await new Promise((res) => setTimeout(res, 2000));
-          try {
-            const svc = await api<{ tunnel_url?: string | null }>(`/services/${svcId}`);
-            if (svc.tunnel_url) {
-              setTunnelUrl(svc.tunnel_url);
-              break;
-            }
-          } catch { break; }
-        }
+      if (exposure === "local") {
+        toast.success("Local launch registered");
+        setBuildLog(prev => [...prev, "Local mode selected. Service is available on the assigned local port."]);
+        return;
       }
-    } catch {
-      setLaunchStatus("failed");
+
+      // Poll for tunnel/status
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const svc = await api<any>(`/services/${svcId}`, { silent: true });
+          if (svc.tunnel_url) {
+            setTunnelUrl(svc.tunnel_url);
+            setBuildLog(prev => [...prev, `Public URL ready: ${svc.tunnel_url}`]);
+            toast.success("Quick Launch Successful!");
+            break;
+          }
+          if (i === 15) setBuildLog(prev => [...prev, "Still provisioning edge routing..."]);
+        } catch { break; }
+      }
+    } catch (err) {
+      setBuildLog(prev => [...prev, `Error: ${err instanceof Error ? err.message : "Deployment failed"}`]);
+    } finally {
+      setLoading(false);
     }
   }
 
-  const steps: Array<{ label: string }> = [
-    { label: "Source" },
-    { label: "Details" },
-    { label: "Options" },
-    { label: "Launch" }
-  ];
-
   return (
-    <div className="modal-overlay" onClick={launchStatus === "idle" ? onClose : undefined}>
-      <div className="card github-deploy-modal" style={{ maxWidth: "580px" }} onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="gh-deploy-header">
-          <div className="gh-deploy-title-row">
-            <div style={{ background: "var(--success-soft)", padding: "0.6rem", borderRadius: "var(--radius-sm)", color: "var(--success)" }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-            </div>
-            <div>
-              <h3 style={{ margin: 0 }}>Quick Launch</h3>
-              <p className="gh-hint">Deploy any app and get a public Cloudflare URL in seconds.</p>
-            </div>
-          </div>
-          <div className="gh-step-indicator">
-            {steps.map((s, i) => (
-              <div key={s.label} className={`gh-step ${step === i + 1 ? "active" : step > i + 1 ? "done" : ""}`}>
-                <span className="gh-step-dot">{step > i + 1 ? "✓" : i + 1}</span>
-                <span className="gh-step-label">{s.label}</span>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" style={{ maxWidth: "600px" }} onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+           <div className="row">
+              <div className="launch-icon">
+                <Play size={22} />
               </div>
-            ))}
-          </div>
-        </div>
+              <h3>Quick Launch Pipeline</h3>
+           </div>
+           <p className="hint">Import a folder, select the detected dev server, then run it locally or through a tunnel.</p>
+        </header>
 
-        {/* Step 1: Source */}
-        {step === 1 && (
-          <div className="gh-step-content">
-            <div className="gh-field-group">
-              <label className="gh-label">Source type</label>
-              <div className="row" style={{ gap: "0.75rem" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontWeight: source === "local" ? 600 : 400 }}>
-                  <input type="radio" name="source" value="local" checked={source === "local"} onChange={() => setSource("local")} />
-                  Local directory
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", fontWeight: source === "github" ? 600 : 400 }}>
-                  <input type="radio" name="source" value="github" checked={source === "github"} onChange={() => setSource("github")} />
-                  GitHub URL
-                </label>
-              </div>
-            </div>
-
-            {source === "local" ? (
-              <div className="gh-field-group">
-                <label className="gh-label">Local path <span className="gh-required">*</span></label>
-                <input
-                  placeholder="/home/user/my-app"
-                  value={localPath}
-                  onChange={(e) => setLocalPath(e.target.value)}
-                  autoFocus
-                />
-                <p className="gh-hint">Absolute path to the directory containing your app. The system will auto-detect Node.js, Python, or Docker.</p>
-              </div>
-            ) : (
-              <div className="gh-field-group">
-                <label className="gh-label">GitHub repo URL <span className="gh-required">*</span></label>
-                <input
-                  placeholder="https://github.com/user/repo.git"
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  autoFocus
-                />
-                <p className="gh-hint">Public repos work without setup. For private repos, configure a GitHub PAT in Settings first.</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Step 2: Details */}
-        {step === 2 && (
-          <div className="gh-step-content">
-            <div className="gh-field-group">
-              <label className="gh-label">Project <span className="gh-required">*</span></label>
-              <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="gh-field-row">
-              <div className="gh-field-group" style={{ flex: 2 }}>
-                <label className="gh-label">Service name <span className="gh-required">*</span></label>
-                <input
-                  placeholder="my-app"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div className="gh-field-group" style={{ flex: 1 }}>
-                <label className="gh-label">Port <span className="gh-optional">(auto)</span></label>
-                <input
-                  placeholder="3000"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value)}
-                  type="number"
-                  min="1"
-                  max="65535"
-                />
-              </div>
-            </div>
-            <p className="gh-hint">If no port is set, one is auto-assigned (3000–3999) and injected as the <code>PORT</code> env var.</p>
-          </div>
-        )}
-
-        {/* Step 3: Options */}
-        {step === 3 && (
-          <div className="gh-step-content">
-            <label className="gh-toggle">
-              <input
-                type="checkbox"
-                checked={enableTunnel}
-                onChange={(e) => setEnableTunnel(e.target.checked)}
-              />
-              <div className="gh-toggle-info">
-                <span className="gh-toggle-title">Enable quick tunnel</span>
-                <span className="gh-toggle-desc">
-                  Generates a public <strong>*.trycloudflare.com</strong> URL via <code>cloudflared</code> — no Cloudflare account required. URL is temporary and changes on restart.
-                </span>
-              </div>
-            </label>
-            <p className="gh-hint" style={{ marginTop: "var(--space-3)" }}>
-              The <code>cloudflared</code> binary is auto-downloaded to <code>~/.survhub/bin/</code> if not already installed.
-            </p>
-          </div>
-        )}
-
-        {/* Step 4: Launch */}
-        {step === 4 && (
-          <div className="gh-step-content">
-            {launchStatus === "launching" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-                <div className="row" style={{ gap: "0.5rem" }}>
-                  <div className="status-dot running" />
-                  <span style={{ fontWeight: 600 }}>Deploying…</span>
-                </div>
-                <div ref={logRef} className="logs" style={{ maxHeight: "220px", overflowY: "auto", background: "var(--bg-sunken)", borderRadius: "var(--radius-sm)", padding: "0.75rem", fontSize: "0.75rem" }}>
-                  {buildLog.map((line, i) => <p key={i} style={{ margin: 0 }}>{line}</p>)}
-                  {buildLog.length === 0 && <p style={{ margin: 0, color: "var(--text-dim)" }}>Starting build…</p>}
-                </div>
-              </div>
-            )}
-
-            {launchStatus === "success" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-                <div className="row" style={{ gap: "0.5rem", color: "var(--success)", fontWeight: 600 }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                  App deployed and running!
+        <div className="modal-body">
+           {step === 1 ? (
+             <div style={{ display: "grid", gap: "1.5rem" }}>
+                <div className="form-group">
+                   <label>Deployment Method</label>
+                   <div className="row" style={{ gap: "1rem" }}>
+                      <button
+                        className={`ghost ${source === 'local' ? 'active-btn' : ''}`}
+                        onClick={() => setSource("local")}
+                        aria-label="Import from a local folder"
+                        data-tooltip="Import from a folder on this machine"
+                      ><FolderOpen size={16} /> Local Folder</button>
+                      <button
+                        className={`ghost ${source === 'github' ? 'active-btn' : ''}`}
+                        onClick={() => setSource("github")}
+                        aria-label="Import from a GitHub URL"
+                        data-tooltip="Import from a remote GitHub repository"
+                      ><GitBranch size={16} /> GitHub URL</button>
+                   </div>
                 </div>
 
-                {enableTunnel && !tunnelUrl && (
-                  <div className="row" style={{ gap: "0.5rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
-                    <div className="status-dot running" />
-                    Waiting for tunnel URL… (can take ~15s)
+                <div className="form-group">
+                   <label>{source === 'local' ? 'Local System Path' : 'Repository URL'}</label>
+                   <div className="row">
+                     <input
+                      placeholder={source === 'local' ? '/Users/tobias/my-app' : 'https://github.com/user/app'}
+                      value={source === 'local' ? localPath : repoUrl}
+                      onChange={e => {
+                        if (source === 'local') {
+                          setLocalPath(e.target.value);
+                          setScan(null);
+                        } else {
+                          setRepoUrl(e.target.value);
+                        }
+                      }}
+                     />
+                     {source === "local" && (
+                       <button
+                         className="ghost"
+                         onClick={() => void scanLocalPath()}
+                         disabled={scanning}
+                         aria-label="Scan local folder for dev servers"
+                         data-tooltip={scanning ? "Scanning folder..." : "Find runnable dev server commands"}
+                         data-tooltip-side="left"
+                       >
+                         {scanning ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+                         Scan
+                       </button>
+                     )}
+                   </div>
+                </div>
+
+                {source === "local" && scan && (
+                  <div className="scan-panel">
+                    <div className="row between">
+                      <div>
+                        <div className="font-bold text-primary">Detected {scan.buildType} project</div>
+                        <p className="muted small">{scan.candidates.length} possible dev server{scan.candidates.length === 1 ? "" : "s"} found.</p>
+                      </div>
+                      <button
+                        className="ghost xsmall"
+                        onClick={() => void scanLocalPath()}
+                        aria-label="Rescan local folder"
+                        data-tooltip="Refresh detected commands"
+                      ><RefreshCw size={13} /> Rescan</button>
+                    </div>
+                    {scan.warnings.map((warning) => (
+                      <div key={warning} className="scan-warning">{warning}</div>
+                    ))}
+                    <div className="candidate-list">
+                      {scan.candidates.map((candidate) => (
+                        <button
+                          key={candidate.id}
+                          className={`candidate-item ${command === candidate.command ? "active" : ""}`}
+                          aria-label={`Use ${candidate.label}: ${candidate.command || "Dockerfile service"}`}
+                          data-tooltip="Use this launch command"
+                          onClick={() => {
+                            setCommand(candidate.command);
+                            if (!port && candidate.port) setPort(String(candidate.port));
+                          }}
+                        >
+                          <Terminal size={16} />
+                          <span>
+                            <strong>{candidate.label}</strong>
+                            <code>{candidate.command || "Dockerfile service"}</code>
+                          </span>
+                          {candidate.recommended && <span className="badge accent">Recommended</span>}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 
-                {tunnelUrl && (
-                  <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid var(--success-soft)", borderRadius: "var(--radius-sm)", padding: "var(--space-4)", display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-                    <div style={{ fontWeight: 600, color: "var(--success)", fontSize: "0.85rem" }}>Your public URL is ready:</div>
-                    <a href={tunnelUrl} target="_blank" rel="noreferrer" style={{ color: "var(--success)", fontWeight: 700, wordBreak: "break-all" }}>{tunnelUrl}</a>
+                {source === "local" && (
+                  <div className="form-group">
+                    <label>Dev Server Command</label>
+                    <input
+                      value={command}
+                      onChange={(event) => setCommand(event.target.value)}
+                      placeholder="npm run dev"
+                    />
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Exposure Mode</label>
+                  <div className="mode-toggle">
                     <button
-                      className="ghost"
-                      style={{ alignSelf: "flex-start", padding: "0.3rem 0.8rem", fontSize: "0.78rem" }}
-                      onClick={() => { void navigator.clipboard.writeText(tunnelUrl); toast.success("URL copied!"); }}
+                      className={exposure === "local" ? "active" : ""}
+                      onClick={() => setExposure("local")}
+                      aria-label="Use local-only exposure mode"
+                      data-tooltip="Keep the service on this machine"
                     >
-                      Copy URL
+                      <Laptop size={16} />
+                      <span>
+                        <strong>Local</strong>
+                        <small>Bind to this machine only</small>
+                      </span>
+                    </button>
+                    <button
+                      className={exposure === "online" ? "active" : ""}
+                      onClick={() => setExposure("online")}
+                      aria-label="Use online tunnel exposure mode"
+                      data-tooltip="Create a temporary public tunnel"
+                    >
+                      <Globe2 size={16} />
+                      <span>
+                        <strong>Online tunnel</strong>
+                        <small>Create a public Cloudflare URL</small>
+                      </span>
                     </button>
                   </div>
+                </div>
+
+                <div className="form-row">
+                   <div className="form-group">
+                      <label>App Name</label>
+                      <input value={name} onChange={e => setName(e.target.value)} placeholder="my-quick-app" />
+                   </div>
+                   <div className="form-group">
+                      <label>Project</label>
+                      <select value={projectId} onChange={e => setProjectId(e.target.value)}>
+                         {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                   </div>
+                </div>
+                <div className="form-group">
+                  <label>Port</label>
+                  <input value={port} onChange={e => setPort(e.target.value)} placeholder="Auto assign if empty" />
+                </div>
+             </div>
+           ) : (
+             <div className="launch-monitor" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                <div className="logs-viewer" ref={logRef} style={{ height: "240px", fontSize: "0.8rem", background: "black" }}>
+                   {buildLog.map((line, i) => <div key={i} className="log-line">{line}</div>)}
+                </div>
+                {tunnelUrl && (
+                  <div className="card featured-form" style={{ padding: "1rem", border: "1px solid var(--success)" }}>
+                     <div className="row between">
+                        <span className="success font-bold">LIVE URL:</span>
+                        <a href={tunnelUrl} target="_blank" rel="noreferrer" className="link font-bold">{tunnelUrl}</a>
+                     </div>
+                  </div>
                 )}
-
-                {enableTunnel && !tunnelUrl && (
-                  <p className="gh-hint">The tunnel URL will appear here automatically. You can also close this and see it on the service card.</p>
-                )}
-              </div>
-            )}
-
-            {launchStatus === "failed" && (
-              <div style={{ color: "var(--danger)", fontWeight: 600 }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: "middle", marginRight: "0.4rem" }}><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                Deploy failed. Check the service logs for details.
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="gh-actions">
-          {step < 4 && (
-            <>
-              <button className="ghost" onClick={step === 1 ? onClose : () => setStep((s) => (s - 1) as Step)}>
-                {step === 1 ? "Cancel" : "Back"}
-              </button>
-              {step < 3 ? (
-                <button className="primary" disabled={!canAdvance()} onClick={() => setStep((s) => (s + 1) as Step)}>
-                  Next
-                </button>
-              ) : (
-                <button className="primary" onClick={() => void handleLaunch()}>
-                  Launch
-                </button>
-              )}
-            </>
-          )}
-          {step === 4 && launchStatus !== "launching" && (
-            <button
-              className="primary"
-              onClick={() => { if (launchStatus === "success") onLaunched(); else onClose(); }}
-            >
-              {launchStatus === "success" ? "Done" : "Close"}
-            </button>
-          )}
+             </div>
+           )}
         </div>
+
+        <footer className="modal-footer">
+           <button className="ghost" onClick={onClose} aria-label="Close quick launch without saving" data-tooltip="Close without launching">Discard</button>
+           {step === 1 && <button className="primary" onClick={handleLaunch} disabled={!name || (!localPath && !repoUrl) || (source === "local" && !command.trim() && scan?.buildType !== "docker")} aria-label="Start the selected launch pipeline" data-tooltip="Create and start this service">Initialize Launch Sequence</button>}
+           {step === 2 && <button className="primary" onClick={onLaunched} aria-label="Close launch monitor" data-tooltip="Return to services">Close Monitor</button>}
+        </footer>
+
+        <style dangerouslySetInnerHTML={{ __html: `
+          .launch-icon { background: var(--accent-gradient); color: white; padding: 0.5rem; border-radius: var(--radius-sm); display: flex; }
+          .active-btn { background: var(--accent-gradient) !important; color: white !important; }
+          .success { color: var(--success); }
+          .scan-panel { display: grid; gap: 1rem; padding: 1rem; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-sunken); }
+          .scan-warning { padding: 0.65rem 0.75rem; border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--warning); font-size: 0.8rem; font-weight: 700; }
+          .candidate-list { display: grid; gap: 0.6rem; }
+          .candidate-item { justify-content: flex-start; text-align: left; background: var(--bg-elevated); }
+          .candidate-item.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+          .candidate-item span { display: grid; gap: 0.2rem; min-width: 0; }
+          .candidate-item code { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.74rem; white-space: normal; word-break: break-word; }
+          .mode-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+          .mode-toggle button { justify-content: flex-start; text-align: left; background: var(--bg-sunken); }
+          .mode-toggle button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+          .mode-toggle span { display: grid; gap: 0.2rem; }
+          .mode-toggle small { color: var(--text-muted); font-size: 0.72rem; }
+          .animate-spin { animation: spin 1s linear infinite; }
+          @media (max-width: 640px) { .mode-toggle { grid-template-columns: 1fr; } }
+        `}} />
       </div>
     </div>
   );

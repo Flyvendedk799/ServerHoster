@@ -71,7 +71,7 @@ export async function ensureCloudflared(ctx: AppContext): Promise<string> {
   if (!response.body) throw new Error("No response body from cloudflared download");
 
   const tmpPath = `${binaryPath}.tmp`;
-  await pipeline(response.body as Parameters<typeof pipeline>[0], createWriteStream(tmpPath));
+  await pipeline(response.body as any, createWriteStream(tmpPath));
   if (os.platform() !== "win32") fs.chmodSync(tmpPath, 0o755);
   fs.renameSync(tmpPath, binaryPath);
 
