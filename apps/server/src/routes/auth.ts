@@ -51,7 +51,9 @@ const API_PREFIXES = [
   "/onboarding",
   "/service-templates",
   "/project-templates",
-  "/tunnels"
+  "/tunnels",
+  "/admin",
+  "/logs"
 ];
 
 function isApiPath(path: string): boolean {
@@ -87,6 +89,11 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // Webhooks authenticate via HMAC signature (verified inside the route),
     // not via Bearer token. Skipping the auth gate here is intentional.
     if (path.startsWith("/webhooks/")) return;
+    // The admin reset endpoint authenticates via X-Admin-Reset-Token (a
+    // pre-shared secret set on the host); skipping the bearer-token gate
+    // here lets locked-out operators recover even when their session token
+    // is gone.
+    if (path === "/admin/reset-admin") return;
     // ACME HTTP-01 challenges must be reachable from Let's Encrypt without auth.
     if (path.startsWith("/.well-known/acme-challenge/")) return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API

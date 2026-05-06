@@ -22,6 +22,14 @@ export type TunnelLiveStatus = {
   detail?: string;
 };
 
+export type TunnelHealthProbe = {
+  ok: boolean;
+  /** "available" / "degraded" / "unavailable". */
+  state: "available" | "degraded" | "unavailable";
+  detail?: string;
+  checkedAt: string;
+};
+
 export interface TunnelAdapter {
   /** Stable identifier used in DB / API ("cloudflare", "ngrok", "tailscale"). */
   readonly id: string;
@@ -35,6 +43,25 @@ export interface TunnelAdapter {
   stop(ctx: AppContext, serviceId: string): Promise<void>;
   /** Return current status for the given service. */
   status(ctx: AppContext, serviceId: string): TunnelLiveStatus;
+  /**
+   * Sequence 3 — health probe. Each adapter exposes a non-destructive
+   * readiness check (binary present, daemon responsive, credentials valid).
+   * Default implementation calls `available()` so existing adapters keep
+   * working; richer adapters can override.
+   */
+  probeHealth?(ctx: AppContext): Promise<TunnelHealthProbe>;
+}
+
+/** Default probeHealth implementation when an adapter doesn't supply one. */
+export async function probeHealth(adapter: TunnelAdapter, ctx: AppContext): Promise<TunnelHealthProbe> {
+  if (adapter.probeHealth) return adapter.probeHealth(ctx);
+  const ok = await adapter.available(ctx).catch(() => false);
+  return {
+    ok,
+    state: ok ? "available" : "unavailable",
+    detail: ok ? `${adapter.label} prerequisites satisfied` : `${adapter.label} prerequisites missing`,
+    checkedAt: new Date().toISOString()
+  };
 }
 
 const REGISTRY = new Map<string, TunnelAdapter>();

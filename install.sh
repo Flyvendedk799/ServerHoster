@@ -14,6 +14,9 @@
 #   6. Prints the URL to open in the browser
 #
 # This script is idempotent — you can re-run it to update to the latest commit.
+# Failures during the install/build phase trigger a rollback that restores
+# the previous git checkout (or removes the partial install directory) so
+# operators are never left with a half-built tree.
 
 set -euo pipefail
 
@@ -31,6 +34,29 @@ PORT="${SURVHUB_PORT:-8787}"
 log()  { printf '\033[1;34m[localsurv]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[localsurv]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[localsurv]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# rollback: restore the pre-install git ref (if any) and remove half-built
+# state. Wired up via `trap rollback ERR` after we know what the previous
+# ref was so we never leave the install dir in an inconsistent state.
+ROLLBACK_REF=""
+ROLLBACK_FRESH_INSTALL=0
+rollback() {
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    return 0
+  fi
+  warn "Install failed (exit $code) — running rollback"
+  if [ "$ROLLBACK_FRESH_INSTALL" -eq 1 ]; then
+    if [ -d "$INSTALL_DIR" ]; then
+      warn "Removing partial install at $INSTALL_DIR"
+      rm -rf "$INSTALL_DIR"
+    fi
+  elif [ -n "$ROLLBACK_REF" ] && [ -d "$INSTALL_DIR/.git" ]; then
+    warn "Resetting $INSTALL_DIR to previous ref $ROLLBACK_REF"
+    git -C "$INSTALL_DIR" reset --hard "$ROLLBACK_REF" || true
+  fi
+}
+trap rollback ERR
 
 # -- 1. prerequisites --------------------------------------------------------
 
@@ -53,6 +79,7 @@ fi
 mkdir -p "$(dirname "$INSTALL_DIR")"
 if [ -d "$INSTALL_DIR/.git" ]; then
   log "Updating $INSTALL_DIR"
+  ROLLBACK_REF="$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "")"
   git -C "$INSTALL_DIR" fetch --prune --tags
   if [ -n "$LOCALSURV_VERSION" ]; then
     log "Checking out pinned version: $LOCALSURV_VERSION"
@@ -62,6 +89,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
   fi
 else
   log "Cloning $REPO_URL into $INSTALL_DIR"
+  ROLLBACK_FRESH_INSTALL=1
   if [ -n "$LOCALSURV_VERSION" ]; then
     git clone --depth 1 --branch "$LOCALSURV_VERSION" "$REPO_URL" "$INSTALL_DIR" \
       || { log "Branch/tag not found, falling back to default + checkout"; \

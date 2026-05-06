@@ -2,6 +2,41 @@
 
 LocalSURV uses [Semantic Versioning](https://semver.org/). We tag releases on `main` and ship a Docker image, an npm package, and a Homebrew formula bump per tag.
 
+## Release gates (no exceptions)
+
+A release is shippable when **every required gate** in [`docs/readiness-checklist.md`](readiness-checklist.md) is green. The CI job `readiness-gates` (`.github/workflows/ci.yml`) runs `npm run verify:readiness`, which consumes [`ops/release-gates.json`](../ops/release-gates.json) and writes the per-sequence scorecard to `ops/readiness-scorecard.json`.
+
+Required CI checks before tagging a stable release:
+
+| Check               | Job                    | Notes                                                       |
+| ------------------- | ---------------------- | ----------------------------------------------------------- |
+| Typecheck           | `build-test`           | `tsc --noEmit -p apps/server/tsconfig.json`                 |
+| Lint + format       | `lint`                 | ESLint + Prettier                                           |
+| Unit + integration  | `build-test`           | `node --test` over the server suite                         |
+| Web smoke           | `build-test`           | Vite/React smoke checks                                     |
+| Packaging smoke     | `packaging-smoke`      | shellcheck install.sh, parse install.ps1, .pkg/.msi scripts |
+| Readiness gates     | `readiness-gates`      | `npm run verify:readiness` against `ops/release-gates.json` |
+| Docker build + run  | `docker-build`         | image must surface CLI version                              |
+| Homebrew formula    | `homebrew-smoke`       | `brew audit --strict --formula`                             |
+| Performance budgets | `npm run perf:budgets` | thresholds in `ops/perf-budgets.json`                       |
+
+If any required gate fails, **do not bypass it**. De-scope features instead.
+
+## Performance budgets
+
+The performance smoke harness lives at `scripts/perf/check-budgets.ts` and is fed by [`ops/perf-budgets.json`](../ops/perf-budgets.json). Run it locally with `npm run perf:budgets`. Numbers are guard-rails, not optimisation targets — bumping a budget needs a corresponding release-notes line item explaining why.
+
+## Artifact manifest
+
+Every release tag publishes:
+
+- `localsurv-<version>-source.tar.gz` (raw source)
+- `survhub-server-<version>.tgz` (npm pack output)
+- Docker image `ghcr.io/<owner>/localsurv:<version>` and `:latest`
+- `SHA256SUMS` covering all of the above (cosign-keyless signed in the release workflow)
+
+The `SHA256SUMS` checksum file plus the readiness scorecard (`ops/readiness-scorecard.json`) constitute the **release manifest**: with both, anyone can re-derive the release from the source tarball and confirm it matches what shipped. Verify a downloaded artefact with `sha256sum -c SHA256SUMS` (Linux/macOS) or `Get-FileHash -Algorithm SHA256` (Windows) before installing.
+
 ## Versioning
 
 - **MAJOR** — breaking API, breaking CLI, breaking DB schema (without a migration path)

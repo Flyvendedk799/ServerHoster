@@ -17,7 +17,9 @@
     "lint": "eslint apps packages --ext .ts,.tsx",
     "lint:fix": "eslint apps packages --ext .ts,.tsx --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "verify:readiness": "node --experimental-strip-types --no-warnings scripts/ci/verify-readiness.ts",
+    "perf:budgets": "node --experimental-strip-types --no-warnings scripts/perf/check-budgets.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",

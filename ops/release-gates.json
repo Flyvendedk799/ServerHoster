@@ -1,0 +1,223 @@
+{
+  "$schema": "./release-gates.schema.json",
+  "version": 1,
+  "description": "Machine-readable release gates consumed by scripts/ci/verify-readiness.ts. Every entry tagged required:true must be satisfied for the build to ship. Each gate maps to a Sequence in docs/readiness-checklist.md.",
+  "gates": [
+    {
+      "id": "seq0.checklist",
+      "sequence": 0,
+      "required": true,
+      "description": "Readiness checklist exists and is non-empty.",
+      "type": "file_exists",
+      "path": "docs/readiness-checklist.md",
+      "minBytes": 512
+    },
+    {
+      "id": "seq0.gates",
+      "sequence": 0,
+      "required": true,
+      "description": "Release gates manifest is parseable JSON.",
+      "type": "file_exists",
+      "path": "ops/release-gates.json",
+      "minBytes": 256
+    },
+    {
+      "id": "seq0.verify_script",
+      "sequence": 0,
+      "required": true,
+      "description": "CI verifier script exists.",
+      "type": "file_exists",
+      "path": "scripts/ci/verify-readiness.ts",
+      "minBytes": 256
+    },
+    {
+      "id": "seq1.webhook_signature",
+      "sequence": 1,
+      "required": true,
+      "description": "Webhook route enforces HMAC verification with replay/skew protection.",
+      "type": "file_contains",
+      "path": "apps/server/src/routes/webhooks.ts",
+      "patterns": ["createHmac", "timingSafeEqual", "skew"]
+    },
+    {
+      "id": "seq1.admin_reset_route",
+      "sequence": 1,
+      "required": true,
+      "description": "Token-gated admin reset/recovery flow exists.",
+      "type": "file_exists",
+      "path": "apps/server/src/routes/admin.ts",
+      "minBytes": 256
+    },
+    {
+      "id": "seq1.authz_helper",
+      "sequence": 1,
+      "required": true,
+      "description": "Centralised authz / ownership helper is exported from lib/core.ts.",
+      "type": "file_contains",
+      "path": "apps/server/src/lib/core.ts",
+      "patterns": ["assertServiceOwnership", "AuthzContext"]
+    },
+    {
+      "id": "seq1.config_defaults",
+      "sequence": 1,
+      "required": true,
+      "description": "Production-safe defaults for cookies/CORS origins.",
+      "type": "file_contains",
+      "path": "apps/server/src/config.ts",
+      "patterns": ["secureCookies", "trustedOrigins"]
+    },
+    {
+      "id": "seq1.audit_enrichment",
+      "sequence": 1,
+      "required": true,
+      "description": "Audit events carry actor, target and source IP fields.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/audit.ts",
+      "patterns": ["targetType", "sourceIp", "userAgent"]
+    },
+    {
+      "id": "seq2.state_machine",
+      "sequence": 2,
+      "required": true,
+      "description": "Canonical deployment state machine is present.",
+      "type": "file_exists",
+      "path": "apps/server/src/services/deployStateMachine.ts",
+      "minBytes": 512
+    },
+    {
+      "id": "seq2.persistence_columns",
+      "sequence": 2,
+      "required": true,
+      "description": "Deployments table extended with provenance/timing fields via migrations.",
+      "type": "file_contains",
+      "path": "apps/server/src/db.ts",
+      "patterns": ["git_sha", "duration_ms", "failure_stage"]
+    },
+    {
+      "id": "seq2.cleanup_dead_letter",
+      "sequence": 2,
+      "required": true,
+      "description": "cleanupQueue.ts handles idempotent retries with dead-letter cap.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/cleanupQueue.ts",
+      "patterns": ["dead_letter", "drainCleanupQueue"]
+    },
+    {
+      "id": "seq3.host_routing",
+      "sequence": 3,
+      "required": true,
+      "description": "Host-based proxy routing runs before route resolution.",
+      "type": "file_contains",
+      "path": "apps/server/src/routes/proxy.ts",
+      "patterns": ["onRequest", "headers.host"]
+    },
+    {
+      "id": "seq3.acme_preflight",
+      "sequence": 3,
+      "required": true,
+      "description": "ACME preflight reachability check is wired.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/ssl.ts",
+      "patterns": ["verifyAcmeChallengeReachability"]
+    },
+    {
+      "id": "seq3.tunnel_adapters",
+      "sequence": 3,
+      "required": true,
+      "description": "Tunnel adapter registry and a health probe contract exist.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/tunnels/index.ts",
+      "patterns": ["TunnelAdapter", "registerTunnelAdapter", "probeHealth"]
+    },
+    {
+      "id": "seq4.metrics_service",
+      "sequence": 4,
+      "required": true,
+      "description": "Metrics service records deploy duration & failures.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/metrics.ts",
+      "patterns": ["recordDeployDuration", "recordDeployFailure"]
+    },
+    {
+      "id": "seq4.log_query",
+      "sequence": 4,
+      "required": true,
+      "description": "Log query endpoint with serviceId/level/time-range filters exists.",
+      "type": "file_contains",
+      "path": "apps/server/src/routes/observability.ts",
+      "patterns": ["/logs/query", "level", "since"]
+    },
+    {
+      "id": "seq5.backup_service",
+      "sequence": 5,
+      "required": true,
+      "description": "Backup orchestration module exists with checksum + restore preflight.",
+      "type": "file_exists",
+      "path": "apps/server/src/services/backup.ts",
+      "minBytes": 512
+    },
+    {
+      "id": "seq5.backup_checksum",
+      "sequence": 5,
+      "required": true,
+      "description": "Backup writer publishes integrity checksum.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/backup.ts",
+      "patterns": ["sha256", "checksum"]
+    },
+    {
+      "id": "seq6.first_run_diagnostics",
+      "sequence": 6,
+      "required": true,
+      "description": "First-run wizard backend exposes environment diagnostics.",
+      "type": "file_contains",
+      "path": "apps/server/src/routes/ops.ts",
+      "patterns": ["/diagnostics", "docker", "git"]
+    },
+    {
+      "id": "seq7.install_idempotency",
+      "sequence": 7,
+      "required": true,
+      "description": "install.sh and install.ps1 declare idempotent rollback behaviour.",
+      "type": "file_contains",
+      "path": "install.sh",
+      "patterns": ["idempotent", "rollback"]
+    },
+    {
+      "id": "seq7.install_ps1",
+      "sequence": 7,
+      "required": true,
+      "description": "Windows installer declares idempotent / rollback behaviour.",
+      "type": "file_contains",
+      "path": "install.ps1",
+      "patterns": ["idempotent", "rollback"]
+    },
+    {
+      "id": "seq8.required_checks",
+      "sequence": 8,
+      "required": true,
+      "description": "CI workflow runs typecheck, lint, build, server tests, web smoke, packaging smoke and release-gates verifier.",
+      "type": "file_contains",
+      "path": ".github/workflows/ci.yml",
+      "patterns": ["verify:readiness", "Lint", "Typecheck", "Server tests"]
+    },
+    {
+      "id": "seq8.release_runbook",
+      "sequence": 8,
+      "required": true,
+      "description": "Release engineering doc references readiness checklist and signed artifacts.",
+      "type": "file_contains",
+      "path": "docs/releases.md",
+      "patterns": ["readiness-checklist", "checksum"]
+    },
+    {
+      "id": "seq9.scorecard",
+      "sequence": 9,
+      "required": true,
+      "description": "Public readiness scorecard exists in docs.",
+      "type": "file_contains",
+      "path": "docs/readiness-checklist.md",
+      "patterns": ["Readiness Scorecard"]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ fs.mkdirSync(config.logsDir, { recursive: true });
 fs.mkdirSync(config.projectsDir, { recursive: true });
 fs.mkdirSync(config.certsDir, { recursive: true });
 fs.mkdirSync(config.scriptsDir, { recursive: true });
+fs.mkdirSync(config.backupsDir, { recursive: true });
 
 export const db = new Database(config.dbPath);
 
@@ -201,7 +202,45 @@ const migrations = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
-  "CREATE INDEX IF NOT EXISTS idx_cleanup_queue_created ON cleanup_queue(created_at)"
+  "CREATE INDEX IF NOT EXISTS idx_cleanup_queue_created ON cleanup_queue(created_at)",
+  // Sequence 1 — enrich audit_logs so every event records the target object
+  // (separate from the URL-derived resource_type/id pair) plus source IP and
+  // user agent. Old rows leave the new columns NULL.
+  "ALTER TABLE audit_logs ADD COLUMN target_type TEXT",
+  "ALTER TABLE audit_logs ADD COLUMN target_id TEXT",
+  "ALTER TABLE audit_logs ADD COLUMN source_ip TEXT",
+  "ALTER TABLE audit_logs ADD COLUMN user_agent TEXT",
+  "CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id)",
+  // Sequence 2 — extend deployments with provenance + timing so failures can
+  // be traced after the fact and rollbacks know exactly which commit to
+  // restore.
+  "ALTER TABLE deployments ADD COLUMN git_sha TEXT",
+  "ALTER TABLE deployments ADD COLUMN duration_ms INTEGER",
+  "ALTER TABLE deployments ADD COLUMN failure_stage TEXT",
+  // Sequence 2 — explicit dead-letter retention on the cleanup queue so we
+  // can inspect / re-drive failed payloads instead of silently dropping
+  // them after 10 attempts.
+  `CREATE TABLE IF NOT EXISTS cleanup_dead_letter (
+    id TEXT PRIMARY KEY,
+    original_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    last_error TEXT,
+    moved_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_cleanup_dead_letter_moved ON cleanup_dead_letter(moved_at DESC)",
+  // Sequence 5 — backup metadata: every snapshot we cut stores a sha256
+  // checksum and size so restore can verify integrity before applying.
+  `CREATE TABLE IF NOT EXISTS instance_backups (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_instance_backups_created ON instance_backups(created_at DESC)"
 ];
 
 for (const statement of migrations) {

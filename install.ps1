@@ -18,7 +18,10 @@
 #      an elevated PowerShell with -AsService.
 #   6. Prints the dashboard URL.
 #
-# Idempotent — safe to re-run.
+# idempotent — safe to re-run. If `npm ci` or `npm run build` fails the
+# installer triggers a rollback that restores the previous git ref (or
+# removes the partial install directory on a fresh install) so you're
+# never left with a half-built tree.
 
 param(
   [switch] $AsService,
@@ -35,6 +38,23 @@ $ErrorActionPreference = "Stop"
 function Write-Log($msg) { Write-Host "[localsurv] $msg" -ForegroundColor Cyan }
 function Write-Warn($msg) { Write-Host "[localsurv] $msg" -ForegroundColor Yellow }
 function Die($msg) { Write-Host "[localsurv] $msg" -ForegroundColor Red; exit 1 }
+
+# rollback: restore the previous git ref or, on a fresh install, remove the
+# half-built directory. Tracked via $script: scoped variables so the
+# trap-equivalent below sees them.
+$script:RollbackRef = ""
+$script:RollbackFreshInstall = $false
+function Invoke-Rollback {
+  if ($script:RollbackFreshInstall) {
+    if (Test-Path $InstallDir) {
+      Write-Warn "Removing partial install at $InstallDir"
+      Remove-Item -Recurse -Force -Path $InstallDir
+    }
+  } elseif ($script:RollbackRef -and (Test-Path (Join-Path $InstallDir ".git"))) {
+    Write-Warn "Resetting $InstallDir to previous ref $($script:RollbackRef)"
+    git -C $InstallDir reset --hard $script:RollbackRef | Out-Null
+  }
+}
 
 # -- 1. prerequisites --------------------------------------------------------
 
@@ -59,6 +79,7 @@ if (-not (Test-Path $installParent)) { New-Item -ItemType Directory -Path $insta
 
 if (Test-Path (Join-Path $InstallDir ".git")) {
   Write-Log "Updating $InstallDir"
+  $script:RollbackRef = (git -C $InstallDir rev-parse HEAD).Trim()
   git -C $InstallDir fetch --prune --tags
   if ($version) {
     Write-Log "Checking out pinned version: $version"
@@ -68,6 +89,7 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
   }
 } else {
   Write-Log "Cloning $RepoUrl into $InstallDir"
+  $script:RollbackFreshInstall = $true
   if ($version) {
     git clone --depth 1 --branch $version $RepoUrl $InstallDir
     if ($LASTEXITCODE -ne 0) {
@@ -86,10 +108,10 @@ Set-Location $InstallDir
 
 Write-Log "Installing dependencies"
 npm ci
-if ($LASTEXITCODE -ne 0) { Die "npm ci failed" }
+if ($LASTEXITCODE -ne 0) { Invoke-Rollback; Die "npm ci failed (rollback applied)" }
 Write-Log "Building"
 npm run build
-if ($LASTEXITCODE -ne 0) { Die "npm run build failed" }
+if ($LASTEXITCODE -ne 0) { Invoke-Rollback; Die "npm run build failed (rollback applied)" }
 
 # -- 4. secrets + data dir ---------------------------------------------------
 

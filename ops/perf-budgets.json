@@ -1,0 +1,42 @@
+{
+  "$schema": "./perf-budgets.schema.json",
+  "version": 1,
+  "description": "Performance budgets enforced by scripts/perf/check-budgets.ts. Numbers are guard-rails — when a budget needs to move, raise the threshold here AND document it in CHANGELOG.md / release notes.",
+  "budgets": [
+    {
+      "id": "server.boot.cold",
+      "label": "Cold-boot time of the server (ms)",
+      "metric": "server_cold_boot_ms",
+      "max": 5000,
+      "rationale": "Operators expect `survhub start` to be ready within 5s; longer boots feel unresponsive on a Mac mini."
+    },
+    {
+      "id": "server.boot.warm",
+      "label": "Warm-boot time of the server (ms)",
+      "metric": "server_warm_boot_ms",
+      "max": 2500,
+      "rationale": "After migrations have run, a restart should be effectively instant."
+    },
+    {
+      "id": "deploy.from-git.simple",
+      "label": "Deploy of a hello-world Node service (ms)",
+      "metric": "deploy_simple_ms",
+      "max": 60000,
+      "rationale": "Anything over a minute on a known-fast fixture means the build pipeline regressed."
+    },
+    {
+      "id": "ui.bundle.size",
+      "label": "Web dashboard bundle size (bytes, gzipped)",
+      "metric": "web_bundle_gz_bytes",
+      "max": 750000,
+      "rationale": "Keep the dashboard sub-1MB so it loads quickly over slow tunnels."
+    },
+    {
+      "id": "api.health.p95",
+      "label": "p95 latency of GET /health (ms)",
+      "metric": "health_p95_ms",
+      "max": 50,
+      "rationale": "The /health endpoint is unauthenticated and synchronous; a regression here hides under more interesting routes."
+    }
+  ]
+}
