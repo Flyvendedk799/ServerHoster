@@ -29,6 +29,7 @@ import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
 import { registerTunnelRoutes } from "./routes/tunnels.js";
 import { registerInspectorRoutes } from "./routes/inspector.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { registerCrashReporter } from "./services/crashReporter.js";
 import { startMetricsLoop } from "./services/metrics.js";
 import { startSystemHealthLoop } from "./services/health.js";
@@ -137,15 +138,33 @@ export async function buildApp(): Promise<AppContext> {
     }
   });
 
-  // CORS: same-origin only in production (the dashboard is bundled and served
-  // by this same Fastify instance). Allow localhost in dev so the Vite dev
-  // server on :5173 can talk to the API on :8787.
-  const corsOrigin: false | RegExp[] =
-    config.nodeEnv === "production"
-      ? false
-      : [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/];
-  await app.register(cors, { origin: corsOrigin });
+  // CORS:
+  //   - Production: same-origin by default (dashboard is bundled and served
+  //     by this same Fastify instance). Operators can opt-in to extra
+  //     origins via SURVHUB_TRUSTED_ORIGINS=https://app.example.com,...
+  //   - Development: allow localhost so the Vite dev server on :5173 can
+  //     talk to the API on :8787 without manual configuration.
+  const trusted = config.trustedOrigins;
+  let corsOrigin: false | string[] | RegExp[];
+  if (config.nodeEnv === "production") {
+    corsOrigin = trusted.length > 0 ? trusted : false;
+  } else {
+    corsOrigin = [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/];
+  }
+  await app.register(cors, {
+    origin: corsOrigin,
+    credentials: true
+  });
   await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+
+  // Cookie-bearing flows (none today, but session migration could add them)
+  // should respect production-safe defaults pulled from config.secureCookies
+  // — ensure the harden-by-default decision is visible at startup.
+  if (config.nodeEnv === "production" && !config.secureCookies) {
+    app.log.warn(
+      "SURVHUB_SECURE_COOKIES is disabled in production — session cookies will not be flagged Secure."
+    );
+  }
 
   const ctx: AppContext = {
     app,
@@ -190,6 +209,7 @@ export async function buildApp(): Promise<AppContext> {
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
+  registerAdminRoutes(ctx);
   const stopCrashReporter = registerCrashReporter(ctx);
   ctx.shutdownTasks.push(() => stopCrashReporter());
 
@@ -212,8 +232,12 @@ export async function buildApp(): Promise<AppContext> {
       action: `${method} ${req.url.split("?")[0]}`,
       resourceType,
       resourceId,
+      targetType: resourceType,
+      targetId: resourceId,
       statusCode: reply.statusCode,
-      details: reply.statusCode >= 400 ? "request_failed" : "request_ok"
+      details: reply.statusCode >= 400 ? "request_failed" : "request_ok",
+      sourceIp: req.ip ?? null,
+      userAgent: (req.headers["user-agent"] as string | undefined) ?? null
     });
   });
 
@@ -304,7 +328,9 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/onboarding",
     "/service-templates",
     "/project-templates",
-    "/tunnels"
+    "/tunnels",
+    "/admin",
+    "/logs"
   ];
 
   app.addHook("onRequest", async (req: any, reply: any) => {

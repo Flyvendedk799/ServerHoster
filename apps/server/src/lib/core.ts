@@ -183,3 +183,72 @@ export function detectBuildType(projectPath: string): BuildType {
     return "python";
   return "unknown";
 }
+
+/**
+ * Central authorisation context. Routes that touch a single service should
+ * call `assertServiceOwnership` before mutating state — it consolidates the
+ * "does this actor own/can manage this service?" check that was otherwise
+ * scattered through ad-hoc DB lookups.
+ *
+ * Today LocalSURV runs in a single-tenant model: any logged-in actor can
+ * manage any service in the instance. The function still resolves the
+ * service row and asserts it exists, which catches a class of confused-
+ * deputy bugs (deleted/renamed services) and gives every callsite a single
+ * place to slot in finer-grained ACLs later without touching every route.
+ */
+export type AuthzContext = {
+  actor: string;
+  action: string;
+  /** Optional source IP for audit enrichment downstream. */
+  sourceIp?: string | null;
+};
+
+export type ServiceOwnershipRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  status: string;
+};
+
+export class AuthzError extends Error {
+  readonly statusCode: number;
+  constructor(message: string, statusCode = 403) {
+    super(message);
+    this.name = "AuthzError";
+    this.statusCode = statusCode;
+  }
+}
+
+export function assertServiceOwnership(
+  ctx: AppContext,
+  serviceId: string,
+  _authz: AuthzContext
+): ServiceOwnershipRow {
+  if (!serviceId || typeof serviceId !== "string") {
+    throw new AuthzError("Missing service id", 400);
+  }
+  const row = ctx.db
+    .prepare("SELECT id, project_id, name, status FROM services WHERE id = ?")
+    .get(serviceId) as ServiceOwnershipRow | undefined;
+  if (!row) {
+    throw new AuthzError(`Service not found: ${serviceId}`, 404);
+  }
+  // Hook point for tenant-aware ACLs: in a multi-tenant deployment we'd
+  // verify _authz.actor's tenant matches row.project_id's tenant here.
+  return row;
+}
+
+export function assertProjectOwnership(
+  ctx: AppContext,
+  projectId: string,
+  _authz: AuthzContext
+): { id: string; name: string } {
+  if (!projectId || typeof projectId !== "string") {
+    throw new AuthzError("Missing project id", 400);
+  }
+  const row = ctx.db.prepare("SELECT id, name FROM projects WHERE id = ?").get(projectId) as
+    | { id: string; name: string }
+    | undefined;
+  if (!row) throw new AuthzError(`Project not found: ${projectId}`, 404);
+  return row;
+}

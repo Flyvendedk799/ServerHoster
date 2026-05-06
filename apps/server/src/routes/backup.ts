@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { nowIso } from "../lib/core.js";
+import {
+  createInstanceBackup,
+  listInstanceBackups,
+  verifyBackupIntegrity,
+  restorePreflight
+} from "../services/backup.js";
 
 const safeTables = new Set([
   "projects",
@@ -47,5 +53,33 @@ export function registerBackupRoutes(ctx: AppContext): void {
     });
     tx();
     return { ok: true };
+  });
+
+  /**
+   * Sequence 5 — instance backup orchestration.
+   *
+   * Creates an on-disk snapshot under `<dataRoot>/backups/`, returns the
+   * checksum and metadata so DR runbooks have something to verify.
+   */
+  ctx.app.post("/backup/instance", async (req) => {
+    const body = z
+      .object({
+        kind: z.enum(["manual", "scheduled", "pre-restore"]).default("manual"),
+        retain: z.number().int().min(1).max(365).optional()
+      })
+      .parse(req.body ?? {});
+    return createInstanceBackup(ctx, body);
+  });
+
+  ctx.app.get("/backup/instance", async () => ({ items: listInstanceBackups(ctx) }));
+
+  ctx.app.get("/backup/instance/:id/verify", async (req) => {
+    const { id } = req.params as { id: string };
+    return verifyBackupIntegrity(ctx, id);
+  });
+
+  ctx.app.post("/backup/instance/:id/restore-preflight", async (req) => {
+    const { id } = req.params as { id: string };
+    return restorePreflight(ctx, id);
   });
 }

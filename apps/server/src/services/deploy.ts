@@ -16,6 +16,8 @@ import type { AppContext } from "../types.js";
 import { startService, stopService } from "./runtime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 import { createNotification } from "./notifications.js";
+import { transition, markFailed } from "./deployStateMachine.js";
+import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
@@ -153,9 +155,12 @@ export async function deployFromGit(
     .run(deploymentId, serviceId, "", "running", "", targetPath, startedAt, startedAt, branch, trigger);
 
   emitProgress(ctx, serviceId, deploymentId, "cloning");
+  transition(ctx, deploymentId, "cloning");
   broadcast(ctx, { type: "deployment_started", serviceId, deploymentId, branch, trigger });
 
+  let failureStage: "queued" | "cloning" | "building" | "starting" | "unknown" = "unknown";
   try {
+    failureStage = "cloning";
     if (fs.existsSync(path.join(targetPath, ".git"))) {
       // Reset origin URL so an updated PAT or switched remote takes effect.
       try {
@@ -185,10 +190,15 @@ export async function deployFromGit(
       )
       .run(inferred.type, inferred.command, targetPath, preferredDockerfile, nowIso(), serviceId);
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
+    failureStage = "building";
+    transition(ctx, deploymentId, "building", { gitSha: commitHash });
     const result = await runBuildPipeline(ctx, serviceId, targetPath, { deploymentId });
     status = result.status;
     buildLog += result.buildLog;
     artifactPath = result.artifactPath;
+    if (status === "success") {
+      transition(ctx, deploymentId, "starting", { gitSha: commitHash });
+    }
   } catch (error) {
     status = "failed";
     const msg = `Deploy failed: ${error instanceof Error ? error.message : String(error)}\n`;
@@ -197,22 +207,31 @@ export async function deployFromGit(
   }
 
   const finishedAt = nowIso();
+  const durationMs = Date.parse(finishedAt) - Date.parse(startedAt);
   emitProgress(ctx, serviceId, deploymentId, status === "success" ? "done" : "failed");
+
+  if (status === "success") {
+    transition(ctx, deploymentId, "healthy", { gitSha: commitHash });
+    recordDeployDuration(ctx, serviceId, durationMs);
+  } else {
+    markFailed(ctx, deploymentId, failureStage);
+    recordDeployFailure(ctx, serviceId, failureStage);
+  }
 
   ctx.db
     .prepare(
       `UPDATE deployments
-     SET commit_hash = ?, status = ?, build_log = ?, artifact_path = ?, finished_at = ?
+     SET commit_hash = ?, status = ?, build_log = ?, artifact_path = ?, finished_at = ?, duration_ms = ?, git_sha = COALESCE(git_sha, ?)
      WHERE id = ?`
     )
-    .run(commitHash, status, buildLog, artifactPath, finishedAt, deploymentId);
+    .run(commitHash, status, buildLog, artifactPath, finishedAt, durationMs, commitHash, deploymentId);
 
   broadcast(ctx, {
     type: "deployment_finished",
     serviceId,
     deploymentId,
     status,
-    durationMs: Date.parse(finishedAt) - Date.parse(startedAt)
+    durationMs
   });
 
   return {
@@ -424,15 +443,33 @@ export async function rollbackDeployment(ctx: AppContext, serviceId: string, dep
   const buildLog = `Rollback to ${deployment.commit_hash}\n${result.buildLog}`;
   const finishedAt = nowIso();
   const artifactPath = deployment.artifact_path ?? result.artifactPath;
+  const durationMs = Date.parse(finishedAt) - Date.parse(startedAt);
   emitProgress(ctx, serviceId, newDeployId, result.status === "success" ? "done" : "failed");
+
+  // Record canonical state on the new (rollback) deployment row, plus mark
+  // the source deployment as rolled_back so the timeline reflects intent.
+  if (result.status === "success") {
+    transition(ctx, newDeployId, "rolled_back", { gitSha: deployment.commit_hash });
+  } else {
+    markFailed(ctx, newDeployId, "building");
+  }
+  transition(ctx, deploymentId, "rolled_back");
 
   ctx.db
     .prepare(
       `UPDATE deployments
-     SET status = ?, build_log = ?, artifact_path = ?, finished_at = ?
+     SET status = ?, build_log = ?, artifact_path = ?, finished_at = ?, duration_ms = ?, git_sha = COALESCE(git_sha, ?)
      WHERE id = ?`
     )
-    .run(result.status, buildLog, artifactPath, finishedAt, newDeployId);
+    .run(
+      result.status === "success" ? "rolled_back" : "failed",
+      buildLog,
+      artifactPath,
+      finishedAt,
+      durationMs,
+      deployment.commit_hash,
+      newDeployId
+    );
 
   broadcast(ctx, {
     type: "deployment_finished",

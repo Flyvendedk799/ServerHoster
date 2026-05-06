@@ -1,11 +1,38 @@
 import type { AppContext } from "../types.js";
+import { z } from "zod";
 import { getExposure } from "../services/exposure.js";
 import { provisionCertificate } from "../services/ssl.js";
+import { diagnoseDomain, issueOwnershipToken, verifyOwnership } from "../services/domainValidation.js";
 
 export function registerExposureRoutes(ctx: AppContext): void {
   ctx.app.get("/services/:id/exposure", async (req) => {
     const { id } = req.params as { id: string };
     return getExposure(ctx, id);
+  });
+
+  /**
+   * Sequence 3 — domain diagnostics. Lightweight DNS check the dashboard
+   * can run before binding a domain; saves a Let's Encrypt rate-limit burn
+   * when DNS is mis-configured.
+   */
+  ctx.app.post("/exposure/domains/diagnose", async (req) => {
+    const body = z
+      .object({
+        domain: z.string().min(1),
+        expectedAddresses: z.array(z.string()).optional()
+      })
+      .parse(req.body);
+    return diagnoseDomain(body.domain, body.expectedAddresses ?? []);
+  });
+
+  ctx.app.post("/exposure/domains/ownership/issue", async (req) => {
+    const body = z.object({ domain: z.string().min(1) }).parse(req.body);
+    return issueOwnershipToken(ctx, body.domain);
+  });
+
+  ctx.app.post("/exposure/domains/ownership/verify", async (req) => {
+    const body = z.object({ domain: z.string().min(1) }).parse(req.body);
+    return verifyOwnership(ctx, body.domain);
   });
 
   /** Cert metadata for the service's currently-bound domain. */

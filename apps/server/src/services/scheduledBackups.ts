@@ -1,5 +1,6 @@
 import type { AppContext } from "../types.js";
 import { createBackup, getDatabase, type DatabaseRow } from "./databases.js";
+import { createInstanceBackup } from "./backup.js";
 
 /**
  * Scheduled DB backup loop. Reads `backup_schedule.*` settings to decide
@@ -62,6 +63,15 @@ async function runScheduledBackups(ctx: AppContext): Promise<void> {
     } catch (err) {
       ctx.app.log?.warn?.({ err, dbId: id }, "scheduled_backup_failed");
     }
+  }
+
+  // Sequence 5 — also cut a snapshot of the LocalSURV control-plane
+  // database itself, so DR drills can verify a restore end-to-end without
+  // depending on the per-engine `pg_dump`/`mysqldump` paths above.
+  try {
+    createInstanceBackup(ctx, { kind: "scheduled", retain });
+  } catch (err) {
+    ctx.app.log?.warn?.({ err }, "scheduled_instance_backup_failed");
   }
 
   ctx.db

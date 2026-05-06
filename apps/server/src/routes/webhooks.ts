@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
+import { writeAuditLog } from "../services/audit.js";
 
 const githubPushPayloadSchema = z
   .object({
@@ -16,6 +17,26 @@ const githubPushPayloadSchema = z
   })
   .passthrough();
 
+/**
+ * Replay protection: keep a bounded LRU of `(deliveryId, timestamp)` pairs
+ * and reject anything we've seen before. The map is intentionally
+ * process-local — webhooks should be processed by the leader instance and
+ * GitHub already deduplicates on the sender side.
+ */
+const seenDeliveries = new Map<string, number>();
+const REPLAY_CACHE_LIMIT = 1024;
+
+function rememberDelivery(id: string): boolean {
+  if (seenDeliveries.has(id)) return false;
+  seenDeliveries.set(id, Date.now());
+  if (seenDeliveries.size > REPLAY_CACHE_LIMIT) {
+    // Drop the oldest entry; Map preserves insertion order.
+    const oldest = seenDeliveries.keys().next().value;
+    if (oldest !== undefined) seenDeliveries.delete(oldest);
+  }
+  return true;
+}
+
 function verifyGithubSignature(
   rawBody: Buffer,
   signatureHeader: string | undefined,
@@ -27,6 +48,31 @@ function verifyGithubSignature(
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Reject webhooks whose signed timestamp is outside the configured skew
+ * window. GitHub does not currently sign timestamps directly, so we accept
+ * either an explicit `X-Hub-Timestamp` header (set by some proxies) or fall
+ * back to the `X-GitHub-Delivery` header's millisecond prefix when present.
+ * Returning `null` means "no usable timestamp, do not enforce skew here";
+ * the HMAC alone still has to verify.
+ */
+function timestampSkewSeconds(headers: Record<string, string | string[] | undefined>): number | null {
+  const headerVal = (k: string): string | undefined => {
+    const raw = headers[k];
+    return Array.isArray(raw) ? raw[0] : raw;
+  };
+  const explicit = headerVal("x-hub-timestamp") ?? headerVal("x-survhub-timestamp");
+  if (explicit) {
+    const parsed = Number(explicit);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      // Accept seconds or milliseconds.
+      const ms = parsed > 10_000_000_000 ? parsed : parsed * 1000;
+      return Math.abs((Date.now() - ms) / 1000);
+    }
+  }
+  return null;
 }
 
 export function registerWebhookRoutes(ctx: AppContext): void {
@@ -48,7 +94,49 @@ export function registerWebhookRoutes(ctx: AppContext): void {
         const signature = req.headers["x-hub-signature-256"];
         const sigHeader = Array.isArray(signature) ? signature[0] : signature;
         if (!rawBody || !verifyGithubSignature(rawBody, sigHeader, ctx.config.webhookSecret)) {
+          writeAuditLog(ctx, {
+            actor: "webhook:github",
+            action: "POST /webhooks/github",
+            resourceType: "webhook",
+            statusCode: 401,
+            details: "signature_mismatch",
+            sourceIp: req.ip ?? null,
+            userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+          });
           return reply.code(401).send({ error: "Invalid webhook signature" });
+        }
+
+        // Replay protection: reject duplicate X-GitHub-Delivery IDs.
+        const deliveryRaw = req.headers["x-github-delivery"];
+        const deliveryId = Array.isArray(deliveryRaw) ? deliveryRaw[0] : deliveryRaw;
+        if (deliveryId) {
+          if (!rememberDelivery(deliveryId)) {
+            writeAuditLog(ctx, {
+              actor: "webhook:github",
+              action: "POST /webhooks/github",
+              resourceType: "webhook",
+              statusCode: 409,
+              details: `replay:${deliveryId}`,
+              sourceIp: req.ip ?? null,
+              userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+            });
+            return reply.code(409).send({ error: "Replayed webhook delivery" });
+          }
+        }
+
+        // Optional skew window enforcement when a timestamp is present.
+        const skew = timestampSkewSeconds(req.headers as Record<string, string | string[] | undefined>);
+        if (skew !== null && skew > ctx.config.webhookMaxSkewSeconds) {
+          writeAuditLog(ctx, {
+            actor: "webhook:github",
+            action: "POST /webhooks/github",
+            resourceType: "webhook",
+            statusCode: 401,
+            details: `stale_timestamp:${skew.toFixed(1)}s`,
+            sourceIp: req.ip ?? null,
+            userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+          });
+          return reply.code(401).send({ error: "Webhook timestamp outside skew window" });
         }
       }
 

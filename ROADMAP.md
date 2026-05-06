@@ -8,7 +8,7 @@
 
 This original roadmap is **complete through Phase 12** and shipped as `0.1.0-alpha` (see [CHANGELOG.md](CHANGELOG.md)). It got LocalSURV to single-machine, self-hosted feature-completeness on Linux + macOS + Docker.
 
-The next milestone — `0.2.0` — is the **production-readiness sequence**: the work needed to safely hand the software to strangers as a public download. Sequenced plan in `~/.claude/plans/we-are-working-in-shiny-stallman.md`. Headline items not in the original 12 phases:
+The next milestone — `0.2.0` — is the **production-readiness sequence**: the work needed to safely hand the software to strangers as a public download. The authoritative source of truth is now [`docs/readiness-checklist.md`](docs/readiness-checklist.md) (CI-verified via `npm run verify:readiness`); the long-form plan lives in [`docs/100-percent-readiness-sequence-plan.md`](docs/100-percent-readiness-sequence-plan.md). Headline items not in the original 12 phases:
 
 - **Sequence 0** — Truth-up README/CHANGELOG/ROADMAP (this entry).
 - **Sequence 1** — Webhook signature validation, CORS lockdown, `install.sh` hardening, `localsurv reset-admin`, per-endpoint rate limits.

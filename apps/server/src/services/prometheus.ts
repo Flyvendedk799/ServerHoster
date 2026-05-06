@@ -1,5 +1,6 @@
 import os from "node:os";
 import type { AppContext } from "../types.js";
+import { snapshotDeployKpis } from "./metrics.js";
 
 /**
  * Minimal Prometheus text-format endpoint. We don't pull in `prom-client`
@@ -62,6 +63,28 @@ export function renderPrometheusText(ctx: AppContext): string {
   lines.push(`# TYPE localsurv_deployments_last_hour_total counter`);
   for (const row of deployments) {
     lines.push(`localsurv_deployments_last_hour_total{status="${quote(row.status)}"} ${row.count}`);
+  }
+
+  // Sequence 4 — deploy KPIs
+  const kpi = snapshotDeployKpis();
+  lines.push(`# HELP localsurv_deploy_total Total deploys observed since process start.`);
+  lines.push(`# TYPE localsurv_deploy_total counter`);
+  lines.push(`localsurv_deploy_total ${kpi.totalDeployments}`);
+  lines.push(`# HELP localsurv_deploy_failed_total Failed deploys observed since process start.`);
+  lines.push(`# TYPE localsurv_deploy_failed_total counter`);
+  lines.push(`localsurv_deploy_failed_total ${kpi.failedDeployments}`);
+  lines.push(`# HELP localsurv_deploy_failure_stage_total Deploy failures by canonical stage.`);
+  lines.push(`# TYPE localsurv_deploy_failure_stage_total counter`);
+  for (const [stage, count] of Object.entries(kpi.failureByStage)) {
+    lines.push(`localsurv_deploy_failure_stage_total{stage="${quote(stage)}"} ${count}`);
+  }
+  if (kpi.durationP50Ms !== null) {
+    lines.push(`# HELP localsurv_deploy_duration_ms p50/p95 deploy durations (in-process histogram).`);
+    lines.push(`# TYPE localsurv_deploy_duration_ms gauge`);
+    lines.push(`localsurv_deploy_duration_ms{quantile="0.5"} ${kpi.durationP50Ms}`);
+    if (kpi.durationP95Ms !== null) {
+      lines.push(`localsurv_deploy_duration_ms{quantile="0.95"} ${kpi.durationP95Ms}`);
+    }
   }
 
   // certificates expiry (days remaining)

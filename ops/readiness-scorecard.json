@@ -1,0 +1,260 @@
+{
+  "generatedAt": "2026-05-06T22:37:25.328Z",
+  "sequences": [
+    {
+      "sequence": 0,
+      "total": 3,
+      "pass": 3,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq0.checklist",
+          "sequence": 0,
+          "required": true,
+          "status": "pass",
+          "message": "docs/readiness-checklist.md present (5710b)"
+        },
+        {
+          "id": "seq0.gates",
+          "sequence": 0,
+          "required": true,
+          "status": "pass",
+          "message": "ops/release-gates.json present (7509b)"
+        },
+        {
+          "id": "seq0.verify_script",
+          "sequence": 0,
+          "required": true,
+          "status": "pass",
+          "message": "scripts/ci/verify-readiness.ts present (6548b)"
+        }
+      ]
+    },
+    {
+      "sequence": 1,
+      "total": 5,
+      "pass": 5,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq1.webhook_signature",
+          "sequence": 1,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/webhooks.ts contains all required substrings"
+        },
+        {
+          "id": "seq1.admin_reset_route",
+          "sequence": 1,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/admin.ts present (5221b)"
+        },
+        {
+          "id": "seq1.authz_helper",
+          "sequence": 1,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/lib/core.ts contains all required substrings"
+        },
+        {
+          "id": "seq1.config_defaults",
+          "sequence": 1,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/config.ts contains all required substrings"
+        },
+        {
+          "id": "seq1.audit_enrichment",
+          "sequence": 1,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/audit.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "total": 3,
+      "pass": 3,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq2.state_machine",
+          "sequence": 2,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/deployStateMachine.ts present (4819b)"
+        },
+        {
+          "id": "seq2.persistence_columns",
+          "sequence": 2,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/db.ts contains all required substrings"
+        },
+        {
+          "id": "seq2.cleanup_dead_letter",
+          "sequence": 2,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/cleanupQueue.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "total": 3,
+      "pass": 3,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq3.host_routing",
+          "sequence": 3,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/proxy.ts contains all required substrings"
+        },
+        {
+          "id": "seq3.acme_preflight",
+          "sequence": 3,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/ssl.ts contains all required substrings"
+        },
+        {
+          "id": "seq3.tunnel_adapters",
+          "sequence": 3,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/tunnels/index.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 4,
+      "total": 2,
+      "pass": 2,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq4.metrics_service",
+          "sequence": 4,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/metrics.ts contains all required substrings"
+        },
+        {
+          "id": "seq4.log_query",
+          "sequence": 4,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/observability.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "total": 2,
+      "pass": 2,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq5.backup_service",
+          "sequence": 5,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/backup.ts present (7635b)"
+        },
+        {
+          "id": "seq5.backup_checksum",
+          "sequence": 5,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/backup.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 6,
+      "total": 1,
+      "pass": 1,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq6.first_run_diagnostics",
+          "sequence": 6,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/ops.ts contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 7,
+      "total": 2,
+      "pass": 2,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq7.install_idempotency",
+          "sequence": 7,
+          "required": true,
+          "status": "pass",
+          "message": "install.sh contains all required substrings"
+        },
+        {
+          "id": "seq7.install_ps1",
+          "sequence": 7,
+          "required": true,
+          "status": "pass",
+          "message": "install.ps1 contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 8,
+      "total": 2,
+      "pass": 2,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq8.required_checks",
+          "sequence": 8,
+          "required": true,
+          "status": "pass",
+          "message": ".github/workflows/ci.yml contains all required substrings"
+        },
+        {
+          "id": "seq8.release_runbook",
+          "sequence": 8,
+          "required": true,
+          "status": "pass",
+          "message": "docs/releases.md contains all required substrings"
+        }
+      ]
+    },
+    {
+      "sequence": 9,
+      "total": 1,
+      "pass": 1,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq9.scorecard",
+          "sequence": 9,
+          "required": true,
+          "status": "pass",
+          "message": "docs/readiness-checklist.md contains all required substrings"
+        }
+      ]
+    }
+  ],
+  "overall": {
+    "total": 24,
+    "pass": 24,
+    "fail": 0,
+    "skipped": 0,
+    "failedRequired": []
+  }
+}
