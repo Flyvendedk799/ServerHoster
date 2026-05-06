@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "start";
@@ -19,15 +20,19 @@ function printHelp(): void {
 Usage: survhub <command>
 
 Commands:
-  start           Start the LocalSURV server (API + dashboard)
-  init            Create ~/.survhub, generate SURVHUB_SECRET_KEY, write an env file
-  version         Print version information
-  help            Show this help
+  start                  Start the LocalSURV server (API + dashboard)
+  init                   Create ~/.survhub, generate SURVHUB_SECRET_KEY, write an env file
+  reset-admin [username] Reset the admin password (run on the host, not over HTTP)
+  prune-services         Delete stale "svc-*" test-fixture services from the DB
+                         (pass --dry-run to preview without deleting)
+  version                Print version information
+  help                   Show this help
 
 Environment:
-  SURVHUB_SECRET_KEY   Required. AES-256-GCM key for at-rest encryption.
-  SURVHUB_PORT         API port (default 8787)
-  SURVHUB_DATA_DIR     State directory (default ~/.survhub)
+  SURVHUB_SECRET_KEY     Required. AES-256-GCM key for at-rest encryption.
+  SURVHUB_WEBHOOK_SECRET Required for /webhooks/github (set the same value in GitHub).
+  SURVHUB_PORT           API port (default 8787)
+  SURVHUB_DATA_DIR       State directory (default ~/.survhub)
 
 See docs/configuration.md for the full list.
 `
@@ -65,18 +70,154 @@ function cmdInit(): void {
   fs.writeFileSync(envFile, body, { mode: 0o600 });
   process.stdout.write(
     `Wrote ${envFile}\n` +
-    `Data directory: ${dataDir}\n\n` +
-    `Next:\n` +
-    `  set -a && source ${envFile} && set +a\n` +
-    `  survhub start\n`
+      `Data directory: ${dataDir}\n\n` +
+      `Next:\n` +
+      `  set -a && source ${envFile} && set +a\n` +
+      `  survhub start\n`
   );
+}
+
+function cmdResetAdmin(usernameArg: string | undefined): void {
+  const dataDir = process.env.SURVHUB_DATA_DIR ?? path.join(os.homedir(), ".survhub");
+  const dbPath = path.join(dataDir, "survhub.db");
+  if (!fs.existsSync(dbPath)) {
+    process.stderr.write(`No database found at ${dbPath}. Has LocalSURV been started yet?\n`);
+    process.exit(1);
+  }
+  // Lazy require so the CLI doesn't drag better-sqlite3 (native module) in
+  // for `init`/`version`/`help`.
+  const requireFn = createRequire(import.meta.url);
+  const Database = requireFn("better-sqlite3");
+  const db = new Database(dbPath);
+  try {
+    let row: { id: string; username: string } | undefined;
+    if (usernameArg) {
+      row = db.prepare("SELECT id, username FROM users WHERE username = ?").get(usernameArg) as
+        | { id: string; username: string }
+        | undefined;
+      if (!row) {
+        process.stderr.write(`No user found with username "${usernameArg}".\n`);
+        process.exit(1);
+      }
+    } else {
+      row = db
+        .prepare("SELECT id, username FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1")
+        .get() as { id: string; username: string } | undefined;
+      if (!row) {
+        process.stderr.write(
+          "No admin user exists yet. Open the dashboard at http://localhost:8787 and use the bootstrap form to create one.\n"
+        );
+        process.exit(1);
+      }
+    }
+
+    const newPassword = crypto.randomBytes(18).toString("base64").replace(/[+/=]/g, "").slice(0, 24);
+    const salt = crypto.randomBytes(16).toString("hex");
+    const hash = crypto.pbkdf2Sync(newPassword, salt, 100000, 32, "sha256").toString("hex");
+    const stored = `${salt}:${hash}`;
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(
+      stored,
+      new Date().toISOString(),
+      row.id
+    );
+    // Invalidate any active sessions for this user so the old credentials can't keep a foothold.
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(row.id);
+
+    process.stdout.write(
+      `Admin password reset for user "${row.username}".\n` +
+        `New password: ${newPassword}\n` +
+        `Existing sessions for this user have been revoked.\n`
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function cmdPruneServices(opts: { dryRun: boolean }): void {
+  const dataDir = process.env.SURVHUB_DATA_DIR ?? path.join(os.homedir(), ".survhub");
+  const dbPath = path.join(dataDir, "survhub.db");
+  if (!fs.existsSync(dbPath)) {
+    process.stderr.write(`No database found at ${dbPath}.\n`);
+    process.exit(1);
+  }
+
+  // Probe Docker once for live container names so we never delete a service
+  // whose container is still running. If `docker` isn't installed, treat
+  // every candidate as not-live (the container never existed).
+  const liveContainers = new Set<string>();
+  try {
+    const out = spawnSync("docker", ["ps", "-a", "--format", "{{.Names}}"], { encoding: "utf8" });
+    if (out.status === 0 && typeof out.stdout === "string") {
+      for (const line of out.stdout.split(/\r?\n/)) {
+        const name = line.trim();
+        if (name) liveContainers.add(name);
+      }
+    }
+  } catch {
+    /* ignore — assume no containers */
+  }
+
+  const requireFn = createRequire(import.meta.url);
+  const Database = requireFn("better-sqlite3");
+  const db = new Database(dbPath);
+  try {
+    const candidates = db
+      .prepare(
+        "SELECT id, name, status FROM services WHERE name LIKE 'svc-%' AND status IN ('stopped', 'crashed')"
+      )
+      .all() as Array<{ id: string; name: string; status: string }>;
+
+    const toDelete = candidates.filter((c) => !liveContainers.has(`survhub-${c.id}`));
+    const skipped = candidates.length - toDelete.length;
+
+    if (toDelete.length === 0) {
+      process.stdout.write(
+        `No prunable services found (matched ${candidates.length}, skipped ${skipped} with live containers).\n`
+      );
+      return;
+    }
+
+    process.stdout.write(`Found ${toDelete.length} prunable services:\n`);
+    for (const row of toDelete) {
+      process.stdout.write(`  - ${row.name} (${row.id}) [${row.status}]\n`);
+    }
+    if (skipped > 0) {
+      process.stdout.write(`  (skipped ${skipped} with a live survhub-<id> container)\n`);
+    }
+
+    if (opts.dryRun) {
+      process.stdout.write("\nDry run — no rows deleted. Re-run without --dry-run to apply.\n");
+      return;
+    }
+
+    // Cascade delete — these tables all reference services.id and SQLite has no
+    // ON DELETE CASCADE on the existing schema. Wrap in a transaction.
+    const idChunks = [toDelete.map((r) => r.id)];
+    const tx = db.transaction(() => {
+      for (const ids of idChunks) {
+        if (ids.length === 0) continue;
+        const placeholders = ids.map(() => "?").join(",");
+        db.prepare(`DELETE FROM env_vars WHERE service_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM logs WHERE service_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM deployments WHERE service_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM proxy_routes WHERE service_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM metrics WHERE service_id IN (${placeholders})`).run(...ids);
+        db.prepare(`DELETE FROM services WHERE id IN (${placeholders})`).run(...ids);
+      }
+    });
+    tx();
+
+    process.stdout.write(`\nDeleted ${toDelete.length} services.\n`);
+  } finally {
+    db.close();
+  }
 }
 
 function cmdStart(): void {
   if (!process.env.SURVHUB_SECRET_KEY) {
     process.stderr.write(
       "WARNING: SURVHUB_SECRET_KEY is not set. Secrets will not be persisted encrypted.\n" +
-      "Run `survhub init` to generate one, or export it manually before starting.\n"
+        "Run `survhub init` to generate one, or export it manually before starting.\n"
     );
   }
   const child = spawn(process.execPath, [entry], { stdio: "inherit", env: process.env });
@@ -90,6 +231,12 @@ switch (command) {
     break;
   case "init":
     cmdInit();
+    break;
+  case "reset-admin":
+    cmdResetAdmin(args[1]);
+    break;
+  case "prune-services":
+    cmdPruneServices({ dryRun: args.includes("--dry-run") });
     break;
   case "version":
   case "--version":

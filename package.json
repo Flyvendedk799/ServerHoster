@@ -12,6 +12,7 @@
     "dev:web": "npm run dev -w @survhub/web",
     "build": "npm run build --workspaces --if-present",
     "start": "npm run start -w @survhub/server",
+    "desktop": "npm run build && npm run start -w @survhub/desktop",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint apps packages --ext .ts,.tsx",
     "lint:fix": "eslint apps packages --ext .ts,.tsx --fix",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@eslint/js": "^9.13.0",
     "eslint": "^9.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.3.3",
     "typescript-eslint": "^8.11.0"
   }

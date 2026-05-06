@@ -17,6 +17,8 @@ export const config = {
   scriptsDir: path.join(dataRoot, "scripts"),
   authToken: process.env.SURVHUB_AUTH_TOKEN ?? "",
   secretKey: process.env.SURVHUB_SECRET_KEY ?? "",
+  webhookSecret: process.env.SURVHUB_WEBHOOK_SECRET ?? "",
+  webhookInsecure: process.env.SURVHUB_WEBHOOK_INSECURE === "1",
   sessionTtlMs: Number(process.env.SURVHUB_SESSION_TTL_MS ?? 1000 * 60 * 60 * 12),
   enableHttps: process.env.SURVHUB_ENABLE_HTTPS === "1",
   certPath: process.env.SURVHUB_CERT_PATH ?? path.join(dataRoot, "certs", "server-cert.pem"),

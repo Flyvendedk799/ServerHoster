@@ -25,12 +25,24 @@ const templateCreateSchema = z.object({
 });
 
 export function registerProjectRoutes(ctx: AppContext): void {
-  ctx.app.get("/projects", async () => ctx.db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all());
+  ctx.app.get("/projects", async () =>
+    ctx.db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all()
+  );
 
   ctx.app.post("/projects", async (req) => {
     const p = projectSchema.parse(req.body);
-    const row = { id: nanoid(), name: p.name, description: p.description ?? "", git_url: p.gitUrl ?? "", created_at: nowIso(), updated_at: nowIso() };
-    ctx.db.prepare("INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    const row = {
+      id: nanoid(),
+      name: p.name,
+      description: p.description ?? "",
+      git_url: p.gitUrl ?? "",
+      created_at: nowIso(),
+      updated_at: nowIso()
+    };
+    ctx.db
+      .prepare(
+        "INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
       .run(row.id, row.name, row.description, row.git_url, row.created_at, row.updated_at);
     return row;
   });
@@ -38,19 +50,24 @@ export function registerProjectRoutes(ctx: AppContext): void {
   ctx.app.put("/projects/:id", async (req) => {
     const { id } = req.params as { id: string };
     const p = projectUpdateSchema.parse(req.body);
-    const existing = ctx.db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const existing = ctx.db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
     if (!existing) throw new Error("Project not found");
     const name = p.name ?? String(existing.name ?? "");
     const description = p.description ?? String(existing.description ?? "");
     const gitUrl = p.gitUrl ?? String(existing.git_url ?? "");
-    ctx.db.prepare("UPDATE projects SET name = ?, description = ?, git_url = ?, updated_at = ? WHERE id = ?")
+    ctx.db
+      .prepare("UPDATE projects SET name = ?, description = ?, git_url = ?, updated_at = ? WHERE id = ?")
       .run(name, description, gitUrl, nowIso(), id);
     return { id, name, description, git_url: gitUrl };
   });
 
   ctx.app.delete("/projects/:id", async (req) => {
     const { id } = req.params as { id: string };
-    ctx.db.prepare("DELETE FROM env_vars WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)").run(id);
+    ctx.db
+      .prepare("DELETE FROM env_vars WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)")
+      .run(id);
     ctx.db.prepare("DELETE FROM services WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM databases WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
@@ -63,7 +80,9 @@ export function registerProjectRoutes(ctx: AppContext): void {
     projectId: string,
     action: (serviceId: string) => Promise<void>
   ): Promise<{ results: Array<{ serviceId: string; ok: boolean; error?: string }> }> {
-    const rows = ctx.db.prepare("SELECT id FROM services WHERE project_id = ?").all(projectId) as Array<{ id: string }>;
+    const rows = ctx.db.prepare("SELECT id FROM services WHERE project_id = ?").all(projectId) as Array<{
+      id: string;
+    }>;
     const results: Array<{ serviceId: string; ok: boolean; error?: string }> = [];
     for (const row of rows) {
       try {
@@ -88,13 +107,21 @@ export function registerProjectRoutes(ctx: AppContext): void {
   ctx.app.post("/projects/:id/deploy-all", async (req) => {
     const { id } = req.params as { id: string };
     const rows = ctx.db
-      .prepare("SELECT id, github_repo_url, github_branch FROM services WHERE project_id = ? AND github_repo_url IS NOT NULL")
+      .prepare(
+        "SELECT id, github_repo_url, github_branch FROM services WHERE project_id = ? AND github_repo_url IS NOT NULL"
+      )
       .all(id) as Array<{ id: string; github_repo_url: string; github_branch?: string }>;
     const results: Array<{ serviceId: string; ok: boolean; status?: string; error?: string }> = [];
     for (const r of rows) {
       try {
         await stopServiceIfRunning(ctx, r.id);
-        const deployment = await deployFromGit(ctx, r.id, r.github_repo_url, r.github_branch || "main", "manual");
+        const deployment = await deployFromGit(
+          ctx,
+          r.id,
+          r.github_repo_url,
+          r.github_branch || "main",
+          "manual"
+        );
         await applyPostDeployServiceState(ctx, r.id, deployment, { startAfterDeploy: true });
         results.push({ serviceId: r.id, ok: deployment.status === "success", status: deployment.status });
       } catch (error) {
@@ -107,12 +134,16 @@ export function registerProjectRoutes(ctx: AppContext): void {
   // --- Project env vars (inherited by all services in the project) ---------
   ctx.app.get("/projects/:id/env", async (req) => {
     const { id } = req.params as { id: string };
-    return ctx.db.prepare("SELECT id, key, value, is_secret FROM project_env_vars WHERE project_id = ? ORDER BY key ASC").all(id);
+    return ctx.db
+      .prepare("SELECT id, key, value, is_secret FROM project_env_vars WHERE project_id = ? ORDER BY key ASC")
+      .all(id);
   });
 
   ctx.app.post("/projects/:id/env", async (req) => {
     const { id } = req.params as { id: string };
-    const p = z.object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) }).parse(req.body);
+    const p = z
+      .object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) })
+      .parse(req.body);
     const rowId = nanoid();
     ctx.db
       .prepare(
@@ -141,7 +172,10 @@ export function registerProjectRoutes(ctx: AppContext): void {
     const projectId = nanoid();
     const createdAt = nowIso();
     const projectName = p.projectName?.trim() || `${p.name} project`;
-    ctx.db.prepare("INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    ctx.db
+      .prepare(
+        "INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
       .run(projectId, projectName, `Generated from ${p.template}`, "", createdAt, createdAt);
 
     const serviceId = nanoid();
@@ -153,23 +187,54 @@ export function registerProjectRoutes(ctx: AppContext): void {
     if (p.template === "python-api") command = "python app.py";
     if (p.template === "static-site") type = "static";
 
-    ctx.db.prepare(`INSERT INTO services (
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      serviceId, projectId, p.name, type, command, serviceRoot, "", "", null, "stopped",
-      1, 0, 5, "manual", createdAt, createdAt
-    );
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        serviceId,
+        projectId,
+        p.name,
+        type,
+        command,
+        serviceRoot,
+        "",
+        "",
+        null,
+        "stopped",
+        1,
+        0,
+        5,
+        "manual",
+        createdAt,
+        createdAt
+      );
 
     if (p.template === "node-api" || p.template === "static-site") {
-      fs.writeFileSync(path.join(serviceRoot, "package.json"), JSON.stringify({
-        name: p.name.toLowerCase().replace(/\s+/g, "-"),
-        version: "1.0.0",
-        scripts: { dev: "node index.js" }
-      }, null, 2));
-      fs.writeFileSync(path.join(serviceRoot, "index.js"), "console.log('SURVHub template service running');\n");
+      fs.writeFileSync(
+        path.join(serviceRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: p.name.toLowerCase().replace(/\s+/g, "-"),
+            version: "1.0.0",
+            scripts: { dev: "node index.js" }
+          },
+          null,
+          2
+        )
+      );
+      fs.writeFileSync(
+        path.join(serviceRoot, "index.js"),
+        "console.log('SURVHub template service running');\n"
+      );
     } else {
-      fs.writeFileSync(path.join(serviceRoot, "app.py"), "print('SURVHub python template service running')\n");
+      fs.writeFileSync(
+        path.join(serviceRoot, "app.py"),
+        "print('SURVHub python template service running')\n"
+      );
       fs.writeFileSync(path.join(serviceRoot, "requirements.txt"), "");
     }
     return { projectId, serviceId, serviceRoot };

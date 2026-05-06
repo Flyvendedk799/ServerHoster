@@ -1,182 +1,355 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Self-hosted deploy platform for your own hardware — clone a repo, wire a domain, ship." />
-  <meta property="og:title" content="LocalSURV" />
-  <meta property="og:description" content="Self-hosted deploy platform for your own hardware." />
-  <meta property="og:type" content="website" />
-  <title>LocalSURV — self-hosted deploy platform</title>
-  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <style>
-    :root {
-      --bg: radial-gradient(circle at top, #1e293b 0%, #0b1020 45%, #070b15 100%);
-      --surface: rgba(15, 23, 42, 0.95);
-      --border: #223253;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #2563eb;
-      --accent-strong: #1d4ed8;
-      --success: #10b981;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: Inter, system-ui, sans-serif; }
-    body { background: var(--bg); color: var(--text); line-height: 1.55; }
-    a { color: #93c5fd; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    main { max-width: 960px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Self-hosted deploy platform for your own hardware — clone a repo, wire a domain, ship."
+    />
+    <meta property="og:title" content="LocalSURV" />
+    <meta property="og:description" content="Self-hosted deploy platform for your own hardware." />
+    <meta property="og:type" content="website" />
+    <title>LocalSURV — self-hosted deploy platform</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: radial-gradient(circle at top, #1e293b 0%, #0b1020 45%, #070b15 100%);
+        --surface: rgba(15, 23, 42, 0.95);
+        --border: #223253;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #2563eb;
+        --accent-strong: #1d4ed8;
+        --success: #10b981;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: Inter, system-ui, sans-serif;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.55;
+      }
+      a {
+        color: #93c5fd;
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 3rem 1.5rem 5rem;
+      }
 
-    .hero { text-align: center; padding: 3rem 0 4rem; }
-    .hero .badge {
-      display: inline-block;
-      padding: 0.25rem 0.75rem;
-      border-radius: 999px;
-      background: rgba(37, 99, 235, 0.15);
-      border: 1px solid var(--accent);
-      font-size: 0.78rem;
-      color: #93c5fd;
-      margin-bottom: 1.5rem;
-    }
-    .hero h1 { font-size: clamp(2.2rem, 6vw, 3.8rem); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 1rem; }
-    .hero h1 span { background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }
-    .hero p { font-size: 1.15rem; color: var(--muted); max-width: 620px; margin: 0 auto 2rem; }
+      .hero {
+        text-align: center;
+        padding: 3rem 0 4rem;
+      }
+      .hero .badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        background: rgba(37, 99, 235, 0.15);
+        border: 1px solid var(--accent);
+        font-size: 0.78rem;
+        color: #93c5fd;
+        margin-bottom: 1.5rem;
+      }
+      .hero h1 {
+        font-size: clamp(2.2rem, 6vw, 3.8rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 1rem;
+      }
+      .hero h1 span {
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero p {
+        font-size: 1.15rem;
+        color: var(--muted);
+        max-width: 620px;
+        margin: 0 auto 2rem;
+      }
 
-    .cta { display: inline-flex; gap: 0.8rem; flex-wrap: wrap; justify-content: center; }
-    .btn {
-      padding: 0.8rem 1.4rem;
-      border-radius: 10px;
-      font-weight: 600;
-      font-size: 0.95rem;
-      transition: transform 120ms ease, filter 120ms ease;
-    }
-    .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: white; }
-    .btn-primary:hover { filter: brightness(1.1); text-decoration: none; }
-    .btn-ghost { border: 1px solid var(--border); color: var(--text); }
-    .btn-ghost:hover { background: rgba(255,255,255,0.04); text-decoration: none; }
+      .cta {
+        display: inline-flex;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .btn {
+        padding: 0.8rem 1.4rem;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        transition:
+          transform 120ms ease,
+          filter 120ms ease;
+      }
+      .btn-primary {
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        color: white;
+      }
+      .btn-primary:hover {
+        filter: brightness(1.1);
+        text-decoration: none;
+      }
+      .btn-ghost {
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .btn-ghost:hover {
+        background: rgba(255, 255, 255, 0.04);
+        text-decoration: none;
+      }
 
-    pre.install {
-      background: #020617;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1rem 1.25rem;
-      margin: 2rem auto 0;
-      max-width: 620px;
-      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
-      font-size: 0.85rem;
-      color: #a7f3d0;
-      overflow-x: auto;
-      text-align: left;
-    }
-    pre.install span.prompt { color: #64748b; user-select: none; }
+      pre.install {
+        background: #020617;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem 1.25rem;
+        margin: 2rem auto 0;
+        max-width: 620px;
+        font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 0.85rem;
+        color: #a7f3d0;
+        overflow-x: auto;
+        text-align: left;
+      }
+      pre.install span.prompt {
+        color: #64748b;
+        user-select: none;
+      }
 
-    section.features { margin-top: 5rem; }
-    section.features h2 { font-size: 1.8rem; margin-bottom: 2rem; text-align: center; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1rem;
-    }
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 1.4rem;
-    }
-    .card h3 { font-size: 1.1rem; margin-bottom: 0.5rem; color: #f8fafc; }
-    .card p { color: var(--muted); font-size: 0.92rem; }
-    .card .icon { font-size: 1.6rem; margin-bottom: 0.75rem; }
+      section.features {
+        margin-top: 5rem;
+      }
+      section.features h2 {
+        font-size: 1.8rem;
+        margin-bottom: 2rem;
+        text-align: center;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 1.4rem;
+      }
+      .card h3 {
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+        color: #f8fafc;
+      }
+      .card p {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      .card .icon {
+        font-size: 1.6rem;
+        margin-bottom: 0.75rem;
+      }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
-      margin-top: 2rem;
-      font-size: 0.9rem;
-    }
-    th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
-    th { background: rgba(37, 99, 235, 0.1); color: #bfdbfe; font-weight: 600; }
-    tr:last-child td { border-bottom: none; }
-    .yes { color: var(--success); font-weight: 600; }
-    .no { color: #64748b; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        margin-top: 2rem;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        padding: 0.7rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        background: rgba(37, 99, 235, 0.1);
+        color: #bfdbfe;
+        font-weight: 600;
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      .yes {
+        color: var(--success);
+        font-weight: 600;
+      }
+      .no {
+        color: #64748b;
+      }
 
-    footer { margin-top: 5rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
-  </style>
-</head>
-<body>
-  <main>
-    <section class="hero">
-      <div class="badge">v0.1.0 · MIT licensed · self-host in 5 min</div>
-      <h1>Deploy <span>your own stack</span><br/>on your own hardware</h1>
-      <p>
-        LocalSURV is a self-hosted deploy platform — GitHub push-to-deploy, live build logs, reverse proxy, SSL,
-        Cloudflare Tunnel, and managed databases, all from a single binary on a Mac mini or Linux box you already own.
-      </p>
-      <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/your-org/localsurv">View on GitHub →</a>
-        <a class="btn btn-ghost" href="https://github.com/your-org/localsurv/blob/main/docs/getting-started.md">5-minute quickstart</a>
-      </div>
-      <pre class="install"><span class="prompt">$</span> curl -fsSL https://localsurv.dev/install.sh | bash</pre>
-    </section>
-
-    <section class="features">
-      <h2>What's in the box</h2>
-      <div class="grid">
-        <div class="card">
-          <div class="icon">🚀</div>
-          <h3>Git push-to-deploy</h3>
-          <p>GitHub PAT or SSH key, auto-detected Node/Python/Docker builds, live-streamed build logs, webhooks, or 60 s GitOps polling.</p>
+      footer {
+        margin-top: 5rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="badge">v0.1.0 · MIT licensed · self-host in 5 min</div>
+        <h1>Deploy <span>your own stack</span><br />on your own hardware</h1>
+        <p>
+          LocalSURV is a self-hosted deploy platform — GitHub push-to-deploy, live build logs, reverse proxy,
+          SSL, Cloudflare Tunnel, and managed databases, all from a single binary on a Mac mini or Linux box
+          you already own.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://github.com/your-org/localsurv">View on GitHub →</a>
+          <a
+            class="btn btn-ghost"
+            href="https://github.com/your-org/localsurv/blob/main/docs/getting-started.md"
+            >5-minute quickstart</a
+          >
         </div>
-        <div class="card">
-          <div class="icon">🌐</div>
-          <h3>Host-based reverse proxy</h3>
-          <p>Map any domain to a local port. Automatic Let's Encrypt (HTTP-01 or DNS-01) or Cloudflare Tunnel integration — pick your poison.</p>
-        </div>
-        <div class="card">
-          <div class="icon">📊</div>
-          <h3>Observability that ships</h3>
-          <p>Per-service CPU/memory, live WebSocket logs, deployment progress, a system health score, and Discord/Slack notifications.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🗄️</div>
-          <h3>Managed databases</h3>
-          <p>One-click Postgres, MySQL, Redis, Mongo. Auto-inject <code>DATABASE_URL</code>, one-click <code>pg_dump</code> backups, SQL seed runner.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🔒</div>
-          <h3>Encrypted at rest</h3>
-          <p>AES-256-GCM on every secret: env vars, GitHub PATs, Cloudflare tokens. Never logged, never echoed.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🧱</div>
-          <h3>Zero daemons</h3>
-          <p>Single Node process, single SQLite file. No Redis, no Postgres for state, no external queue.</p>
-        </div>
-      </div>
-    </section>
+        <pre
+          class="install"
+        ><span class="prompt">$</span> curl -fsSL https://localsurv.dev/install.sh | bash</pre>
+      </section>
 
-    <section class="features">
-      <h2>How it compares</h2>
-      <table>
-        <thead><tr><th></th><th>LocalSURV</th><th>Railway</th><th>Coolify</th><th>CapRover</th></tr></thead>
-        <tbody>
-          <tr><td>Self-hosted</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
-          <tr><td>GitHub auto-deploy</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
-          <tr><td>Cloudflare Tunnel built-in</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>SQLite state (no external DB)</td><td class="yes">Yes</td><td class="no">n/a</td><td class="no">No</td><td class="no">No</td></tr>
-          <tr><td>Process + Docker services</td><td class="yes">Both</td><td class="no">Docker</td><td class="no">Docker</td><td class="no">Docker</td></tr>
-          <tr><td>Cost</td><td class="yes">Free</td><td class="no">$$</td><td class="yes">Free</td><td class="yes">Free</td></tr>
-        </tbody>
-      </table>
-    </section>
+      <section class="features">
+        <h2>What's in the box</h2>
+        <div class="grid">
+          <div class="card">
+            <div class="icon">🚀</div>
+            <h3>Git push-to-deploy</h3>
+            <p>
+              GitHub PAT or SSH key, auto-detected Node/Python/Docker builds, live-streamed build logs,
+              webhooks, or 60 s GitOps polling.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">🌐</div>
+            <h3>Host-based reverse proxy</h3>
+            <p>
+              Map any domain to a local port. Automatic Let's Encrypt (HTTP-01 or DNS-01) or Cloudflare Tunnel
+              integration — pick your poison.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">📊</div>
+            <h3>Observability that ships</h3>
+            <p>
+              Per-service CPU/memory, live WebSocket logs, deployment progress, a system health score, and
+              Discord/Slack notifications.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">🗄️</div>
+            <h3>Managed databases</h3>
+            <p>
+              One-click Postgres, MySQL, Redis, Mongo. Auto-inject <code>DATABASE_URL</code>, one-click
+              <code>pg_dump</code> backups, SQL seed runner.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">🔒</div>
+            <h3>Encrypted at rest</h3>
+            <p>
+              AES-256-GCM on every secret: env vars, GitHub PATs, Cloudflare tokens. Never logged, never
+              echoed.
+            </p>
+          </div>
+          <div class="card">
+            <div class="icon">🧱</div>
+            <h3>Zero daemons</h3>
+            <p>
+              Single Node process, single SQLite file. No Redis, no Postgres for state, no external queue.
+            </p>
+          </div>
+        </div>
+      </section>
 
-    <footer>
-      <p>LocalSURV is MIT-licensed. Built by people who just wanted a Mac mini to run their apps.</p>
-      <p style="margin-top:0.5rem"><a href="https://github.com/your-org/localsurv">GitHub</a> · <a href="https://github.com/your-org/localsurv/tree/main/docs">Docs</a> · <a href="https://github.com/your-org/localsurv/blob/main/CHANGELOG.md">Changelog</a></p>
-    </footer>
-  </main>
-</body>
+      <section class="features">
+        <h2>How it compares</h2>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>LocalSURV</th>
+              <th>Railway</th>
+              <th>Coolify</th>
+              <th>CapRover</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Self-hosted</td>
+              <td class="yes">Yes</td>
+              <td class="no">No</td>
+              <td class="yes">Yes</td>
+              <td class="yes">Yes</td>
+            </tr>
+            <tr>
+              <td>GitHub auto-deploy</td>
+              <td class="yes">Yes</td>
+              <td class="yes">Yes</td>
+              <td class="yes">Yes</td>
+              <td class="yes">Yes</td>
+            </tr>
+            <tr>
+              <td>Cloudflare Tunnel built-in</td>
+              <td class="yes">Yes</td>
+              <td class="no">No</td>
+              <td class="no">No</td>
+              <td class="no">No</td>
+            </tr>
+            <tr>
+              <td>SQLite state (no external DB)</td>
+              <td class="yes">Yes</td>
+              <td class="no">n/a</td>
+              <td class="no">No</td>
+              <td class="no">No</td>
+            </tr>
+            <tr>
+              <td>Process + Docker services</td>
+              <td class="yes">Both</td>
+              <td class="no">Docker</td>
+              <td class="no">Docker</td>
+              <td class="no">Docker</td>
+            </tr>
+            <tr>
+              <td>Cost</td>
+              <td class="yes">Free</td>
+              <td class="no">$$</td>
+              <td class="yes">Free</td>
+              <td class="yes">Free</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer>
+        <p>LocalSURV is MIT-licensed. Built by people who just wanted a Mac mini to run their apps.</p>
+        <p style="margin-top: 0.5rem">
+          <a href="https://github.com/your-org/localsurv">GitHub</a> ·
+          <a href="https://github.com/your-org/localsurv/tree/main/docs">Docs</a> ·
+          <a href="https://github.com/your-org/localsurv/blob/main/CHANGELOG.md">Changelog</a>
+        </p>
+      </footer>
+    </main>
+  </body>
 </html>

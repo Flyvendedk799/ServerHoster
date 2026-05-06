@@ -31,7 +31,9 @@ export function NotificationsPage() {
       const res = await api<{ items: Notification[]; unread: number }>("/notifications", { silent: true });
       setItems(res.items);
       setUnread(res.unread);
-    } catch { /* silent */ }
+    } catch {
+      /* silent */
+    }
   }
 
   useEffect(() => {
@@ -46,7 +48,9 @@ export function NotificationsPage() {
     try {
       await api(`/notifications/${id}/read`, { method: "POST" });
       await load();
-    } catch { /* toasted */ }
+    } catch {
+      /* toasted */
+    }
   }
 
   async function readAll(): Promise<void> {
@@ -54,16 +58,23 @@ export function NotificationsPage() {
       await api("/notifications/read-all", { method: "POST" });
       toast.success("All notifications marked read");
       await load();
-    } catch { /* toasted */ }
+    } catch {
+      /* toasted */
+    }
   }
 
   async function saveWebhook(): Promise<void> {
     if (!webhookUrl) return;
     try {
-      await api("/notifications/webhook", { method: "PUT", body: JSON.stringify({ url: webhookUrl, kind: webhookKind }) });
+      await api("/notifications/webhook", {
+        method: "PUT",
+        body: JSON.stringify({ url: webhookUrl, kind: webhookKind })
+      });
       toast.success("Webhook connected");
       setWebhookUrl("");
-    } catch { /* toasted */ }
+    } catch {
+      /* toasted */
+    }
   }
 
   return (
@@ -72,7 +83,11 @@ export function NotificationsPage() {
         <h2>Event Stream</h2>
         <div className="row">
           <span className={`chip ${unread > 0 ? "active-alert" : ""}`}>{unread} Unread Alerts</span>
-          {unread > 0 && <button className="ghost xsmall" onClick={readAll}>Mark All Read</button>}
+          {unread > 0 && (
+            <button className="ghost xsmall" onClick={readAll}>
+              Mark All Read
+            </button>
+          )}
         </div>
       </header>
 
@@ -80,24 +95,39 @@ export function NotificationsPage() {
         <div className="section-title">
           <h3>Outgoing Webhooks</h3>
         </div>
-        <p className="muted small" style={{ marginBottom: "1rem" }}>Stream critical alerts to external team channels.</p>
+        <p className="muted small" style={{ marginBottom: "1rem" }}>
+          Stream critical alerts to external team channels.
+        </p>
         <div className="row" style={{ gap: "1rem" }}>
-          <select value={webhookKind} onChange={e => setWebhookKind(e.target.value as any)} style={{ width: "120px" }}>
+          <select
+            value={webhookKind}
+            onChange={(e) => setWebhookKind(e.target.value as any)}
+            style={{ width: "120px" }}
+          >
             <option value="discord">Discord</option>
             <option value="slack">Slack</option>
           </select>
-          <input placeholder="https://..." value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} style={{ flex: 1 }} />
-          <button className="primary" onClick={saveWebhook}>Connect Hub</button>
+          <input
+            placeholder="https://..."
+            value={webhookUrl}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button className="primary" onClick={saveWebhook}>
+            Connect Hub
+          </button>
         </div>
       </section>
 
       <section className="card list-container" style={{ padding: 0 }}>
         {items.length === 0 ? (
-          <div className="muted italic text-center" style={{ padding: "4rem" }}>Your inbox is clear. No recent system alerts.</div>
+          <div className="muted italic text-center" style={{ padding: "4rem" }}>
+            Your inbox is clear. No recent system alerts.
+          </div>
         ) : (
           <div className="notification-list">
-            {items.map(n => (
-              <div key={n.id} className={`notification-item row ${n.read ? 'read' : 'unread'}`}>
+            {items.map((n) => (
+              <div key={n.id} className={`notification-item row ${n.read ? "read" : "unread"}`}>
                 <div className="severity-bar" style={{ background: SEVERITY_COLOR[n.severity] }} />
                 <div className="content" style={{ flex: 1 }}>
                   <div className="row between">
@@ -112,7 +142,9 @@ export function NotificationsPage() {
                   </div>
                 </div>
                 {!n.read && (
-                  <button className="ghost tiny" onClick={() => markRead(n.id)}>Mark Read</button>
+                  <button className="ghost tiny" onClick={() => markRead(n.id)}>
+                    Mark Read
+                  </button>
                 )}
               </div>
             ))}
@@ -120,7 +152,9 @@ export function NotificationsPage() {
         )}
       </section>
 
-      <style dangerouslySetInnerHTML={{ __html: `
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
         .notifications-page .active-alert { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
         .notifications-page .notification-list { display: flex; flex-direction: column; }
         .notifications-page .notification-item { 
@@ -135,7 +169,9 @@ export function NotificationsPage() {
         .notifications-page .severity-bar { width: 4px; height: 100%; min-height: 40px; border-radius: 2px; flex-shrink: 0; }
         .notifications-page .font-semibold { font-weight: 600; margin: 0; }
         .notifications-page .xsmall { font-size: 0.65rem; padding: 0.1rem 0.4rem; }
-      `}} />
+      `
+        }}
+      />
     </div>
   );
 }

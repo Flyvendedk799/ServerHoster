@@ -1,6 +1,16 @@
 import { type ReactNode } from "react";
 
-type StatusType = "running" | "stopped" | "crashed" | "building" | "starting" | "stopping" | "provisioning" | "secure" | "error" | "none";
+type StatusType =
+  | "running"
+  | "stopped"
+  | "crashed"
+  | "building"
+  | "starting"
+  | "stopping"
+  | "provisioning"
+  | "secure"
+  | "error"
+  | "none";
 
 type Props = {
   status: StatusType | string;
@@ -11,23 +21,43 @@ type Props = {
 
 export function StatusBadge({ status, label, dotOnly, className }: Props) {
   const s = status.toLowerCase() as StatusType;
-  
+
   const getColors = (val: StatusType) => {
     switch (val) {
       case "running":
       case "secure":
-        return { bg: "var(--success-soft)", border: "var(--success)", text: "var(--success)", glow: "var(--success-glow)" };
+        return {
+          bg: "var(--success-soft)",
+          border: "var(--success)",
+          text: "var(--success)",
+          glow: "var(--success-glow)"
+        };
       case "stopped":
       case "crashed":
       case "error":
-        return { bg: "var(--danger-soft)", border: "var(--danger)", text: "var(--danger)", glow: "var(--danger-glow)" };
+        return {
+          bg: "var(--danger-soft)",
+          border: "var(--danger)",
+          text: "var(--danger)",
+          glow: "var(--danger-glow)"
+        };
       case "building":
       case "starting":
       case "stopping":
       case "provisioning":
-        return { bg: "var(--warning-soft)", border: "var(--warning)", text: "var(--warning)", glow: "var(--warning-glow)" };
+        return {
+          bg: "var(--warning-soft)",
+          border: "var(--warning)",
+          text: "var(--warning)",
+          glow: "var(--warning-glow)"
+        };
       default:
-        return { bg: "var(--bg-elevated)", border: "var(--border-strong)", text: "var(--text-muted)", glow: "none" };
+        return {
+          bg: "var(--bg-elevated)",
+          border: "var(--border-strong)",
+          text: "var(--text-muted)",
+          glow: "none"
+        };
     }
   };
 

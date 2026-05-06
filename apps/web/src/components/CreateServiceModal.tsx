@@ -44,7 +44,9 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
       toast.success(`Service "${form.name}" created`);
       onCreated();
       onClose();
-    } catch { /* toasted */ } finally {
+    } catch {
+      /* toasted */
+    } finally {
       setLoading(false);
     }
   }
@@ -59,39 +61,44 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
 
         <div className="modal-body">
           <div className="form-group">
-            <label>Target Project <span className="required">*</span></label>
+            <label>
+              Target Project <span className="required">*</span>
+            </label>
             <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
               {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
               ))}
             </select>
           </div>
 
           <div className="form-row">
             <div className="form-group">
-              <label>Service Name <span className="required">*</span></label>
-              <input 
-                placeholder="e.g. my-api" 
-                value={form.name} 
-                onChange={(e) => setForm({ ...form, name: e.target.value })} 
+              <label>
+                Service Name <span className="required">*</span>
+              </label>
+              <input
+                placeholder="e.g. my-api"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
             </div>
             <div className="form-group" style={{ maxWidth: "120px" }}>
-              <label>Port <span className="optional">(opt)</span></label>
-              <input 
-                placeholder="8080" 
-                value={form.port} 
-                onChange={(e) => setForm({ ...form, port: e.target.value })} 
+              <label>
+                Port <span className="optional">(opt)</span>
+              </label>
+              <input
+                placeholder="8080"
+                value={form.port}
+                onChange={(e) => setForm({ ...form, port: e.target.value })}
               />
             </div>
           </div>
 
           <div className="form-group">
             <label>Deployment Type</label>
-            <select 
-              value={form.type} 
-              onChange={(e) => setForm({ ...form, type: e.target.value as any })}
-            >
+            <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as any })}>
               <option value="process">Binary / Script Process</option>
               <option value="docker">Docker Image</option>
               <option value="static">Static Web Folder</option>
@@ -100,29 +107,35 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
 
           {form.type === "docker" ? (
             <div className="form-group">
-              <label>Image Reference <span className="required">*</span></label>
-              <input 
-                placeholder="e.g. nginx:latest" 
-                value={form.image} 
-                onChange={(e) => setForm({ ...form, image: e.target.value })} 
+              <label>
+                Image Reference <span className="required">*</span>
+              </label>
+              <input
+                placeholder="e.g. nginx:latest"
+                value={form.image}
+                onChange={(e) => setForm({ ...form, image: e.target.value })}
               />
             </div>
           ) : (
             <>
               <div className="form-group">
-                <label>Start Command <span className="required">*</span></label>
-                <input 
-                  placeholder={form.type === "static" ? "e.g. serve -s dist" : "e.g. node index.js"} 
-                  value={form.command} 
-                  onChange={(e) => setForm({ ...form, command: e.target.value })} 
+                <label>
+                  Start Command <span className="required">*</span>
+                </label>
+                <input
+                  placeholder={form.type === "static" ? "e.g. serve -s dist" : "e.g. node index.js"}
+                  value={form.command}
+                  onChange={(e) => setForm({ ...form, command: e.target.value })}
                 />
               </div>
               <div className="form-group">
-                <label>Working Dir <span className="optional">(opt)</span></label>
-                <input 
-                  placeholder="/var/www/app" 
-                  value={form.workingDir} 
-                  onChange={(e) => setForm({ ...form, workingDir: e.target.value })} 
+                <label>
+                  Working Dir <span className="optional">(opt)</span>
+                </label>
+                <input
+                  placeholder="/var/www/app"
+                  value={form.workingDir}
+                  onChange={(e) => setForm({ ...form, workingDir: e.target.value })}
                 />
               </div>
             </>
@@ -142,7 +155,9 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
         </div>
 
         <footer className="modal-footer">
-          <button className="ghost" onClick={onClose} disabled={loading}>Cancel</button>
+          <button className="ghost" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
           <button className="primary" onClick={handleSubmit} disabled={loading}>
             {loading ? "Creating..." : "Launch Service"}
           </button>

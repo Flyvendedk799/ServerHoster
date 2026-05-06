@@ -7,7 +7,9 @@ test("auth login and protected route", async () => {
   const ctx = await buildApp();
   try {
     ctx.db.prepare("DELETE FROM sessions").run();
-    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
+    ctx.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+      .run();
     const login = await ctx.app.inject({
       method: "POST",
       url: "/auth/login",
@@ -32,8 +34,14 @@ test("backup import/export roundtrip basic", async () => {
   const ctx = await buildApp();
   try {
     ctx.db.prepare("DELETE FROM sessions").run();
-    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
-    const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { password: "test-pass" } });
+    ctx.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+      .run();
+    const login = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { password: "test-pass" }
+    });
     const token = login.json().token as string;
 
     const createProject = await ctx.app.inject({
@@ -95,7 +103,9 @@ test("railway migration dry run", async () => {
   const ctx = await buildApp();
   try {
     ctx.db.prepare("DELETE FROM sessions").run();
-    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
+    ctx.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+      .run();
     const login = await ctx.app.inject({
       method: "POST",
       url: "/auth/login",
@@ -112,7 +122,10 @@ test("railway migration dry run", async () => {
       }
     });
     assert.equal(dryRun.statusCode, 200);
-    const payload = dryRun.json() as { dryRun: boolean; summary: Array<{ project: string; services: number }> };
+    const payload = dryRun.json() as {
+      dryRun: boolean;
+      summary: Array<{ project: string; services: number }>;
+    };
     assert.equal(payload.dryRun, true);
     assert.equal(payload.summary[0]?.project, "demo");
   } finally {
@@ -125,7 +138,9 @@ test("bootstrap without bearer when dashboard password is configured (no users y
   try {
     ctx.db.prepare("DELETE FROM sessions").run();
     ctx.db.prepare("DELETE FROM users").run();
-    ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'gate-pass')").run();
+    ctx.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'gate-pass')")
+      .run();
     const res = await ctx.app.inject({
       method: "POST",
       url: "/auth/bootstrap",

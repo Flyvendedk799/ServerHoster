@@ -56,10 +56,12 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
     void Promise.all([
       api<AllService[]>("/services", { silent: true }),
       api<Database[]>("/databases", { silent: true })
-    ]).then(([svcs, dbs]) => {
-      setOtherServices(svcs.filter((s) => s.id !== service.id && s.project_id === service.project_id));
-      setDatabases(dbs);
-    }).catch(() => undefined);
+    ])
+      .then(([svcs, dbs]) => {
+        setOtherServices(svcs.filter((s) => s.id !== service.id && s.project_id === service.project_id));
+        setDatabases(dbs);
+      })
+      .catch(() => undefined);
   }, [service.id, service.project_id]);
 
   async function save() {
@@ -82,7 +84,9 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
       toast.success("Settings updated");
       onUpdated();
       onClose();
-    } catch { /* toasted */ } finally {
+    } catch {
+      /* toasted */
+    } finally {
       setLoading(false);
     }
   }
@@ -101,7 +105,9 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
       <div className="modal-content" style={{ maxWidth: "600px" }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-header">
           <h3>Service Settings</h3>
-          <p className="hint">Configuring <span style={{ color: "var(--accent-light)" }}>{service.name}</span></p>
+          <p className="hint">
+            Configuring <span style={{ color: "var(--accent-light)" }}>{service.name}</span>
+          </p>
         </header>
 
         <div className="modal-body">
@@ -123,7 +129,10 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
           <div className="form-row">
             <div className="form-group">
               <label>Environment</label>
-              <select value={form.environment} onChange={(e) => setForm({ ...form, environment: e.target.value as any })}>
+              <select
+                value={form.environment}
+                onChange={(e) => setForm({ ...form, environment: e.target.value as any })}
+              >
                 <option value="production">Production</option>
                 <option value="staging">Staging</option>
                 <option value="development">Development</option>
@@ -131,40 +140,63 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
             </div>
             <div className="form-group">
               <label>Internal Port</label>
-              <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} placeholder="3000" />
+              <input
+                value={form.port}
+                onChange={(e) => setForm({ ...form, port: e.target.value })}
+                placeholder="3000"
+              />
             </div>
           </div>
 
           <div className="form-group">
             <label>Custom Domain</label>
-            <input value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} placeholder="app.myserver.com" />
+            <input
+              value={form.domain}
+              onChange={(e) => setForm({ ...form, domain: e.target.value })}
+              placeholder="app.myserver.com"
+            />
           </div>
 
           <div className="form-group">
             <label>Start Command</label>
-            <input value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })} placeholder="npm run start" />
+            <input
+              value={form.command}
+              onChange={(e) => setForm({ ...form, command: e.target.value })}
+              placeholder="npm run start"
+            />
           </div>
 
           <div className="form-group">
-             <label>Database Link</label>
-             <select value={form.linkedDatabaseId} onChange={(e) => setForm({ ...form, linkedDatabaseId: e.target.value })}>
-                <option value="">— No active link —</option>
-                {databases.map(db => (
-                   <option key={db.id} value={db.id}>{db.name} ({db.engine})</option>
-                ))}
-             </select>
+            <label>Database Link</label>
+            <select
+              value={form.linkedDatabaseId}
+              onChange={(e) => setForm({ ...form, linkedDatabaseId: e.target.value })}
+            >
+              <option value="">— No active link —</option>
+              {databases.map((db) => (
+                <option key={db.id} value={db.id}>
+                  {db.name} ({db.engine})
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="form-group">
             <label>Dependencies (Start Priority)</label>
             <div className="row wrap" style={{ gap: "0.5rem", marginTop: "0.25rem" }}>
-              {otherServices.length === 0 && <span className="muted tiny">No other project services found.</span>}
-              {otherServices.map(s => (
-                <button 
-                  key={s.id} 
-                  className={`ghost xsmall ${form.dependsOn.includes(s.id) ? 'active-chip' : ''}`}
+              {otherServices.length === 0 && (
+                <span className="muted tiny">No other project services found.</span>
+              )}
+              {otherServices.map((s) => (
+                <button
+                  key={s.id}
+                  className={`ghost xsmall ${form.dependsOn.includes(s.id) ? "active-chip" : ""}`}
                   onClick={() => toggleDep(s.id)}
-                  style={{ borderRadius: "var(--radius-full)", padding: "0.3rem 0.8rem", border: "1px solid var(--border-default)" }}
+                  style={{
+                    borderRadius: "var(--radius-full)",
+                    padding: "0.3rem 0.8rem",
+                    border: "1px solid var(--border-default)"
+                  }}
                 >
                   {s.name}
                 </button>
@@ -174,15 +206,21 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
         </div>
 
         <footer className="modal-footer">
-          <button className="ghost" onClick={onClose} disabled={loading}>Discard</button>
+          <button className="ghost" onClick={onClose} disabled={loading}>
+            Discard
+          </button>
           <button className="primary" onClick={save} disabled={loading}>
             {loading ? "Saving..." : "Save Settings"}
           </button>
         </footer>
 
-        <style dangerouslySetInnerHTML={{ __html: `
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `
           .active-chip { background: var(--accent-gradient) !important; color: white !important; border-color: transparent !important; }
-        `}} />
+        `
+          }}
+        />
       </div>
     </div>
   );

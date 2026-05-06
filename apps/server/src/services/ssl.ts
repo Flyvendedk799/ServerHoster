@@ -42,7 +42,7 @@ export async function verifyAcmeChallengeReachability(domain: string): Promise<v
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(
       `Domain ${domain} is not reachable on port 80 for ACME HTTP-01 challenges (${msg}). ` +
-      `Make sure DNS points at this server and port 80 is open before retrying SSL.`
+        `Make sure DNS points at this server and port 80 is open before retrying SSL.`
     );
   } finally {
     activeChallenges.delete(SELF_TEST_TOKEN);
@@ -51,7 +51,12 @@ export async function verifyAcmeChallengeReachability(domain: string): Promise<v
 
 export async function provisionCertificate(ctx: AppContext, serviceId: string, domain: string) {
   const mode = (getSetting(ctx, "ssl_mode") as "http-01" | "dns-01" | null) ?? "http-01";
-  insertLog(ctx, serviceId, "info", `SSL: Starting Let's Encrypt production provisioning for ${domain} via ${mode}...`);
+  insertLog(
+    ctx,
+    serviceId,
+    "info",
+    `SSL: Starting Let's Encrypt production provisioning for ${domain} via ${mode}...`
+  );
   ctx.db.prepare("UPDATE services SET ssl_status = ? WHERE id = ?").run("provisioning", serviceId);
 
   try {
@@ -100,7 +105,12 @@ export async function provisionCertificate(ctx: AppContext, serviceId: string, d
           const recordName = `_acme-challenge.${domain}`;
           const recordId = await createAcmeDnsRecord(ctx, recordName, keyAuthorization);
           dnsRecords.set(challenge.token, recordId);
-          insertLog(ctx, serviceId, "info", `SSL: Published DNS-01 TXT record ${recordName} (id ${recordId})`);
+          insertLog(
+            ctx,
+            serviceId,
+            "info",
+            `SSL: Published DNS-01 TXT record ${recordName} (id ${recordId})`
+          );
           // Give the record time to propagate before acme-client hits the authoritative resolver.
           await new Promise((r) => setTimeout(r, 15000));
         },
@@ -145,9 +155,13 @@ function persistCertificate(
   fullchain: string,
   privkey: string
 ): void {
-  ctx.db.prepare(`
+  ctx.db
+    .prepare(
+      `
     INSERT OR REPLACE INTO certificates (id, domain, fullchain, privkey, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(nanoid(), domain, fullchain, privkey, Date.now() + 90 * 24 * 60 * 60 * 1000, nowIso());
+  `
+    )
+    .run(nanoid(), domain, fullchain, privkey, Date.now() + 90 * 24 * 60 * 60 * 1000, nowIso());
   void serviceId;
 }

@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 
 function getSecretKey(secretKey: string): Buffer {
-  return crypto.createHash("sha256").update(secretKey || "survhub-dev-key").digest();
+  return crypto
+    .createHash("sha256")
+    .update(secretKey || "survhub-dev-key")
+    .digest();
 }
 
 export function encryptSecret(value: string, secretKey: string): string {
@@ -19,7 +22,11 @@ export function decryptSecret(value: string, secretKey: string): string {
   }
   try {
     const [ivHex, tagHex, encryptedHex] = parts;
-    const decipher = crypto.createDecipheriv("aes-256-gcm", getSecretKey(secretKey), Buffer.from(ivHex, "hex"));
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm",
+      getSecretKey(secretKey),
+      Buffer.from(ivHex, "hex")
+    );
     decipher.setAuthTag(Buffer.from(tagHex, "hex"));
     const decrypted = Buffer.concat([decipher.update(Buffer.from(encryptedHex, "hex")), decipher.final()]);
     return decrypted.toString("utf8");

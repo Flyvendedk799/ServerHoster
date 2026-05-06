@@ -2,7 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import simpleGit from "simple-git";
 import { nanoid } from "nanoid";
-import { broadcast, detectBuildType, getServiceEnv, insertLog, nowIso, runCommand, serializeError, updateServiceStatus } from "../lib/core.js";
+import {
+  broadcast,
+  detectBuildType,
+  getServiceEnv,
+  insertLog,
+  nowIso,
+  runCommand,
+  serializeError,
+  updateServiceStatus
+} from "../lib/core.js";
 import type { AppContext } from "../types.js";
 import { startService, stopService } from "./runtime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
@@ -29,12 +38,7 @@ function emitBuildLog(
   });
 }
 
-function emitProgress(
-  ctx: AppContext,
-  serviceId: string,
-  deploymentId: string,
-  phase: DeployPhase
-): void {
+function emitProgress(ctx: AppContext, serviceId: string, deploymentId: string, phase: DeployPhase): void {
   broadcast(ctx, {
     type: "build_progress",
     serviceId,
@@ -52,9 +56,9 @@ export async function runBuildPipeline(
 ): Promise<{ status: "success" | "failed"; buildLog: string; artifactPath: string }> {
   const deploymentId = opts.deploymentId;
   const env = { ...process.env, ...getServiceEnv(ctx, serviceId) };
-  const serviceBuild = ctx.db
-    .prepare("SELECT dockerfile FROM services WHERE id = ?")
-    .get(serviceId) as { dockerfile?: string } | undefined;
+  const serviceBuild = ctx.db.prepare("SELECT dockerfile FROM services WHERE id = ?").get(serviceId) as
+    | { dockerfile?: string }
+    | undefined;
   const dockerfile = String(serviceBuild?.dockerfile ?? "").trim();
   const buildType = detectBuildType(projectPath);
   let buildLog = `Detected build type: ${buildType}\n`;
@@ -76,7 +80,8 @@ export async function runBuildPipeline(
 
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
-    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, "\n$ npm run build --if-present\n", "stdout");
+    if (deploymentId)
+      emitBuildLog(ctx, serviceId, deploymentId, "\n$ npm run build --if-present\n", "stdout");
     const build = await runCommand("npm run build --if-present", projectPath, env, { onChunk: stream });
     buildLog += `\n$ npm run build --if-present\n${build.output}\n`;
     if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
@@ -105,7 +110,9 @@ export async function runBuildPipeline(
     });
     buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
     if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
-    ctx.db.prepare("UPDATE services SET docker_image = ?, updated_at = ? WHERE id = ?").run(imageTag, nowIso(), serviceId);
+    ctx.db
+      .prepare("UPDATE services SET docker_image = ?, updated_at = ? WHERE id = ?")
+      .run(imageTag, nowIso(), serviceId);
   } else if (buildType === "unknown") {
     const msg =
       "\nNo Dockerfile, package.json, requirements.txt, or pyproject.toml found. Cannot deploy this repository layout.\n";
@@ -137,11 +144,13 @@ export async function deployFromGit(
   const startedAt = nowIso();
 
   // Pre-create the deployment row so the UI can observe in-flight state.
-  ctx.db.prepare(
-    `INSERT INTO deployments
+  ctx.db
+    .prepare(
+      `INSERT INTO deployments
      (id, service_id, commit_hash, status, build_log, artifact_path, created_at, started_at, branch, trigger_source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(deploymentId, serviceId, "", "running", "", targetPath, startedAt, startedAt, branch, trigger);
+    )
+    .run(deploymentId, serviceId, "", "running", "", targetPath, startedAt, startedAt, branch, trigger);
 
   emitProgress(ctx, serviceId, deploymentId, "cloning");
   broadcast(ctx, { type: "deployment_started", serviceId, deploymentId, branch, trigger });
@@ -149,7 +158,11 @@ export async function deployFromGit(
   try {
     if (fs.existsSync(path.join(targetPath, ".git"))) {
       // Reset origin URL so an updated PAT or switched remote takes effect.
-      try { await git.cwd(targetPath).remote(["set-url", "origin", authedUrl]); } catch { /* first-time */ }
+      try {
+        await git.cwd(targetPath).remote(["set-url", "origin", authedUrl]);
+      } catch {
+        /* first-time */
+      }
       await git.cwd(targetPath).fetch();
       await git.cwd(targetPath).checkout(branch);
       await git.cwd(targetPath).pull("origin", branch);
@@ -166,9 +179,11 @@ export async function deployFromGit(
         ? "Dockerfile.frontend"
         : "";
     const inferred = inferServiceRuntimeDefaults(buildType);
-    ctx.db.prepare(
-      "UPDATE services SET type = ?, command = ?, working_dir = ?, dockerfile = ?, updated_at = ? WHERE id = ?"
-    ).run(inferred.type, inferred.command, targetPath, preferredDockerfile, nowIso(), serviceId);
+    ctx.db
+      .prepare(
+        "UPDATE services SET type = ?, command = ?, working_dir = ?, dockerfile = ?, updated_at = ? WHERE id = ?"
+      )
+      .run(inferred.type, inferred.command, targetPath, preferredDockerfile, nowIso(), serviceId);
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
     const result = await runBuildPipeline(ctx, serviceId, targetPath, { deploymentId });
     status = result.status;
@@ -184,13 +199,21 @@ export async function deployFromGit(
   const finishedAt = nowIso();
   emitProgress(ctx, serviceId, deploymentId, status === "success" ? "done" : "failed");
 
-  ctx.db.prepare(
-    `UPDATE deployments
+  ctx.db
+    .prepare(
+      `UPDATE deployments
      SET commit_hash = ?, status = ?, build_log = ?, artifact_path = ?, finished_at = ?
      WHERE id = ?`
-  ).run(commitHash, status, buildLog, artifactPath, finishedAt, deploymentId);
+    )
+    .run(commitHash, status, buildLog, artifactPath, finishedAt, deploymentId);
 
-  broadcast(ctx, { type: "deployment_finished", serviceId, deploymentId, status, durationMs: Date.parse(finishedAt) - Date.parse(startedAt) });
+  broadcast(ctx, {
+    type: "deployment_finished",
+    serviceId,
+    deploymentId,
+    status,
+    durationMs: Date.parse(finishedAt) - Date.parse(startedAt)
+  });
 
   return {
     id: deploymentId,
@@ -214,7 +237,9 @@ export async function applyPostDeployServiceState(
   deployment: { status: string; build_log: string },
   options: { startAfterDeploy: boolean }
 ): Promise<void> {
-  const svcRow = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as { name?: string } | undefined;
+  const svcRow = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
+    | { name?: string }
+    | undefined;
   const serviceName = svcRow?.name ?? serviceId;
   if (deployment.status === "success") {
     createNotification(ctx, {
@@ -250,13 +275,18 @@ export async function applyPostDeployServiceState(
 
 /** Stop a running service before redeploying so git can update files safely. */
 export async function stopServiceIfRunning(ctx: AppContext, serviceId: string): Promise<void> {
-  const row = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(serviceId) as { status?: string } | undefined;
+  const row = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(serviceId) as
+    | { status?: string }
+    | undefined;
   if (row?.status === "running") {
     await stopService(ctx, serviceId);
   }
 }
 
-export function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): { type: "process" | "docker" | "static"; command: string } {
+export function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): {
+  type: "process" | "docker" | "static";
+  command: string;
+} {
   if (buildType === "docker") {
     return { type: "docker", command: "" };
   }
@@ -284,11 +314,13 @@ export async function deployFromLocalPath(
   let buildLog = `Source: local directory ${localPath}\n`;
   let status: "success" | "failed" = "success";
 
-  ctx.db.prepare(
-    `INSERT INTO deployments
+  ctx.db
+    .prepare(
+      `INSERT INTO deployments
      (id, service_id, commit_hash, status, build_log, artifact_path, created_at, started_at, branch, trigger_source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(deploymentId, serviceId, "", "running", "", localPath, startedAt, startedAt, null, trigger);
+    )
+    .run(deploymentId, serviceId, "", "running", "", localPath, startedAt, startedAt, null, trigger);
 
   emitProgress(ctx, serviceId, deploymentId, "installing");
   broadcast(ctx, { type: "deployment_started", serviceId, deploymentId, branch: null, trigger });
@@ -297,9 +329,9 @@ export async function deployFromLocalPath(
     const buildType = detectBuildType(localPath);
     const inferred = inferServiceRuntimeDefaults(buildType);
     const command = options.command !== undefined ? options.command : inferred.command;
-    ctx.db.prepare(
-      "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
-    ).run(inferred.type, command, localPath, nowIso(), serviceId);
+    ctx.db
+      .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
+      .run(inferred.type, command, localPath, nowIso(), serviceId);
 
     emitBuildLog(ctx, serviceId, deploymentId, `Detected build type: ${buildType}\n`);
     const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId });
@@ -315,9 +347,11 @@ export async function deployFromLocalPath(
   const finishedAt = nowIso();
   emitProgress(ctx, serviceId, deploymentId, status === "success" ? "done" : "failed");
 
-  ctx.db.prepare(
-    `UPDATE deployments SET status = ?, build_log = ?, artifact_path = ?, finished_at = ? WHERE id = ?`
-  ).run(status, buildLog, localPath, finishedAt, deploymentId);
+  ctx.db
+    .prepare(
+      `UPDATE deployments SET status = ?, build_log = ?, artifact_path = ?, finished_at = ? WHERE id = ?`
+    )
+    .run(status, buildLog, localPath, finishedAt, deploymentId);
 
   broadcast(ctx, {
     type: "deployment_finished",
@@ -343,24 +377,43 @@ export async function deployFromLocalPath(
 }
 
 export async function rollbackDeployment(ctx: AppContext, serviceId: string, deploymentId: string) {
-  const deployment = ctx.db.prepare("SELECT commit_hash, artifact_path, branch FROM deployments WHERE id = ? AND service_id = ?")
-    .get(deploymentId, serviceId) as { commit_hash?: string; artifact_path?: string; branch?: string } | undefined;
+  const deployment = ctx.db
+    .prepare("SELECT commit_hash, artifact_path, branch FROM deployments WHERE id = ? AND service_id = ?")
+    .get(deploymentId, serviceId) as
+    | { commit_hash?: string; artifact_path?: string; branch?: string }
+    | undefined;
   if (!deployment?.commit_hash) throw new Error("Deployment not found");
 
   await stopServiceIfRunning(ctx, serviceId);
 
   const newDeployId = nanoid();
   const startedAt = nowIso();
-  ctx.db.prepare(
-    `INSERT INTO deployments
+  ctx.db
+    .prepare(
+      `INSERT INTO deployments
      (id, service_id, commit_hash, status, build_log, artifact_path, created_at, started_at, branch, trigger_source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    newDeployId, serviceId, deployment.commit_hash, "running", "", deployment.artifact_path ?? "",
-    startedAt, startedAt, deployment.branch ?? null, "rollback"
-  );
+    )
+    .run(
+      newDeployId,
+      serviceId,
+      deployment.commit_hash,
+      "running",
+      "",
+      deployment.artifact_path ?? "",
+      startedAt,
+      startedAt,
+      deployment.branch ?? null,
+      "rollback"
+    );
   emitProgress(ctx, serviceId, newDeployId, "building");
-  broadcast(ctx, { type: "deployment_started", serviceId, deploymentId: newDeployId, branch: deployment.branch ?? null, trigger: "rollback" });
+  broadcast(ctx, {
+    type: "deployment_started",
+    serviceId,
+    deploymentId: newDeployId,
+    branch: deployment.branch ?? null,
+    trigger: "rollback"
+  });
   emitBuildLog(ctx, serviceId, newDeployId, `Rollback to ${deployment.commit_hash}\n`);
 
   const targetPath = path.join(ctx.config.projectsDir, serviceId);
@@ -373,13 +426,21 @@ export async function rollbackDeployment(ctx: AppContext, serviceId: string, dep
   const artifactPath = deployment.artifact_path ?? result.artifactPath;
   emitProgress(ctx, serviceId, newDeployId, result.status === "success" ? "done" : "failed");
 
-  ctx.db.prepare(
-    `UPDATE deployments
+  ctx.db
+    .prepare(
+      `UPDATE deployments
      SET status = ?, build_log = ?, artifact_path = ?, finished_at = ?
      WHERE id = ?`
-  ).run(result.status, buildLog, artifactPath, finishedAt, newDeployId);
+    )
+    .run(result.status, buildLog, artifactPath, finishedAt, newDeployId);
 
-  broadcast(ctx, { type: "deployment_finished", serviceId, deploymentId: newDeployId, status: result.status, durationMs: Date.parse(finishedAt) - Date.parse(startedAt) });
+  broadcast(ctx, {
+    type: "deployment_finished",
+    serviceId,
+    deploymentId: newDeployId,
+    status: result.status,
+    durationMs: Date.parse(finishedAt) - Date.parse(startedAt)
+  });
 
   const row = {
     id: newDeployId,

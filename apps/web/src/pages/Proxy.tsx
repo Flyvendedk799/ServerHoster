@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Globe, 
-  Activity, 
-  Shield, 
-  Trash2, 
-  Plus, 
-  ExternalLink, 
-  ArrowRightLeft, 
+import {
+  Globe,
+  Activity,
+  Shield,
+  Trash2,
+  Plus,
+  ExternalLink,
+  ArrowRightLeft,
   Server,
   Hash,
   Link2
@@ -36,7 +36,7 @@ export function ProxyPage() {
   async function load(): Promise<void> {
     try {
       const [routeRows, serviceRows] = await Promise.all([
-        api<RouteRow[]>("/proxy/routes", { silent: true }), 
+        api<RouteRow[]>("/proxy/routes", { silent: true }),
         api<Service[]>("/services", { silent: true })
       ]);
       setRoutes(routeRows);
@@ -44,7 +44,9 @@ export function ProxyPage() {
       if (!form.serviceId && serviceRows.length > 0) {
         setForm((p) => ({ ...p, serviceId: serviceRows[0].id }));
       }
-    } catch { /* silent */ } finally {
+    } catch {
+      /* silent */
+    } finally {
       setLoading(false);
     }
   }
@@ -70,7 +72,9 @@ export function ProxyPage() {
       setForm((p) => ({ ...p, domain: "", targetPort: "" }));
       toast.success("Edge ingress rule published");
       await load();
-    } catch { /* toasted */ }
+    } catch {
+      /* toasted */
+    }
   }
 
   async function deleteRoute(route: RouteRow): Promise<void> {
@@ -85,17 +89,22 @@ export function ProxyPage() {
       await api(`/proxy/routes/${route.id}`, { method: "DELETE" });
       toast.success("Rule disabled successfully");
       await load();
-    } catch { /* toasted */ }
+    } catch {
+      /* toasted */
+    }
   }
 
   if (loading) {
     return (
       <div className="proxy-page">
-         <header className="page-header"><Skeleton style={{ height: "3rem", width: "400px" }} /></header>
-         <Skeleton style={{ height: "240px", marginBottom: "3rem" }} />
-         <div className="grid">
-            <CardSkeleton /><CardSkeleton />
-         </div>
+        <header className="page-header">
+          <Skeleton style={{ height: "3rem", width: "400px" }} />
+        </header>
+        <Skeleton style={{ height: "240px", marginBottom: "3rem" }} />
+        <div className="grid">
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
       </div>
     );
   }
@@ -109,77 +118,90 @@ export function ProxyPage() {
         </div>
       </header>
 
-      <section className="card glass-card" style={{ marginBottom: "4rem", border: "1px solid var(--border-glow)" }}>
+      <section
+        className="card glass-card"
+        style={{ marginBottom: "4rem", border: "1px solid var(--border-glow)" }}
+      >
         <div className="section-title">
           <div className="row">
-             <Plus className="text-accent" size={20} />
-             <h3>Register Ingress Rule</h3>
+            <Plus className="text-accent" size={20} />
+            <h3>Register Ingress Rule</h3>
           </div>
         </div>
         <div className="form-row" style={{ marginTop: "1rem" }}>
           <div className="form-group">
             <label className="tiny uppercase font-bold muted">Local Handle (Service)</label>
-            <select value={form.serviceId} onChange={(e) => setForm((p) => ({ ...p, serviceId: e.target.value }))}>
+            <select
+              value={form.serviceId}
+              onChange={(e) => setForm((p) => ({ ...p, serviceId: e.target.value }))}
+            >
               {services.map((service) => (
-                <option key={service.id} value={service.id}>{service.name}</option>
+                <option key={service.id} value={service.id}>
+                  {service.name}
+                </option>
               ))}
             </select>
           </div>
           <div className="form-group">
             <label className="tiny uppercase font-bold muted">Public Endpoint (Domain)</label>
             <div className="row pr-overlap">
-               <Globe size={18} className="icon-overlay muted" />
-               <input 
-                 className="with-icon"
-                 placeholder="app.mycustomdomain.com" 
-                 value={form.domain} 
-                 onChange={(e) => setForm((p) => ({ ...p, domain: e.target.value }))} 
-               />
+              <Globe size={18} className="icon-overlay muted" />
+              <input
+                className="with-icon"
+                placeholder="app.mycustomdomain.com"
+                value={form.domain}
+                onChange={(e) => setForm((p) => ({ ...p, domain: e.target.value }))}
+              />
             </div>
           </div>
           <div className="form-group" style={{ maxWidth: "160px" }}>
             <label className="tiny uppercase font-bold muted">Port Forward</label>
             <div className="row pr-overlap">
-               <Hash size={18} className="icon-overlay muted" />
-               <input 
-                 className="with-icon"
-                 type="number" 
-                 placeholder="3000" 
-                 value={form.targetPort} 
-                 onChange={(e) => setForm((p) => ({ ...p, targetPort: e.target.value }))} 
-               />
+              <Hash size={18} className="icon-overlay muted" />
+              <input
+                className="with-icon"
+                type="number"
+                placeholder="3000"
+                value={form.targetPort}
+                onChange={(e) => setForm((p) => ({ ...p, targetPort: e.target.value }))}
+              />
             </div>
           </div>
         </div>
         <div className="row" style={{ marginTop: "2rem", justifyContent: "flex-end" }}>
-           <button className="primary" onClick={() => void createRoute()}>
-              <ArrowRightLeft size={18} /> Provision Rule
-           </button>
+          <button className="primary" onClick={() => void createRoute()}>
+            <ArrowRightLeft size={18} /> Provision Rule
+          </button>
         </div>
       </section>
 
       <div className="section-title">
-         <div className="row">
-            <Activity className="text-accent" size={18} />
-            <h3>Active Ingress Rules</h3>
-            <span className="badge accent">{routes.length}</span>
-         </div>
+        <div className="row">
+          <Activity className="text-accent" size={18} />
+          <h3>Active Ingress Rules</h3>
+          <span className="badge accent">{routes.length}</span>
+        </div>
       </div>
 
       <div className="grid">
         <AnimatePresence>
           {routes.length === 0 ? (
-            <motion.div key="empty" className="card text-center" style={{ gridColumn: "1 / -1", padding: "6rem 2rem", opacity: 0.6 }}>
+            <motion.div
+              key="empty"
+              className="card text-center"
+              style={{ gridColumn: "1 / -1", padding: "6rem 2rem", opacity: 0.6 }}
+            >
               <Globe size={60} className="muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
               <p className="muted font-bold">No active ingress rules detected.</p>
               <p className="tiny muted" style={{ maxWidth: "400px", margin: "1rem auto" }}>
-                 Ingress rules map external DNS records to your private services running in the Survhub cluster.
+                Ingress rules map external DNS records to your private services running in the Survhub
+                cluster.
               </p>
             </motion.div>
           ) : (
             routes.map((route) => (
-              <motion.div 
-                key={route.id} 
+              <motion.div
+                key={route.id}
                 layout
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -187,15 +209,15 @@ export function ProxyPage() {
                 className="card service-card"
               >
                 <div className="env-tag" style={{ border: "1.5px solid var(--info)", color: "var(--info)" }}>
-                   <div className="row micro">
-                      <Shield size={10} /> <span>SSL ACTIVE</span>
-                   </div>
+                  <div className="row micro">
+                    <Shield size={10} /> <span>SSL ACTIVE</span>
+                  </div>
                 </div>
-                
+
                 <div className="service-header" style={{ marginBottom: "1rem" }}>
                   <div className="row">
-                     <Link2 size={18} className="text-accent" />
-                     <h3 style={{ fontSize: "1.25rem" }}>{route.domain}</h3>
+                    <Link2 size={18} className="text-accent" />
+                    <h3 style={{ fontSize: "1.25rem" }}>{route.domain}</h3>
                   </div>
                 </div>
 
@@ -206,20 +228,31 @@ export function ProxyPage() {
                       <span className="text-accent font-bold">127.0.0.1:{route.target_port}</span>
                     </div>
                   </div>
-                  
+
                   <div className="row small" style={{ marginTop: "1rem" }}>
                     <Server size={14} className="muted" />
                     <span className="tiny font-bold uppercase muted">Target:</span>
-                    <span className="small font-bold">{services.find((s) => s.id === route.service_id)?.name ?? "Dead Link"}</span>
+                    <span className="small font-bold">
+                      {services.find((s) => s.id === route.service_id)?.name ?? "Dead Link"}
+                    </span>
                   </div>
                 </div>
 
-                <div className="service-footer" style={{ marginTop: "1.5rem", borderTop: "1px solid var(--border-subtle)" }}>
+                <div
+                  className="service-footer"
+                  style={{ marginTop: "1.5rem", borderTop: "1px solid var(--border-subtle)" }}
+                >
                   <button className="ghost text-danger xsmall" onClick={() => void deleteRoute(route)}>
-                     <Trash2 size={14} /> Remove Rule
+                    <Trash2 size={14} /> Remove Rule
                   </button>
-                  <a href={`http://${route.domain}`} target="_blank" rel="noreferrer" className="button ghost xsmall" style={{ marginLeft: "auto" }}>
-                     <ExternalLink size={14} /> Open
+                  <a
+                    href={`http://${route.domain}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="button ghost xsmall"
+                    style={{ marginLeft: "auto" }}
+                  >
+                    <ExternalLink size={14} /> Open
                   </a>
                 </div>
               </motion.div>
@@ -228,7 +261,9 @@ export function ProxyPage() {
         </AnimatePresence>
       </div>
 
-      <style dangerouslySetInnerHTML={{ __html: `
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
         .proxy-page .font-bold { font-weight: 700; }
         .proxy-page .font-mono { font-family: var(--font-mono); }
         .proxy-page .route-mapping-box { background: var(--bg-sunken); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-default); box-shadow: inset 0 2px 8px rgba(0,0,0,0.3); }
@@ -239,7 +274,9 @@ export function ProxyPage() {
         .uppercase { text-transform: uppercase; letter-spacing: 0.05em; }
         .tiny { font-size: 0.7rem; }
         .text-danger { color: var(--danger) !important; }
-      `}} />
+      `
+        }}
+      />
     </div>
   );
 }

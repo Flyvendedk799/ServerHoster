@@ -27,7 +27,9 @@ export function ComposeModal({ projects, onClose, onImported }: Props) {
       toast.success("Compose stack imported");
       onImported();
       onClose();
-    } catch { /* toasted */ } finally {
+    } catch {
+      /* toasted */
+    } finally {
       setLoading(false);
     }
   }
@@ -44,24 +46,30 @@ export function ComposeModal({ projects, onClose, onImported }: Props) {
           <div className="form-group">
             <label>Target Project</label>
             <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
             </select>
           </div>
 
           <div className="form-group">
             <label>Compose YAML Content</label>
-            <textarea 
-              placeholder="version: '3'..." 
-              value={content} 
+            <textarea
+              placeholder="version: '3'..."
+              value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={12}
-              style={{ fontFamily: 'var(--font-mono)', fontSize: "0.85rem", background: "var(--bg-sunken)" }}
+              style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", background: "var(--bg-sunken)" }}
             />
           </div>
         </div>
 
         <footer className="modal-footer">
-          <button className="ghost" onClick={onClose} disabled={loading}>Cancel</button>
+          <button className="ghost" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
           <button className="primary" onClick={handleSubmit} disabled={loading}>
             {loading ? "Parsing & Importing..." : "Launch Stack"}
           </button>

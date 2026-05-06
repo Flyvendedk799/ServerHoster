@@ -4,3 +4,10 @@ coverage
 *.log
 apps/*/dist
 apps/*/node_modules
+# Compiled JS sitting next to TS sources in apps/web — TS file owns truth.
+apps/web/src/**/*.js
+# WiX/XML and platform installer scripts have their own formatting rules.
+**/*.wxs
+*.pkg
+*.msi
+package-lock.json

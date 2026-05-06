@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX 4 manifest for the LocalSURV Windows .msi installer.
+
+  The .msi drops the runtime tree at:
+    %ProgramFiles%\LocalSURV\
+
+  After install the user runs the bundled `register-task.ps1` (also linked
+  from the Start Menu) to register the Scheduled Task that launches
+  LocalSURV at logon. We deliberately do NOT auto-create the task from the
+  installer because that needs admin elevation context to point at the
+  end-user's profile — easier to surface a "first run" prompt instead.
+
+  Variables expected on the wix command line:
+    -d Version=0.2.0
+    -d StagingDir=path\to\staged\files
+
+  Build:
+    wix build packaging\windows\localsurv.wxs `
+      -d Version=0.2.0 -d StagingDir=staging `
+      -o dist\localsurv-0.2.0.msi
+
+  Sign (optional):
+    signtool sign /a /tr http://timestamp.digicert.com /td sha256 /fd sha256 ^
+      dist\localsurv-0.2.0.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="LocalSURV"
+           Manufacturer="LocalSURV"
+           Version="$(Version)"
+           UpgradeCode="6f9a2cba-2c7b-4a4f-9e8a-3d7ea0d77a01"
+           Scope="perMachine">
+
+    <!-- Allow upgrade-in-place from older versions. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of LocalSURV is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="Main" Title="LocalSURV" Level="1">
+      <ComponentGroupRef Id="LocalSurvFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="LocalSURV">
+        <!-- Files harvested at build time — see harvest step in build-msi.ps1. -->
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuLocalSurv" Name="LocalSURV">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <Shortcut Id="LocalSurvShortcut"
+                    Name="LocalSURV Dashboard"
+                    Description="Open the LocalSURV control plane dashboard"
+                    Target="http://localhost:8787" />
+          <Shortcut Id="LocalSurvSetup"
+                    Name="LocalSURV — Register Auto-Start"
+                    Description="Register a Scheduled Task that runs LocalSURV at user logon"
+                    Target="powershell.exe"
+                    Arguments="-NoExit -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]packaging\windows\register-task.ps1&quot;" />
+          <RemoveFolder Id="ProgramMenuLocalSurv" On="uninstall" />
+          <RegistryValue Root="HKCU"
+                         Key="Software\LocalSURV"
+                         Name="installed"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+  </Package>
+</Wix>

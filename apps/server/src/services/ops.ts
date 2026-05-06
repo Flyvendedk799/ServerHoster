@@ -27,7 +27,9 @@ export function buildHttpsTrustGuide(): Record<string, string[]> {
 export function generateHttpsCerts(ctx: AppContext, commonName: string, altNames: string[]) {
   ensureDir(ctx.config.certsDir);
   const attrs = [{ name: "commonName", value: commonName }];
-  const san = altNames.map((name) => (/^\d+\.\d+\.\d+\.\d+$/.test(name) ? { type: 7, ip: name } : { type: 2, value: name }));
+  const san = altNames.map((name) =>
+    /^\d+\.\d+\.\d+\.\d+$/.test(name) ? { type: 7, ip: name } : { type: 2, value: name }
+  );
   const cert = selfsigned.generate(attrs, {
     days: 825,
     algorithm: "sha256",

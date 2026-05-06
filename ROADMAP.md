@@ -4,6 +4,28 @@
 
 ---
 
+## Status (2026-05-03)
+
+This original roadmap is **complete through Phase 12** and shipped as `0.1.0-alpha` (see [CHANGELOG.md](CHANGELOG.md)). It got LocalSURV to single-machine, self-hosted feature-completeness on Linux + macOS + Docker.
+
+The next milestone — `0.2.0` — is the **production-readiness sequence**: the work needed to safely hand the software to strangers as a public download. Sequenced plan in `~/.claude/plans/we-are-working-in-shiny-stallman.md`. Headline items not in the original 12 phases:
+
+- **Sequence 0** — Truth-up README/CHANGELOG/ROADMAP (this entry).
+- **Sequence 1** — Webhook signature validation, CORS lockdown, `install.sh` hardening, `localsurv reset-admin`, per-endpoint rate limits.
+- **Sequence 2** — Windows support (PowerShell installer + `node-windows` service), macOS notarization, npm publishability (`apps/server/package.json` `private: true` blocker), pluggable `TunnelAdapter` (CF / ngrok / Tailscale Funnel), Homebrew CI smoke.
+- **Sequence 3** — Reliability: proxy retry, auto-update banner, scheduled backups, first-run wizard, build-log streaming verification.
+- **Sequence 4** — Observability: request inspector, Prometheus `/metrics`, opt-in crash reporter, telemetry-stays-off disclosure.
+- **Sequence 5** — Release engineering: tag-driven workflow, signed `SHA256SUMS` (cosign keyless OIDC), `.pkg`/`.msi`, version stamping.
+- **Sequence 6** — Quality gates: SSL/proxy/webhook unit tests, Docker e2e smoke, Windows CI, required tsc/eslint checks.
+
+Pre-existing items in the original 12 phases that need a status pass:
+
+- **`apps/server` is `private: true`** — must be flipped before npm `publishConfig` makes sense (Sequence 2.1).
+- **CLI bin name vs. brand**: bin is `survhub`, marketing/install paths are `localsurv`. Decide on one and reconcile (track in Sequence 2).
+- **Single static binary** (Phase 11.1) is **not shipped**; `install.sh` clones source and runs Node. Either implement properly or stop advertising.
+
+---
+
 ## Table of Contents
 
 1. [Current State Assessment](#1-current-state-assessment)
@@ -28,39 +50,39 @@
 
 ### What Works Today
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Project/Service CRUD | ✅ Working | Basic create, list, delete |
-| Process Services (node/python) | ✅ Working | spawn-based with auto-restart |
-| Docker Services | ✅ Working | Via dockerode, container lifecycle |
-| Git Deployment Pipeline | ✅ Working | Clone → detect → build → deploy |
-| GitHub Auto-Pull (GitOps Poller) | ✅ Working | 60s interval `git ls-remote` checks |
-| GitHub Webhooks | ✅ Working | Push events trigger redeploy |
-| Reverse Proxy | ✅ Working | Domain → port routing via `http-proxy` |
-| ACME/Let's Encrypt SSL | ✅ Scaffolded | HTTP-01 challenges, needs Cloudflare DNS |
-| Dynamic SNI | ✅ Scaffolded | Cert lookup per-domain on TLS handshake |
-| WebSocket Live Logs | ✅ Working | Real-time log streaming |
-| Auth (Token + User + Session) | ✅ Working | Bootstrap + login + bearer auth |
-| Encrypted Env Vars | ✅ Working | AES-256-GCM at rest |
-| Backup Export/Import | ✅ Working | Full DB snapshot as JSON |
-| Railway/PA Migration | ✅ Working | Dry-run + execute import |
-| Service Settings Modal | ✅ Working | Edit name/port/domain/command live |
-| Auto-Pull Toggle per Service | ✅ Working | Checkbox on card, PATCH endpoint |
+| Feature                          | Status        | Notes                                    |
+| -------------------------------- | ------------- | ---------------------------------------- |
+| Project/Service CRUD             | ✅ Working    | Basic create, list, delete               |
+| Process Services (node/python)   | ✅ Working    | spawn-based with auto-restart            |
+| Docker Services                  | ✅ Working    | Via dockerode, container lifecycle       |
+| Git Deployment Pipeline          | ✅ Working    | Clone → detect → build → deploy          |
+| GitHub Auto-Pull (GitOps Poller) | ✅ Working    | 60s interval `git ls-remote` checks      |
+| GitHub Webhooks                  | ✅ Working    | Push events trigger redeploy             |
+| Reverse Proxy                    | ✅ Working    | Domain → port routing via `http-proxy`   |
+| ACME/Let's Encrypt SSL           | ✅ Scaffolded | HTTP-01 challenges, needs Cloudflare DNS |
+| Dynamic SNI                      | ✅ Scaffolded | Cert lookup per-domain on TLS handshake  |
+| WebSocket Live Logs              | ✅ Working    | Real-time log streaming                  |
+| Auth (Token + User + Session)    | ✅ Working    | Bootstrap + login + bearer auth          |
+| Encrypted Env Vars               | ✅ Working    | AES-256-GCM at rest                      |
+| Backup Export/Import             | ✅ Working    | Full DB snapshot as JSON                 |
+| Railway/PA Migration             | ✅ Working    | Dry-run + execute import                 |
+| Service Settings Modal           | ✅ Working    | Edit name/port/domain/command live       |
+| Auto-Pull Toggle per Service     | ✅ Working    | Checkbox on card, PATCH endpoint         |
 
 ### What's Missing or Broken
 
-| Gap | Severity | Notes |
-|-----|----------|-------|
-| No service deletion via UI | 🔴 High | Can create services but never clean them up |
-| No deployment log streaming | 🔴 High | Build output only visible after completion |
-| SSL `acme-client` import may fail | 🟡 Medium | Uses named import `{ acme, HttpClient }` — needs verification against actual package exports |
-| Git poller `split("\\t")` bug | 🟡 Medium | Uses escaped literal `\\t` instead of actual tab `\t` |
-| Proxy doesn't actually intercept Host-based traffic | 🟡 Medium | Only matches `/proxy/*` prefix, not bare domain requests |
-| Dashboard is minimal | 🟡 Medium | Shows only CPU/RAM/uptime, no service overview |
-| No error boundaries in React | 🟡 Medium | Unhandled API errors crash the whole UI |
-| No favicon/branding | 🟢 Low | Default Vite favicon |
-| No mobile responsiveness | 🟢 Low | Sidebar layout breaks on small screens |
-| README doesn't mention new features | 🟢 Low | GitHub deploy, auto-pull, SSL not documented |
+| Gap                                                 | Severity  | Notes                                                                                        |
+| --------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------- |
+| No service deletion via UI                          | 🔴 High   | Can create services but never clean them up                                                  |
+| No deployment log streaming                         | 🔴 High   | Build output only visible after completion                                                   |
+| SSL `acme-client` import may fail                   | 🟡 Medium | Uses named import `{ acme, HttpClient }` — needs verification against actual package exports |
+| Git poller `split("\\t")` bug                       | 🟡 Medium | Uses escaped literal `\\t` instead of actual tab `\t`                                        |
+| Proxy doesn't actually intercept Host-based traffic | 🟡 Medium | Only matches `/proxy/*` prefix, not bare domain requests                                     |
+| Dashboard is minimal                                | 🟡 Medium | Shows only CPU/RAM/uptime, no service overview                                               |
+| No error boundaries in React                        | 🟡 Medium | Unhandled API errors crash the whole UI                                                      |
+| No favicon/branding                                 | 🟢 Low    | Default Vite favicon                                                                         |
+| No mobile responsiveness                            | 🟢 Low    | Sidebar layout breaks on small screens                                                       |
+| README doesn't mention new features                 | 🟢 Low    | GitHub deploy, auto-pull, SSL not documented                                                 |
 
 ---
 
@@ -90,6 +112,7 @@ node -e "const m = require('acme-client'); console.log(Object.keys(m))"
 ```
 
 Expected fix (if default export):
+
 ```diff
 - import { acme, HttpClient } from "acme-client";
 + import acme from "acme-client";
@@ -150,8 +173,9 @@ This prevents confusing Let's Encrypt rate-limit burns when the domain isn't act
 Currently, deployment builds run synchronously and the user sees nothing until complete. This is the single biggest UX gap.
 
 **Implementation**:
+
 - During `runBuildPipeline`, stream stdout/stderr lines through the existing WebSocket broadcast system
-- Add a new event type `{ type: "build_log", serviceId, deploymentId, line }` 
+- Add a new event type `{ type: "build_log", serviceId, deploymentId, line }`
 - In the UI, show a live terminal-style output panel during deployment
 - Persist the full log to the deployment record on completion
 
@@ -180,6 +204,7 @@ Currently, deployment builds run synchronously and the user sees nothing until c
 ### 2.5 Configuration Validation on Save
 
 When saving service settings via the modal:
+
 - Validate port is not already in use by another service
 - Validate domain is syntactically correct
 - Validate working directory exists on disk
@@ -230,6 +255,7 @@ When saving service settings via the modal:
 ### 4.2 Automatic Tunnel Route Registration
 
 When a domain is added to a service:
+
 1. Check if Cloudflare Tunnel is configured
 2. If yes, automatically register the domain as a Cloudflare DNS record pointing to the tunnel
 3. Use the Cloudflare API to configure `ingress` rules mapping the domain to the local service port
@@ -244,6 +270,7 @@ When a domain is added to a service:
 ### 4.4 DNS Challenge for SSL (Alternative)
 
 If the user prefers Let's Encrypt over Cloudflare's edge SSL:
+
 - Implement DNS-01 ACME challenge using Cloudflare DNS API
 - This avoids the need for port 80 to be open
 - Requires a Cloudflare API token with DNS edit permissions
@@ -404,6 +431,7 @@ When a database is created, automatically inject its connection string into link
 ### 8.3 Docker Compose Native Support
 
 Currently compose import converts to individual services. Enhance to:
+
 - Preserve compose networks and volumes
 - Support `depends_on` ordering
 - Support compose healthchecks
@@ -436,6 +464,7 @@ The current README is functional but doesn't sell the project. Rewrite to includ
 **File**: `docs/getting-started.md` (NEW)
 
 Step-by-step walkthrough:
+
 1. Prerequisites (Node 20+, Docker, Git)
 2. Clone and install
 3. First boot and bootstrap admin
@@ -449,6 +478,7 @@ Step-by-step walkthrough:
 **File**: `docs/api-reference.md` (NEW)
 
 Full endpoint documentation:
+
 - Every route with method, path, request body schema, response shape
 - Authentication requirements
 - Example `curl` commands
@@ -468,6 +498,7 @@ Full endpoint documentation:
 **File**: `docs/troubleshooting.md` (NEW)
 
 Common issues and fixes:
+
 - "Service won't start" (check command, working dir, port conflicts)
 - "Git deploy fails" (auth, branch doesn't exist, build errors)
 - "SSL provisioning fails" (port 80 not reachable, DNS not pointed)
@@ -577,6 +608,7 @@ curl -fsSL https://localSURV.dev/install.sh | bash
 ```
 
 Script that:
+
 1. Detects OS and architecture
 2. Downloads the binary or Docker image
 3. Creates `~/.survhub/` directory
@@ -642,37 +674,37 @@ brew install survhub
 
 ### 🔴 Do Now (Blockers)
 
-| Item | Phase | Effort |
-|------|-------|--------|
-| Fix git poller tab split bug | 1.1 | 5 min |
-| Fix SSL import path | 1.2 | 15 min |
-| Fix reverse proxy Host routing | 1.3 | 2 hours |
-| Add service deletion | 1.4 | 1 hour |
-| Add error boundaries | 1.5 | 1 hour |
+| Item                           | Phase | Effort  |
+| ------------------------------ | ----- | ------- |
+| Fix git poller tab split bug   | 1.1   | 5 min   |
+| Fix SSL import path            | 1.2   | 15 min  |
+| Fix reverse proxy Host routing | 1.3   | 2 hours |
+| Add service deletion           | 1.4   | 1 hour  |
+| Add error boundaries           | 1.5   | 1 hour  |
 
 ### 🟡 Do Next (Core Quality)
 
-| Item | Phase | Effort |
-|------|-------|--------|
-| Live build log streaming | 2.1 | 3 hours |
-| GitHub PAT storage for private repos | 3.1 | 2 hours |
-| Cloudflare Tunnel integration | 4.1-4.3 | 1 day |
-| Dashboard overhaul | 5.1 + 6.1-6.4 | 2 days |
-| README rewrite + getting started | 9.1-9.2 | 3 hours |
-| CI pipeline | 10.4 | 2 hours |
-| Toast notifications (replace alert) | 6.4 | 2 hours |
+| Item                                 | Phase         | Effort  |
+| ------------------------------------ | ------------- | ------- |
+| Live build log streaming             | 2.1           | 3 hours |
+| GitHub PAT storage for private repos | 3.1           | 2 hours |
+| Cloudflare Tunnel integration        | 4.1-4.3       | 1 day   |
+| Dashboard overhaul                   | 5.1 + 6.1-6.4 | 2 days  |
+| README rewrite + getting started     | 9.1-9.2       | 3 hours |
+| CI pipeline                          | 10.4          | 2 hours |
+| Toast notifications (replace alert)  | 6.4           | 2 hours |
 
 ### 🟢 Do Later (Nice to Have)
 
-| Item | Phase | Effort |
-|------|-------|--------|
-| Database connection injection | 7.1 | 3 hours |
-| Service dependencies | 8.1 | 4 hours |
-| Resource monitoring + sparklines | 5.2 | 1 day |
-| Docker packaging | 11.2 | 2 hours |
-| Notification system | 5.3 | 4 hours |
-| GitHub OAuth App | 3.3 | 1 day |
-| Landing page | 12.3 | 1 day |
+| Item                             | Phase | Effort  |
+| -------------------------------- | ----- | ------- |
+| Database connection injection    | 7.1   | 3 hours |
+| Service dependencies             | 8.1   | 4 hours |
+| Resource monitoring + sparklines | 5.2   | 1 day   |
+| Docker packaging                 | 11.2  | 2 hours |
+| Notification system              | 5.3   | 4 hours |
+| GitHub OAuth App                 | 3.3   | 1 day   |
+| Landing page                     | 12.3  | 1 day   |
 
 ---
 
@@ -748,22 +780,22 @@ brew install survhub
 
 ## Estimated Total Effort
 
-| Phase | Effort | Dependency |
-|-------|--------|------------|
-| Phase 1 — Critical Fixes | 1 day | None |
-| Phase 2 — Core Polish | 2 days | Phase 1 |
-| Phase 3 — Private Repos | 1 day | Phase 1 |
-| Phase 4 — Cloudflare Tunnel | 1-2 days | Phase 1 |
-| Phase 5 — Observability | 2 days | Phase 2 |
-| Phase 6 — UI Overhaul | 3 days | Phase 2 |
-| Phase 7 — Database Mgmt | 1 day | Phase 2 |
-| Phase 8 — Orchestration | 2 days | Phase 7 |
-| Phase 9 — Documentation | 1 day | Phase 2 |
-| Phase 10 — Testing & CI | 2 days | Phase 1 |
-| Phase 11 — Distribution | 1 day | Phase 9 |
-| Phase 12 — Open Source | 1 day | Phase 11 |
-| **Total** | **~18-20 days** | |
+| Phase                       | Effort          | Dependency |
+| --------------------------- | --------------- | ---------- |
+| Phase 1 — Critical Fixes    | 1 day           | None       |
+| Phase 2 — Core Polish       | 2 days          | Phase 1    |
+| Phase 3 — Private Repos     | 1 day           | Phase 1    |
+| Phase 4 — Cloudflare Tunnel | 1-2 days        | Phase 1    |
+| Phase 5 — Observability     | 2 days          | Phase 2    |
+| Phase 6 — UI Overhaul       | 3 days          | Phase 2    |
+| Phase 7 — Database Mgmt     | 1 day           | Phase 2    |
+| Phase 8 — Orchestration     | 2 days          | Phase 7    |
+| Phase 9 — Documentation     | 1 day           | Phase 2    |
+| Phase 10 — Testing & CI     | 2 days          | Phase 1    |
+| Phase 11 — Distribution     | 1 day           | Phase 9    |
+| Phase 12 — Open Source      | 1 day           | Phase 11   |
+| **Total**                   | **~18-20 days** |            |
 
 ---
 
-*This document is the living roadmap for LocalSURV. Update it as phases are completed and priorities shift.*
+_This document is the living roadmap for LocalSURV. Update it as phases are completed and priorities shift._

@@ -3,13 +3,7 @@ import type { AppContext } from "../types.js";
 import { broadcast, nowIso, serializeError } from "../lib/core.js";
 import { getSetting } from "./settings.js";
 
-export type NotificationKind =
-  | "deployment"
-  | "service_crash"
-  | "ssl"
-  | "disk"
-  | "system"
-  | "tunnel";
+export type NotificationKind = "deployment" | "service_crash" | "ssl" | "disk" | "system" | "tunnel";
 
 export type NotificationSeverity = "info" | "success" | "warning" | "error";
 
@@ -76,7 +70,9 @@ export function markAllRead(ctx: AppContext): number {
 }
 
 export function unreadCount(ctx: AppContext): number {
-  const row = ctx.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE read = 0").get() as { count: number };
+  const row = ctx.db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE read = 0").get() as {
+    count: number;
+  };
   return row.count;
 }
 
@@ -90,15 +86,16 @@ async function forwardToExternalWebhook(ctx: AppContext, notification: Notificat
   if (!url) return;
   const kind = getSetting(ctx, "notification_webhook_kind") ?? "discord";
   const icon =
-    notification.severity === "error" ? "🔥" :
-    notification.severity === "warning" ? "⚠️" :
-    notification.severity === "success" ? "✅" : "ℹ️";
+    notification.severity === "error"
+      ? "🔥"
+      : notification.severity === "warning"
+        ? "⚠️"
+        : notification.severity === "success"
+          ? "✅"
+          : "ℹ️";
   const content = `${icon} **${notification.title}**${notification.body ? `\n${notification.body}` : ""}`;
   try {
-    const body =
-      kind === "slack"
-        ? JSON.stringify({ text: content })
-        : JSON.stringify({ content }); // discord
+    const body = kind === "slack" ? JSON.stringify({ text: content }) : JSON.stringify({ content }); // discord
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -18,7 +18,45 @@ wss.on("connection", (ws: WebSocket, req) => {
   }
   ctx.wsSubscribers.add(ws);
   ws.send(JSON.stringify({ type: "welcome", message: "Connected to SURVHub logs stream" }));
-  ws.on("close", () => ctx.wsSubscribers.delete(ws));
+
+  // Per-client set of transferIds this socket has subscribed to. We track here
+  // so the on-close cleanup can prune the global ctx.transferSubscribers map.
+  const attachedTransfers = new Set<string>();
+
+  ws.on("message", (raw) => {
+    let msg: { type?: string; transferId?: string };
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg.type !== "string" || typeof msg.transferId !== "string") return;
+    const transferId = msg.transferId;
+    if (msg.type === "attach_transfer") {
+      attachedTransfers.add(transferId);
+      const set = ctx.transferSubscribers.get(transferId) ?? new Set<WebSocket>();
+      set.add(ws);
+      ctx.transferSubscribers.set(transferId, set);
+    } else if (msg.type === "detach_transfer") {
+      attachedTransfers.delete(transferId);
+      const set = ctx.transferSubscribers.get(transferId);
+      if (set) {
+        set.delete(ws);
+        if (set.size === 0) ctx.transferSubscribers.delete(transferId);
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    ctx.wsSubscribers.delete(ws);
+    for (const transferId of attachedTransfers) {
+      const set = ctx.transferSubscribers.get(transferId);
+      if (set) {
+        set.delete(ws);
+        if (set.size === 0) ctx.transferSubscribers.delete(transferId);
+      }
+    }
+  });
 });
 
 // Domain-based reverse proxy on port 80 (configurable via SURVHUB_PROXY_PORT).
@@ -26,9 +64,9 @@ wss.on("connection", (ws: WebSocket, req) => {
 const domainProxy = httpProxy.createProxyServer({});
 const port80 = http.createServer((req, res) => {
   const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
-  const route = ctx.db
-    .prepare("SELECT target_port FROM proxy_routes WHERE domain = ?")
-    .get(host) as { target_port?: number } | undefined;
+  const route = ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
+    | { target_port?: number }
+    | undefined;
   if (!route?.target_port) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("No service mapped to this domain\n");
@@ -48,15 +86,21 @@ try {
 } catch (err: unknown) {
   const code = (err as NodeJS.ErrnoException).code;
   if (code === "EACCES") {
-    ctx.app.log.warn(`Domain proxy: cannot bind port ${ctx.config.proxyPort} (EACCES). Set SURVHUB_PROXY_PORT to a port > 1024 or run with elevated privileges.`);
+    ctx.app.log.warn(
+      `Domain proxy: cannot bind port ${ctx.config.proxyPort} (EACCES). Set SURVHUB_PROXY_PORT to a port > 1024 or run with elevated privileges.`
+    );
   } else {
     ctx.app.log.warn(`Domain proxy failed to start: ${(err as Error).message}`);
   }
 }
 ctx.shutdownTasks.push(() => new Promise<void>((res) => port80.close(() => res())));
 
-process.on("SIGINT", () => { void gracefulShutdown(ctx); });
-process.on("SIGTERM", () => { void gracefulShutdown(ctx); });
+process.on("SIGINT", () => {
+  void gracefulShutdown(ctx);
+});
+process.on("SIGTERM", () => {
+  void gracefulShutdown(ctx);
+});
 
 wss.on("close", () => {
   ctx.wsSubscribers.clear();

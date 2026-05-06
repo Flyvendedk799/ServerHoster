@@ -5,9 +5,35 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import { execSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
+import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
 import { broadcast, insertLog, nowIso } from "../lib/core.js";
 import { getSecretSetting, getSetting, setSetting } from "./settings.js";
+
+/**
+ * Upsert a system-managed env var on a service. System rows are write-locked
+ * from the manual env CRUD endpoints in routes/services.ts.
+ */
+export function setSystemEnv(ctx: AppContext, serviceId: string, key: string, value: string | null): void {
+  if (value === null) {
+    ctx.db
+      .prepare("DELETE FROM env_vars WHERE service_id = ? AND key = ? AND COALESCE(system, 0) = 1")
+      .run(serviceId, key);
+    return;
+  }
+  const existing = ctx.db
+    .prepare("SELECT id FROM env_vars WHERE service_id = ? AND key = ? AND COALESCE(system, 0) = 1")
+    .get(serviceId, key) as { id?: string } | undefined;
+  if (existing?.id) {
+    ctx.db.prepare("UPDATE env_vars SET value = ? WHERE id = ?").run(value, existing.id);
+  } else {
+    ctx.db
+      .prepare(
+        "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, 0, 1)"
+      )
+      .run(nanoid(), serviceId, key, value);
+  }
+}
 
 /**
  * Runtime state for a single managed `cloudflared tunnel run` child process.
@@ -34,15 +60,20 @@ type QuickTunnelRuntime = {
 
 const QUICK_TUNNELS = new Map<string, QuickTunnelRuntime>();
 
-const CLOUDFLARED_RELEASES = "https://github.com/cloudflare/cloudflared/releases/latest/download";
+// Pin to a known-good cloudflared version. Floating "latest" means a Cloudflare
+// release can silently change behaviour in users' installs. Bump deliberately
+// when verifying a new tunnel-side change. Override per-host with the env var
+// SURVHUB_CLOUDFLARED_VERSION (e.g. "2025.5.0") to test a different release.
+const CLOUDFLARED_VERSION = process.env.SURVHUB_CLOUDFLARED_VERSION ?? "2025.5.0";
+const CLOUDFLARED_RELEASES = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}`;
 
 function getCloudflaredDownloadUrl(): string {
   const platform = os.platform();
   const arch = os.arch();
   const platformMap: Record<string, Record<string, string>> = {
-    linux:  { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64" },
+    linux: { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64" },
     darwin: { x64: "cloudflared-darwin-amd64", arm64: "cloudflared-darwin-arm64" },
-    win32:  { x64: "cloudflared-windows-amd64.exe", arm64: "cloudflared-windows-arm64.exe" }
+    win32: { x64: "cloudflared-windows-amd64.exe", arm64: "cloudflared-windows-arm64.exe" }
   };
   const filename = platformMap[platform]?.[arch];
   if (!filename) throw new Error(`Unsupported platform for auto-install: ${platform}/${arch}`);
@@ -87,7 +118,9 @@ export function startQuickTunnel(ctx: AppContext, serviceId: string, port: numbe
 
   const detected = detectCloudflared(ctx);
   if (!detected.binary) {
-    throw new Error("cloudflared binary not found. Use POST /cloudflare/install-cloudflared to auto-install.");
+    throw new Error(
+      "cloudflared binary not found. Use POST /cloudflare/install-cloudflared to auto-install."
+    );
   }
 
   const child = spawn(detected.binary, ["tunnel", "--no-autoupdate", "--url", `http://localhost:${port}`], {
@@ -115,9 +148,14 @@ export function startQuickTunnel(ctx: AppContext, serviceId: string, port: numbe
         const match = QUICK_TUNNEL_URL_RE.exec(line);
         if (match) {
           runtime.tunnelUrl = match[0];
-          ctx.db.prepare("UPDATE services SET tunnel_url = ?, updated_at = ? WHERE id = ?")
-            .run(runtime.tunnelUrl, nowIso(), serviceId);
+          ctx.db.transaction(() => {
+            ctx.db
+              .prepare("UPDATE services SET tunnel_url = ?, updated_at = ? WHERE id = ?")
+              .run(runtime.tunnelUrl, nowIso(), serviceId);
+            setSystemEnv(ctx, serviceId, "PUBLIC_URL", runtime.tunnelUrl!);
+          })();
           broadcast(ctx, { type: "tunnel_url", serviceId, tunnelUrl: runtime.tunnelUrl });
+          broadcast(ctx, { type: "exposure_changed", serviceId });
           insertLog(ctx, serviceId, "info", `Quick tunnel active: ${runtime.tunnelUrl}`);
         }
       }
@@ -130,9 +168,14 @@ export function startQuickTunnel(ctx: AppContext, serviceId: string, port: numbe
   child.on("exit", (code, signal) => {
     const wasStop = runtime.stopRequested;
     QUICK_TUNNELS.delete(serviceId);
-    ctx.db.prepare("UPDATE services SET tunnel_url = NULL, updated_at = ? WHERE id = ?")
-      .run(nowIso(), serviceId);
+    ctx.db.transaction(() => {
+      ctx.db
+        .prepare("UPDATE services SET tunnel_url = NULL, updated_at = ? WHERE id = ?")
+        .run(nowIso(), serviceId);
+      setSystemEnv(ctx, serviceId, "PUBLIC_URL", null);
+    })();
     broadcast(ctx, { type: "tunnel_url", serviceId, tunnelUrl: null });
+    broadcast(ctx, { type: "exposure_changed", serviceId });
     if (!wasStop) {
       broadcast(ctx, { type: "quick_tunnel_exited", serviceId, code, signal });
       insertLog(ctx, serviceId, "warn", `Quick tunnel exited (code=${code})`);
@@ -146,13 +189,21 @@ export function stopQuickTunnel(ctx: AppContext, serviceId: string): void {
   const runtime = QUICK_TUNNELS.get(serviceId);
   if (!runtime) return;
   runtime.stopRequested = true;
-  try { runtime.child.kill("SIGTERM"); } catch { /* ignore */ }
+  try {
+    runtime.child.kill("SIGTERM");
+  } catch {
+    /* ignore */
+  }
 }
 
 export function stopAllQuickTunnels(): void {
   for (const [, runtime] of QUICK_TUNNELS.entries()) {
     runtime.stopRequested = true;
-    try { runtime.child.kill("SIGTERM"); } catch { /* ignore */ }
+    try {
+      runtime.child.kill("SIGTERM");
+    } catch {
+      /* ignore */
+    }
   }
   QUICK_TUNNELS.clear();
 }
@@ -193,7 +244,10 @@ export function detectCloudflared(ctx: AppContext): { binary: string | null; ver
   const candidates = [configured, "cloudflared"].filter(Boolean) as string[];
   for (const bin of candidates) {
     try {
-      const out = execSync(`${bin} --version`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const out = execSync(`${bin} --version`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim();
       return { binary: bin, version: out };
     } catch {
       continue;
@@ -238,7 +292,8 @@ export function startTunnel(ctx: AppContext): TunnelStatus {
     );
   }
   const token = getSecretSetting(ctx, "cloudflare_tunnel_token");
-  if (!token) throw new Error("Cloudflare tunnel token is not configured. Save it under Settings → Cloudflare.");
+  if (!token)
+    throw new Error("Cloudflare tunnel token is not configured. Save it under Settings → Cloudflare.");
 
   const child = spawn(detected.binary, ["tunnel", "--no-autoupdate", "run", "--token", token], {
     stdio: ["ignore", "pipe", "pipe"]
@@ -278,13 +333,16 @@ export function startTunnel(ctx: AppContext): TunnelStatus {
       return;
     }
     (STATE as unknown as { prevRestarts?: number }).prevRestarts = prevRestarts + 1;
-    setTimeout(() => {
-      try {
-        startTunnel(ctx);
-      } catch {
-        /* swallow — surfaces via status endpoint */
-      }
-    }, Math.min(30000, 2000 * (prevRestarts + 1)));
+    setTimeout(
+      () => {
+        try {
+          startTunnel(ctx);
+        } catch {
+          /* swallow — surfaces via status endpoint */
+        }
+      },
+      Math.min(30000, 2000 * (prevRestarts + 1))
+    );
   });
 
   broadcast(ctx, { type: "tunnel_status", running: true, pid: child.pid, startedAt: STATE.tunnel.startedAt });
@@ -323,7 +381,8 @@ export function saveTunnelConfig(
 
 function requireApiToken(ctx: AppContext): string {
   const t = getSecretSetting(ctx, "cloudflare_api_token");
-  if (!t) throw new Error("Cloudflare API token is not configured (needed for DNS + tunnel route registration).");
+  if (!t)
+    throw new Error("Cloudflare API token is not configured (needed for DNS + tunnel route registration).");
   return t;
 }
 
@@ -353,16 +412,23 @@ type DnsRecord = {
   proxied: boolean;
 };
 
-export async function upsertDnsCname(ctx: AppContext, domain: string): Promise<{ id: string; created: boolean }> {
+export async function upsertDnsCname(
+  ctx: AppContext,
+  domain: string
+): Promise<{ id: string; created: boolean }> {
   const zoneId = getSetting(ctx, "cloudflare_zone_id");
   const tunnelId = getSetting(ctx, "cloudflare_tunnel_id");
   if (!zoneId) throw new Error("cloudflare_zone_id not configured");
   if (!tunnelId) throw new Error("cloudflare_tunnel_id not configured");
   const cnameTarget = `${tunnelId}.cfargotunnel.com`;
-  const records = await cf<DnsRecord[]>(ctx, `/zones/${zoneId}/dns_records?name=${encodeURIComponent(domain)}`);
+  const records = await cf<DnsRecord[]>(
+    ctx,
+    `/zones/${zoneId}/dns_records?name=${encodeURIComponent(domain)}`
+  );
   const existing = records.find((r) => r.name === domain);
   if (existing) {
-    if (existing.type === "CNAME" && existing.content === cnameTarget) return { id: existing.id, created: false };
+    if (existing.type === "CNAME" && existing.content === cnameTarget)
+      return { id: existing.id, created: false };
     await cf<DnsRecord>(ctx, `/zones/${zoneId}/dns_records/${existing.id}`, {
       method: "PUT",
       body: JSON.stringify({ type: "CNAME", name: domain, content: cnameTarget, proxied: true })
@@ -384,6 +450,19 @@ type TunnelConfig = {
 };
 
 /**
+ * Serialize ingress mutations across the single named-tunnel daemon. Cloudflare's
+ * configurations endpoint reads the current array, mutates it, then writes it
+ * back — concurrent calls would clobber each other.
+ */
+let ingressMutex: Promise<unknown> = Promise.resolve();
+function withIngressLock<T>(task: () => Promise<T>): Promise<T> {
+  const next = ingressMutex.then(task, task);
+  // Don't let a rejected task poison the chain for subsequent callers.
+  ingressMutex = next.catch(() => undefined);
+  return next;
+}
+
+/**
  * Add (or replace) an ingress rule in the tunnel configuration so traffic
  * for `domain` is forwarded to `http://localhost:<port>`. The catch-all rule
  * is always preserved at the end.
@@ -393,32 +472,59 @@ export async function upsertTunnelIngress(
   domain: string,
   targetPort: number
 ): Promise<void> {
-  const accountId = getSetting(ctx, "cloudflare_account_id");
-  const tunnelId = getSetting(ctx, "cloudflare_tunnel_id");
-  if (!accountId) throw new Error("cloudflare_account_id not configured");
-  if (!tunnelId) throw new Error("cloudflare_tunnel_id not configured");
-  const current = await cf<TunnelConfig>(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
-  const existingIngress = current?.config?.ingress ?? [];
-  const filtered = existingIngress.filter((r) => r.hostname !== domain && r.service !== "http_status:404");
-  filtered.push({ hostname: domain, service: `http://localhost:${targetPort}` });
-  filtered.push({ service: "http_status:404" });
-  await cf(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
-    method: "PUT",
-    body: JSON.stringify({ config: { ingress: filtered } })
+  return withIngressLock(async () => {
+    const accountId = getSetting(ctx, "cloudflare_account_id");
+    const tunnelId = getSetting(ctx, "cloudflare_tunnel_id");
+    if (!accountId) throw new Error("cloudflare_account_id not configured");
+    if (!tunnelId) throw new Error("cloudflare_tunnel_id not configured");
+    const current = await cf<TunnelConfig>(
+      ctx,
+      `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`
+    );
+    const existingIngress = current?.config?.ingress ?? [];
+    const filtered = existingIngress.filter((r) => r.hostname !== domain && r.service !== "http_status:404");
+    filtered.push({ hostname: domain, service: `http://localhost:${targetPort}` });
+    filtered.push({ service: "http_status:404" });
+    await cf(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+      method: "PUT",
+      body: JSON.stringify({ config: { ingress: filtered } })
+    });
   });
 }
 
+/**
+ * Remove a Cloudflare DNS record matching the given domain. Idempotent — silently
+ * returns if the zone has no matching record. Used during service deletion and
+ * domain change to prevent orphan records in the user's Cloudflare zone.
+ */
+export async function deleteDnsRecord(ctx: AppContext, domain: string): Promise<void> {
+  const zoneId = getSetting(ctx, "cloudflare_zone_id");
+  if (!zoneId) return;
+  const records = await cf<DnsRecord[]>(
+    ctx,
+    `/zones/${zoneId}/dns_records?name=${encodeURIComponent(domain)}`
+  );
+  for (const record of records.filter((r) => r.name === domain)) {
+    await cf<DnsRecord>(ctx, `/zones/${zoneId}/dns_records/${record.id}`, { method: "DELETE" });
+  }
+}
+
 export async function removeTunnelIngress(ctx: AppContext, domain: string): Promise<void> {
-  const accountId = getSetting(ctx, "cloudflare_account_id");
-  const tunnelId = getSetting(ctx, "cloudflare_tunnel_id");
-  if (!accountId || !tunnelId) return;
-  const current = await cf<TunnelConfig>(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`);
-  const existingIngress = current?.config?.ingress ?? [];
-  const filtered = existingIngress.filter((r) => r.hostname !== domain);
-  if (!filtered.some((r) => r.service === "http_status:404")) filtered.push({ service: "http_status:404" });
-  await cf(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
-    method: "PUT",
-    body: JSON.stringify({ config: { ingress: filtered } })
+  return withIngressLock(async () => {
+    const accountId = getSetting(ctx, "cloudflare_account_id");
+    const tunnelId = getSetting(ctx, "cloudflare_tunnel_id");
+    if (!accountId || !tunnelId) return;
+    const current = await cf<TunnelConfig>(
+      ctx,
+      `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`
+    );
+    const existingIngress = current?.config?.ingress ?? [];
+    const filtered = existingIngress.filter((r) => r.hostname !== domain);
+    if (!filtered.some((r) => r.service === "http_status:404")) filtered.push({ service: "http_status:404" });
+    await cf(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+      method: "PUT",
+      body: JSON.stringify({ config: { ingress: filtered } })
+    });
   });
 }
 

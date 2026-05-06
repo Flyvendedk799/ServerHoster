@@ -17,7 +17,13 @@
 
 set -euo pipefail
 
-REPO_URL="${LOCALSURV_REPO:-https://github.com/your-org/localsurv.git}"
+# NOTE: forking? Change <GITHUB_OWNER> here, then audit the same sentinel
+# in install.ps1, apps/server/src/lib/upstream.ts, and docs/forking.md.
+REPO_URL="${LOCALSURV_REPO:-https://github.com/<GITHUB_OWNER>/localsurv.git}"
+# Pin to a specific tag/branch/commit. Defaults to tracking the default branch.
+# Once Sequence 5 ships signed release tarballs, this script will switch to
+# downloading + verifying SHA256SUMS instead of cloning the source tree.
+LOCALSURV_VERSION="${LOCALSURV_VERSION:-}"
 INSTALL_DIR="${LOCALSURV_DIR:-$HOME/.local/share/localsurv}"
 DATA_DIR="${SURVHUB_DATA_DIR:-$HOME/.survhub}"
 PORT="${SURVHUB_PORT:-8787}"
@@ -47,11 +53,22 @@ fi
 mkdir -p "$(dirname "$INSTALL_DIR")"
 if [ -d "$INSTALL_DIR/.git" ]; then
   log "Updating $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch --prune
-  git -C "$INSTALL_DIR" reset --hard origin/HEAD
+  git -C "$INSTALL_DIR" fetch --prune --tags
+  if [ -n "$LOCALSURV_VERSION" ]; then
+    log "Checking out pinned version: $LOCALSURV_VERSION"
+    git -C "$INSTALL_DIR" reset --hard "$LOCALSURV_VERSION"
+  else
+    git -C "$INSTALL_DIR" reset --hard origin/HEAD
+  fi
 else
   log "Cloning $REPO_URL into $INSTALL_DIR"
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+  if [ -n "$LOCALSURV_VERSION" ]; then
+    git clone --depth 1 --branch "$LOCALSURV_VERSION" "$REPO_URL" "$INSTALL_DIR" \
+      || { log "Branch/tag not found, falling back to default + checkout"; \
+           git clone "$REPO_URL" "$INSTALL_DIR" && git -C "$INSTALL_DIR" checkout "$LOCALSURV_VERSION"; }
+  else
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+  fi
 fi
 
 cd "$INSTALL_DIR"
@@ -96,8 +113,8 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=$ENV_FILE
-ExecStart=$NODE_BIN $SERVER_ENTRY
+EnvironmentFile=${ENV_FILE}
+ExecStart="${NODE_BIN}" "${SERVER_ENTRY}"
 Restart=on-failure
 RestartSec=5
 
@@ -111,6 +128,23 @@ EOF
     fi
     ;;
   Darwin)
+    # macOS launchd has no EnvironmentFile equivalent. Write a tiny wrapper
+    # script that sources the secret env file before exec'ing the server.
+    WRAPPER="$INSTALL_DIR/packaging/launchd-wrapper.sh"
+    mkdir -p "$(dirname "$WRAPPER")"
+    cat > "$WRAPPER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "${ENV_FILE}" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+fi
+exec "${NODE_BIN}" "${SERVER_ENTRY}"
+EOF
+    chmod +x "$WRAPPER"
+
     PLIST="$HOME/Library/LaunchAgents/dev.localsurv.plist"
     mkdir -p "$(dirname "$PLIST")"
     cat > "$PLIST" <<EOF
@@ -121,18 +155,12 @@ EOF
   <key>Label</key><string>dev.localsurv</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE_BIN</string>
-    <string>$SERVER_ENTRY</string>
+    <string>${WRAPPER}</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>SURVHUB_DATA_DIR</key><string>$DATA_DIR</string>
-    <key>SURVHUB_PORT</key><string>$PORT</string>
-  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$DATA_DIR/stdout.log</string>
-  <key>StandardErrorPath</key><string>$DATA_DIR/stderr.log</string>
+  <key>StandardOutPath</key><string>${DATA_DIR}/stdout.log</string>
+  <key>StandardErrorPath</key><string>${DATA_DIR}/stderr.log</string>
 </dict>
 </plist>
 EOF
@@ -141,7 +169,7 @@ EOF
     launchctl load "$PLIST" || warn "launchctl load failed"
     ;;
   *)
-    warn "Unknown OS $OS — start LocalSURV manually with: node $SERVER_ENTRY"
+    warn "Unknown OS $OS — start LocalSURV manually with: ${NODE_BIN} ${SERVER_ENTRY}"
     ;;
 esac
 

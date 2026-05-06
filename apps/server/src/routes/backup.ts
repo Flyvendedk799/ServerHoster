@@ -37,7 +37,9 @@ export function registerBackupRoutes(ctx: AppContext): void {
         const keys = Object.keys(rows[0] ?? {});
         if (keys.length === 0) continue;
         const placeholders = keys.map(() => "?").join(", ");
-        const insert = ctx.db.prepare(`INSERT OR REPLACE INTO ${table} (${keys.join(", ")}) VALUES (${placeholders})`);
+        const insert = ctx.db.prepare(
+          `INSERT OR REPLACE INTO ${table} (${keys.join(", ")}) VALUES (${placeholders})`
+        );
         for (const row of rows) {
           insert.run(...keys.map((k) => row[k]));
         }

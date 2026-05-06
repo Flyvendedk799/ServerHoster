@@ -32,6 +32,6 @@ Closes #
 ## Checklist
 
 - [ ] Code follows the style of the existing codebase
-- [ ] Documentation updated (README / docs/*)
+- [ ] Documentation updated (README / docs/\*)
 - [ ] CHANGELOG entry added under **[Unreleased]**
 - [ ] No new runtime dependencies, or the added ones are justified in the PR description

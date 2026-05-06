@@ -60,7 +60,13 @@ async function sampleContainer(name: string): Promise<{ cpu: number; memoryMb: n
 }
 
 function recordSample(ctx: AppContext, serviceId: string, cpu: number, memoryMb: number): void {
-  const row = { id: nanoid(), service_id: serviceId, cpu_percent: cpu, memory_mb: memoryMb, timestamp: nowIso() };
+  const row = {
+    id: nanoid(),
+    service_id: serviceId,
+    cpu_percent: cpu,
+    memory_mb: memoryMb,
+    timestamp: nowIso()
+  };
   ctx.db
     .prepare("INSERT INTO metrics (id, service_id, cpu_percent, memory_mb, timestamp) VALUES (?, ?, ?, ?, ?)")
     .run(row.id, row.service_id, row.cpu_percent, row.memory_mb, row.timestamp);
@@ -112,7 +118,9 @@ export function startMetricsLoop(ctx: AppContext): () => void {
   return () => clearInterval(interval);
 }
 
-export function getLatestMetrics(ctx: AppContext): Record<string, { cpu: number; memoryMb: number; timestamp: string }> {
+export function getLatestMetrics(
+  ctx: AppContext
+): Record<string, { cpu: number; memoryMb: number; timestamp: string }> {
   const rows = ctx.db
     .prepare(
       `SELECT m.service_id, m.cpu_percent, m.memory_mb, m.timestamp

@@ -8,17 +8,17 @@ LocalSURV runs on your Mac mini, Linux box, or Windows PC and gives you a browse
 
 ## Features
 
-| Area | What you get |
-| --- | --- |
-| **Deploy** | GitHub repo → clone → auto-detect build (Node / Python / Docker) → live-streamed build logs → run |
-| **Git** | HTTPS PAT auth, SSH keys, GitHub webhooks, 60s GitOps polling, redeploy, rollback |
-| **Routing** | Host-based reverse proxy, dynamic SNI, Let's Encrypt (HTTP-01 + DNS-01), Cloudflare Tunnel integration |
-| **Runtime** | Process services, Docker services, auto-restart with exponential backoff, healthchecks, dependency-ordered start |
-| **Observability** | Live WebSocket logs, build log streaming, CPU/memory metrics per service, system health score, notifications (in-app + Discord/Slack webhook) |
-| **Databases** | One-click Postgres/MySQL/Redis/Mongo containers, connection-string copy, auto-injected `DATABASE_URL`, `pg_dump`/`mysqldump` backups with one-click restore, SQL seed |
-| **Projects** | Project env vars inherited by services, environment tags (production/staging/dev), start-all/stop-all/deploy-all, docker-compose import (idempotent, preserves depends_on) |
-| **Security** | AES-256-GCM encrypted secrets, session auth + bootstrap user, rate-limited API, audit log, encrypted Cloudflare/GitHub token storage |
-| **UX** | Dark/light theme, collapsible sidebar, toast notifications, modal confirms, mobile-responsive layout |
+| Area              | What you get                                                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deploy**        | GitHub repo → clone → auto-detect build (Node / Python / Docker) → live-streamed build logs → run                                                                          |
+| **Git**           | HTTPS PAT auth, SSH keys, GitHub webhooks, 60s GitOps polling, redeploy, rollback                                                                                          |
+| **Routing**       | Host-based reverse proxy, dynamic SNI, Let's Encrypt (HTTP-01 + DNS-01), Cloudflare Tunnel by default with pluggable adapters (ngrok / Tailscale Funnel planned)           |
+| **Runtime**       | Process services, Docker services, auto-restart with exponential backoff, healthchecks, dependency-ordered start                                                           |
+| **Observability** | Live WebSocket logs, build log streaming, CPU/memory metrics per service, system health score, notifications (in-app + Discord/Slack webhook)                              |
+| **Databases**     | One-click Postgres/MySQL/Redis/Mongo containers, connection-string copy, auto-injected `DATABASE_URL`, `pg_dump`/`mysqldump` backups with one-click restore, SQL seed      |
+| **Projects**      | Project env vars inherited by services, environment tags (production/staging/dev), start-all/stop-all/deploy-all, docker-compose import (idempotent, preserves depends_on) |
+| **Security**      | AES-256-GCM encrypted secrets, session auth + bootstrap user, rate-limited API, audit log, encrypted Cloudflare/GitHub token storage                                       |
+| **UX**            | Dark/light theme, collapsible sidebar, toast notifications, modal confirms, mobile-responsive layout                                                                       |
 
 ---
 
@@ -27,8 +27,8 @@ LocalSURV runs on your Mac mini, Linux box, or Windows PC and gives you a browse
 **Prerequisites:** Node 20+, Docker (optional but recommended for container services and databases), Git.
 
 ```bash
-# 1. clone
-git clone https://github.com/your-org/localsurv.git
+# 1. clone (replace <GITHUB_OWNER> with the upstream — see docs/forking.md)
+git clone https://github.com/<GITHUB_OWNER>/localsurv.git
 cd localsurv
 
 # 2. install
@@ -89,17 +89,30 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 
 ## Comparison
 
-| | **LocalSURV** | Railway | Coolify | CapRover |
-| --- | --- | --- | --- | --- |
-| Self-hosted | ✅ | ❌ | ✅ | ✅ |
-| GitHub auto-deploy | ✅ | ✅ | ✅ | ✅ |
-| SQLite state | ✅ single file | — | Postgres req. | LevelDB |
-| Cloudflare Tunnel built-in | ✅ | ❌ | ❌ | ❌ |
-| Live build log stream | ✅ | ✅ | ✅ | ⚠️ tail |
-| Docker + process services | ✅ both | Docker only | Docker only | Docker only |
-| Per-service metrics | ✅ | ✅ | ✅ | ✅ |
-| Single-binary deploy | ✅ (planned) | n/a | ❌ | ❌ |
-| Cost | free | $$ | free | free |
+|                            | **LocalSURV**  | Railway     | Coolify       | CapRover    |
+| -------------------------- | -------------- | ----------- | ------------- | ----------- |
+| Self-hosted                | ✅             | ❌          | ✅            | ✅          |
+| GitHub auto-deploy         | ✅             | ✅          | ✅            | ✅          |
+| SQLite state               | ✅ single file | —           | Postgres req. | LevelDB     |
+| Cloudflare Tunnel built-in | ✅             | ❌          | ❌            | ❌          |
+| Live build log stream      | ✅             | ✅          | ✅            | ⚠️ tail     |
+| Docker + process services  | ✅ both        | Docker only | Docker only   | Docker only |
+| Per-service metrics        | ✅             | ✅          | ✅            | ✅          |
+| Single-binary deploy       | ⏳ planned     | n/a         | ❌            | ❌          |
+| Cost                       | free           | $$          | free          | free        |
+
+---
+
+## Platform support
+
+| Platform        | Status       | Install path                                                                           |
+| --------------- | ------------ | -------------------------------------------------------------------------------------- |
+| Linux (systemd) | ✅ supported | `install.sh` (registers a user systemd unit)                                           |
+| macOS (launchd) | ✅ supported | `install.sh` or `brew install ./packaging/Formula/localsurv.rb` (notarization pending) |
+| Docker          | ✅ supported | Multi-stage `Dockerfile` at the repo root                                              |
+| Windows         | ⏳ planned   | PowerShell `install.ps1` + Windows Service wrapper (in flight)                         |
+
+> Public exposure today goes through Cloudflare Tunnel, with Let's Encrypt for direct custom-domain serving when port 80/443 are open. Bring-your-own ngrok and Tailscale Funnel adapters are on the roadmap and will plug into the same `TunnelAdapter` slot.
 
 ---
 
@@ -124,6 +137,20 @@ npm run test:smoke -w @survhub/web
 
 ---
 
+## Privacy & telemetry
+
+LocalSURV does **not** collect telemetry, analytics, or any usage data. The only outbound calls the control plane makes by default are:
+
+- A daily fetch of the latest GitHub release tag for the in-dashboard "update available" banner. Disable with `LOCALSURV_NO_UPDATE_CHECK=1`.
+- Cloudflare API calls when you use Cloudflare Tunnel (only with credentials you supply).
+- Let's Encrypt ACME calls when you provision SSL.
+
+Crash reports stay on your machine. They write to `<dataRoot>/crash-<timestamp>.log` only when `crash_reporter.enabled = "1"` (off by default), and are never sent off-host. There is no Prometheus endpoint exposed unless you explicitly enable `prometheus.enabled = "1"`.
+
+If we ever add anything resembling telemetry it will be opt-in with a visible toggle in Settings, disclosed in this section, and disabled by default.
+
+---
+
 ## License
 
-*Add the license of your choice here.*
+MIT — see [LICENSE](LICENSE).

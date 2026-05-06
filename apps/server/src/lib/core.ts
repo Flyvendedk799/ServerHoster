@@ -41,45 +41,77 @@ export function broadcast(ctx: AppContext, event: unknown): void {
   }
 }
 
+/**
+ * Send an event to only the WS clients that have explicitly attached to a
+ * given transferId. Used for db transfer streaming so chunks don't fan out
+ * to every connected admin tab.
+ */
+export function broadcastTransferEvent(ctx: AppContext, transferId: string, event: unknown): void {
+  const subscribers = ctx.transferSubscribers.get(transferId);
+  if (!subscribers || subscribers.size === 0) return;
+  const payload = JSON.stringify(event);
+  for (const client of subscribers) {
+    if (client.readyState === client.OPEN) client.send(payload);
+  }
+}
+
 export function trimServiceLogs(ctx: AppContext, serviceId: string): void {
-  ctx.db.prepare(
-    `DELETE FROM logs
+  ctx.db
+    .prepare(
+      `DELETE FROM logs
      WHERE service_id = ?
        AND id NOT IN (
          SELECT id FROM logs WHERE service_id = ? ORDER BY timestamp DESC LIMIT 5000
        )`
-  ).run(serviceId, serviceId);
+    )
+    .run(serviceId, serviceId);
 }
 
 export function insertLog(ctx: AppContext, serviceId: string, level: LogLevel, message: string): void {
   const cleanMessage = normalizeOutput(message);
   if (!cleanMessage) return;
   const timestamp = nowIso();
-  ctx.db.prepare("INSERT INTO logs (id, service_id, level, message, timestamp) VALUES (?, ?, ?, ?, ?)")
+  ctx.db
+    .prepare("INSERT INTO logs (id, service_id, level, message, timestamp) VALUES (?, ?, ?, ?, ?)")
     .run(nanoid(), serviceId, level, cleanMessage, timestamp);
   trimServiceLogs(ctx, serviceId);
   broadcast(ctx, { type: "log", serviceId, level, message: cleanMessage, timestamp });
 }
 
-export function updateServiceStatus(ctx: AppContext, serviceId: string, status: string, lastExitCode?: number): void {
-  ctx.db.prepare(
-    `UPDATE services
+export function updateServiceStatus(
+  ctx: AppContext,
+  serviceId: string,
+  status: string,
+  lastExitCode?: number
+): void {
+  ctx.db
+    .prepare(
+      `UPDATE services
      SET status = ?, updated_at = ?, last_exit_code = COALESCE(?, last_exit_code),
          last_started_at = CASE WHEN ? = 'running' THEN ? ELSE last_started_at END,
          last_stopped_at = CASE WHEN ? IN ('stopped', 'crashed') THEN ? ELSE last_stopped_at END
      WHERE id = ?`
-  ).run(status, nowIso(), lastExitCode ?? null, status, nowIso(), status, nowIso(), serviceId);
+    )
+    .run(status, nowIso(), lastExitCode ?? null, status, nowIso(), status, nowIso(), serviceId);
   broadcast(ctx, { type: "service_status", serviceId, status, lastExitCode: lastExitCode ?? null });
 }
 
 export function getService(ctx: AppContext, serviceId: string): Record<string, unknown> {
-  const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId) as Record<string, unknown> | undefined;
+  const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId) as
+    | Record<string, unknown>
+    | undefined;
   if (!service) throw new Error("Service not found");
   return service;
 }
 
-export function getServiceEnv(ctx: AppContext, serviceId: string, revealSecrets = true): Record<string, string> {
-  const rows = ctx.db.prepare("SELECT key, value, is_secret FROM env_vars WHERE service_id = ?").all(serviceId) as Array<{
+export function getServiceEnv(
+  ctx: AppContext,
+  serviceId: string,
+  revealSecrets = true
+): Record<string, string> {
+  const rows = ctx.db
+    .prepare("SELECT key, value, is_secret FROM env_vars WHERE service_id = ?")
+    .all(serviceId) as Array<{
     key: string;
     value: string;
     is_secret: number;
@@ -147,6 +179,7 @@ export async function findFreePort(start = 3000, end = 3999): Promise<number> {
 export function detectBuildType(projectPath: string): BuildType {
   if (fs.existsSync(`${projectPath}/Dockerfile`)) return "docker";
   if (fs.existsSync(`${projectPath}/package.json`)) return "node";
-  if (fs.existsSync(`${projectPath}/requirements.txt`) || fs.existsSync(`${projectPath}/pyproject.toml`)) return "python";
+  if (fs.existsSync(`${projectPath}/requirements.txt`) || fs.existsSync(`${projectPath}/pyproject.toml`))
+    return "python";
   return "unknown";
 }

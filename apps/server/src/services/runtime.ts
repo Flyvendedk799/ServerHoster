@@ -1,6 +1,14 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { broadcast, nowIso, getService, getServiceEnv, insertLog, serializeError, updateServiceStatus } from "../lib/core.js";
+import {
+  broadcast,
+  nowIso,
+  getService,
+  getServiceEnv,
+  insertLog,
+  serializeError,
+  updateServiceStatus
+} from "../lib/core.js";
 import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { buildConnectionString, getDatabase } from "./databases.js";
@@ -78,11 +86,19 @@ async function getOrCreateContainer(
     const existing = ctx.docker.getContainer(containerName);
     const info = await existing.inspect();
     const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
-    const mappedToRequestedPort = !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
+    const mappedToRequestedPort =
+      !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
     if (mappedToRequestedPort) return existing;
-    try { await existing.stop({ t: 10 }); } catch {}
+    try {
+      await existing.stop({ t: 10 });
+    } catch {}
     await existing.remove({ force: true });
-    insertLog(ctx, serviceId, "info", `Recreated Docker container to publish host port ${hostPort} to container port ${containerPort}.`);
+    insertLog(
+      ctx,
+      serviceId,
+      "info",
+      `Recreated Docker container to publish host port ${hostPort} to container port ${containerPort}.`
+    );
   } catch {
     // Container does not exist yet.
   }
@@ -100,7 +116,11 @@ async function getOrCreateContainer(
   });
 }
 
-async function waitForContainerReadiness(ctx: AppContext, serviceId: string, container: Awaited<ReturnType<typeof getOrCreateContainer>>): Promise<void> {
+async function waitForContainerReadiness(
+  ctx: AppContext,
+  serviceId: string,
+  container: Awaited<ReturnType<typeof getOrCreateContainer>>
+): Promise<void> {
   const deadline = Date.now() + 30000;
   let lastHealth = "";
 
@@ -120,7 +140,12 @@ async function waitForContainerReadiness(ctx: AppContext, serviceId: string, con
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  insertLog(ctx, serviceId, "warn", "Docker container started, but health did not report healthy within 30s.");
+  insertLog(
+    ctx,
+    serviceId,
+    "warn",
+    "Docker container started, but health did not report healthy within 30s."
+  );
 }
 
 export async function withLock<T>(ctx: AppContext, serviceId: string, task: () => Promise<T>): Promise<T> {
@@ -132,7 +157,8 @@ export async function withLock<T>(ctx: AppContext, serviceId: string, task: () =
 async function startProcessService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
   if (ctx.runtimeProcesses.has(serviceId)) return;
-  if (service.type !== "process" && service.type !== "static") throw new Error("Service is not a process service");
+  if (service.type !== "process" && service.type !== "static")
+    throw new Error("Service is not a process service");
 
   const command = String(service.command ?? "").trim();
   if (!command) throw new Error("Missing command for service");
@@ -145,28 +171,41 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   ctx.manuallyStopped.delete(serviceId);
   const serviceEnvFromLinks = getServiceEnvWithLinks(ctx, serviceId);
   const portEnv = service.port && !serviceEnvFromLinks.PORT ? { PORT: String(service.port) } : {};
-  const child = spawn(command, { cwd, env: { ...process.env, ...portEnv, ...serviceEnvFromLinks }, shell: true });
+  const child = spawn(command, {
+    cwd,
+    env: { ...process.env, ...portEnv, ...serviceEnvFromLinks },
+    shell: true
+  });
   ctx.runtimeProcesses.set(serviceId, { process: child, serviceId });
   ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Started command: ${command}`);
 
   // Auto-start quick tunnel if enabled (dynamic import avoids circular dependency)
-  const qtRow = ctx.db.prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
+  const qtRow = ctx.db
+    .prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
     .get(serviceId) as { quick_tunnel_enabled?: number; port?: number } | undefined;
   if (qtRow?.quick_tunnel_enabled && qtRow.port) {
-    import("./cloudflare.js").then(({ startQuickTunnel }) => {
-      try { startQuickTunnel(ctx, serviceId, qtRow.port!); } catch { /* ignore */ }
-    }).catch(() => { /* ignore */ });
+    import("./cloudflare.js")
+      .then(({ startQuickTunnel }) => {
+        try {
+          startQuickTunnel(ctx, serviceId, qtRow.port!);
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }
 
   child.stdout.on("data", (d) => insertLog(ctx, serviceId, "info", d.toString()));
   child.stderr.on("data", (d) => insertLog(ctx, serviceId, "error", d.toString()));
   child.on("exit", (code) => {
     ctx.runtimeProcesses.delete(serviceId);
-    const cfg = ctx.db.prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?").get(serviceId) as
-      | { auto_restart: number; restart_count: number; max_restarts: number }
-      | undefined;
+    const cfg = ctx.db
+      .prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?")
+      .get(serviceId) as { auto_restart: number; restart_count: number; max_restarts: number } | undefined;
     if (!cfg) return;
     if (ctx.manuallyStopped.has(serviceId)) {
       ctx.manuallyStopped.delete(serviceId);
@@ -179,7 +218,7 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
       const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
       updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
       insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
-      const serviceName = String((getService(ctx, serviceId).name ?? serviceId));
+      const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
       createNotification(ctx, {
         kind: "service_crash",
         severity: "warning",
@@ -198,7 +237,7 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
     updateServiceStatus(ctx, serviceId, "stopped", code ?? 1);
     insertLog(ctx, serviceId, "warn", "Service stopped.");
     if ((code ?? 0) !== 0) {
-      const serviceName = String((getService(ctx, serviceId).name ?? serviceId));
+      const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
       createNotification(ctx, {
         kind: "service_crash",
         severity: "error",
@@ -256,12 +295,21 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "live", image, port, containerPort });
 
   // Auto-start quick tunnel if enabled
-  const qtRowDocker = ctx.db.prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
+  const qtRowDocker = ctx.db
+    .prepare("SELECT quick_tunnel_enabled, port FROM services WHERE id = ?")
     .get(serviceId) as { quick_tunnel_enabled?: number; port?: number } | undefined;
   if (qtRowDocker?.quick_tunnel_enabled && qtRowDocker.port) {
-    import("./cloudflare.js").then(({ startQuickTunnel }) => {
-      try { startQuickTunnel(ctx, serviceId, qtRowDocker.port!); } catch { /* ignore */ }
-    }).catch(() => { /* ignore */ });
+    import("./cloudflare.js")
+      .then(({ startQuickTunnel }) => {
+        try {
+          startQuickTunnel(ctx, serviceId, qtRowDocker.port!);
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }
 }
 
@@ -273,13 +321,25 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "stopping" });
 
   // Stop quick tunnel if running
-  import("./cloudflare.js").then(({ stopQuickTunnel }) => {
-    try { stopQuickTunnel(ctx, serviceId); } catch { /* ignore */ }
-  }).catch(() => { /* ignore */ });
+  import("./cloudflare.js")
+    .then(({ stopQuickTunnel }) => {
+      try {
+        stopQuickTunnel(ctx, serviceId);
+      } catch {
+        /* ignore */
+      }
+    })
+    .catch(() => {
+      /* ignore */
+    });
   if (service.type === "docker") {
     const container = ctx.docker.getContainer(`survhub-${serviceId}`);
-    try { await container.stop({ t: 10 }); } catch {}
-    try { await container.remove({ force: false }); } catch {}
+    try {
+      await container.stop({ t: 10 });
+    } catch {}
+    try {
+      await container.remove({ force: false });
+    } catch {}
   } else {
     const runtime = ctx.runtimeProcesses.get(serviceId);
     if (runtime) {
@@ -320,23 +380,19 @@ export function parseDependsOn(raw: unknown): string[] {
   }
 }
 
-async function startDependencies(
-  ctx: AppContext,
-  serviceId: string,
-  visiting: Set<string>
-): Promise<void> {
+async function startDependencies(ctx: AppContext, serviceId: string, visiting: Set<string>): Promise<void> {
   if (visiting.has(serviceId)) {
     throw new Error(`Dependency cycle detected at service ${serviceId}`);
   }
   visiting.add(serviceId);
-  const row = ctx.db
-    .prepare("SELECT depends_on FROM services WHERE id = ?")
-    .get(serviceId) as { depends_on?: string } | undefined;
+  const row = ctx.db.prepare("SELECT depends_on FROM services WHERE id = ?").get(serviceId) as
+    | { depends_on?: string }
+    | undefined;
   const deps = parseDependsOn(row?.depends_on);
   for (const depId of deps) {
-    const dep = ctx.db
-      .prepare("SELECT id, status FROM services WHERE id = ?")
-      .get(depId) as { id: string; status: string } | undefined;
+    const dep = ctx.db.prepare("SELECT id, status FROM services WHERE id = ?").get(depId) as
+      | { id: string; status: string }
+      | undefined;
     if (!dep) {
       insertLog(ctx, serviceId, "warn", `Dependency ${depId} not found — skipping`);
       continue;
@@ -359,10 +415,11 @@ async function startDependencies(
  * Used when stopping a service to warn about downstream impact.
  */
 export function getDependents(ctx: AppContext, serviceId: string): string[] {
-  const rows = ctx.db.prepare("SELECT id, depends_on FROM services").all() as Array<{ id: string; depends_on?: string }>;
-  return rows
-    .filter((r) => parseDependsOn(r.depends_on).includes(serviceId))
-    .map((r) => r.id);
+  const rows = ctx.db.prepare("SELECT id, depends_on FROM services").all() as Array<{
+    id: string;
+    depends_on?: string;
+  }>;
+  return rows.filter((r) => parseDependsOn(r.depends_on).includes(serviceId)).map((r) => r.id);
 }
 
 export async function restartService(ctx: AppContext, serviceId: string): Promise<void> {
@@ -374,12 +431,53 @@ export async function restartService(ctx: AppContext, serviceId: string): Promis
   });
 }
 
-export function reconcileRuntimeStateOnBoot(ctx: AppContext): void {
+/**
+ * Walk Docker and return service IDs whose `survhub-<id>` container is
+ * currently running. Adoption-only: containers in any other state
+ * ("exited", "paused", etc.) are excluded — those should sync as "stopped".
+ */
+async function listLiveAdoptableContainers(ctx: AppContext): Promise<Set<string>> {
+  const live = new Set<string>();
+  let containers: Array<{ Names?: string[]; State?: string }>;
+  try {
+    containers = (await ctx.docker.listContainers({ all: true })) as typeof containers;
+  } catch {
+    return live; // Docker not reachable — adoption silently skipped.
+  }
+  for (const c of containers) {
+    if (c.State !== "running") continue;
+    const name = (c.Names ?? []).find((n) => n.startsWith("/survhub-")) ?? "";
+    const id = name.replace(/^\/survhub-/, "");
+    if (!id) continue;
+    const row = ctx.db.prepare("SELECT id FROM services WHERE id = ? AND type = 'docker'").get(id) as
+      | { id?: string }
+      | undefined;
+    if (row?.id) live.add(row.id);
+  }
+  return live;
+}
+
+export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void> {
   // Clear stale tunnel URLs from any previous session
   ctx.db.prepare("UPDATE services SET tunnel_url = NULL WHERE tunnel_url IS NOT NULL").run();
 
-  const rows = ctx.db.prepare("SELECT id, status, start_mode FROM services").all() as Array<{ id: string; status: string; start_mode?: string }>;
+  const adopted = await listLiveAdoptableContainers(ctx);
+
+  const rows = ctx.db.prepare("SELECT id, status, start_mode FROM services").all() as Array<{
+    id: string;
+    status: string;
+    start_mode?: string;
+  }>;
   for (const row of rows) {
+    if (adopted.has(row.id)) {
+      // Container is alive in Docker — treat the service as running and
+      // skip auto-start so we don't recreate an already-healthy container.
+      if (row.status !== "running") {
+        updateServiceStatus(ctx, row.id, "running");
+        insertLog(ctx, row.id, "info", "Adopted existing Docker container on boot.");
+      }
+      continue;
+    }
     if (row.status === "running") {
       updateServiceStatus(ctx, row.id, "stopped");
       insertLog(ctx, row.id, "warn", "Recovered from daemon restart. Service marked as stopped.");
@@ -392,22 +490,74 @@ export function reconcileRuntimeStateOnBoot(ctx: AppContext): void {
   }
 }
 
+/**
+ * Periodically re-sync the `services` table against the Docker daemon so
+ * external `docker stop` / `docker rm` / crash-and-restart actions show up in
+ * the dashboard within one tick instead of waiting for a server reboot.
+ *
+ * Read-only with respect to Docker: never starts or stops containers, only
+ * updates the DB column and emits a notification log line.
+ */
+export function startContainerDriftLoop(ctx: AppContext): () => void {
+  const intervalMs = 30_000;
+  let stopped = false;
+  let inFlight = false;
+  const tick = async (): Promise<void> => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      const live = await listLiveAdoptableContainers(ctx);
+      const dockerRows = ctx.db
+        .prepare("SELECT id, status FROM services WHERE type = 'docker'")
+        .all() as Array<{ id: string; status: string }>;
+      for (const row of dockerRows) {
+        const isLive = live.has(row.id);
+        // Don't fight ongoing transitions — leave 'starting' and 'stopping' alone.
+        if (row.status === "starting" || row.status === "stopping") continue;
+        if (isLive && row.status !== "running") {
+          updateServiceStatus(ctx, row.id, "running");
+          insertLog(ctx, row.id, "info", "Drift check: container is running externally — adopted.");
+        } else if (!isLive && row.status === "running") {
+          updateServiceStatus(ctx, row.id, "stopped");
+          insertLog(ctx, row.id, "warn", "Drift check: container is no longer running — marked stopped.");
+        }
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+  const handle = setInterval(() => void tick(), intervalMs);
+  // First tick after a short delay so the boot reconciliation gets to run first.
+  const initial = setTimeout(() => void tick(), 5_000);
+  return () => {
+    stopped = true;
+    clearInterval(handle);
+    clearTimeout(initial);
+  };
+}
+
 export function startHealthcheckLoop(ctx: AppContext): () => void {
   const interval = setInterval(() => {
-    const rows = ctx.db.prepare(
-      "SELECT id, status, port, healthcheck_path FROM services WHERE status = 'running' AND healthcheck_path IS NOT NULL AND healthcheck_path != ''"
-    ).all() as Array<{ id: string; status: string; port?: number; healthcheck_path?: string }>;
+    const rows = ctx.db
+      .prepare(
+        "SELECT id, status, port, healthcheck_path FROM services WHERE status = 'running' AND healthcheck_path IS NOT NULL AND healthcheck_path != ''"
+      )
+      .all() as Array<{ id: string; status: string; port?: number; healthcheck_path?: string }>;
     for (const row of rows) {
       const port = Number(row.port ?? 0);
       if (!port) continue;
-      const path = row.healthcheck_path?.startsWith("/") ? row.healthcheck_path : `/${row.healthcheck_path ?? ""}`;
+      const path = row.healthcheck_path?.startsWith("/")
+        ? row.healthcheck_path
+        : `/${row.healthcheck_path ?? ""}`;
       fetch(`http://127.0.0.1:${port}${path}`)
         .then((res) => {
           if (!res.ok) throw new Error(`Healthcheck status ${res.status}`);
         })
         .catch((error) => {
           insertLog(ctx, row.id, "warn", `Healthcheck failed: ${serializeError(error)}`);
-          void restartService(ctx, row.id).catch((err) => insertLog(ctx, row.id, "error", `Healthcheck restart failed: ${serializeError(err)}`));
+          void restartService(ctx, row.id).catch((err) =>
+            insertLog(ctx, row.id, "error", `Healthcheck restart failed: ${serializeError(err)}`)
+          );
         });
     }
   }, ctx.config.healthcheckIntervalMs);
@@ -419,7 +569,9 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
   try {
     const { stopAllQuickTunnels } = await import("./cloudflare.js");
     stopAllQuickTunnels();
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   for (const [serviceId, runtime] of ctx.runtimeProcesses.entries()) {
     runtime.process.kill("SIGTERM");

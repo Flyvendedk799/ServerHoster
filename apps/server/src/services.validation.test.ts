@@ -7,19 +7,44 @@ import { nowIso } from "./lib/core.js";
 
 async function authedToken(ctx: Awaited<ReturnType<typeof buildApp>>): Promise<string> {
   ctx.db.prepare("DELETE FROM sessions").run();
-  ctx.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')").run();
-  const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { password: "test-pass" } });
+  ctx.db
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+    .run();
+  const login = await ctx.app.inject({
+    method: "POST",
+    url: "/auth/login",
+    payload: { password: "test-pass" }
+  });
   return login.json().token as string;
 }
 
 function seedService(ctx: Awaited<ReturnType<typeof buildApp>>, name: string, port: number | null): string {
   const id = nanoid();
-  ctx.db.prepare(`INSERT INTO services
+  ctx.db
+    .prepare(
+      `INSERT INTO services
     (id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
      auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, "p1", name, "process", "node x.js", "/tmp", "", "", port, "stopped",
-      1, 0, 5, "manual", nowIso(), nowIso());
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      id,
+      "p1",
+      name,
+      "process",
+      "node x.js",
+      "/tmp",
+      "",
+      "",
+      port,
+      "stopped",
+      1,
+      0,
+      5,
+      "manual",
+      nowIso(),
+      nowIso()
+    );
   return id;
 }
 

@@ -14,7 +14,11 @@ export function registerOpsRoutes(ctx: AppContext): void {
 
   ctx.app.get("/onboarding", async () => {
     const projectCount = ctx.db.prepare("SELECT COUNT(*) AS count FROM projects").get() as { count: number };
-    return { hasProjects: projectCount.count > 0, platform: os.platform(), authEnabled: Boolean(ctx.config.authToken) };
+    return {
+      hasProjects: projectCount.count > 0,
+      platform: os.platform(),
+      authEnabled: Boolean(ctx.config.authToken)
+    };
   });
 
   ctx.app.get("/metrics/system", async () => ({
@@ -58,6 +62,8 @@ WantedBy=multi-user.target`,
 
   ctx.app.get("/ops/audit-logs", async (req) => {
     const limit = Number((req.query as { limit?: string }).limit ?? 100);
-    return ctx.db.prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?").all(Math.min(Math.max(limit, 1), 1000));
+    return ctx.db
+      .prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?")
+      .all(Math.min(Math.max(limit, 1), 1000));
   });
 }

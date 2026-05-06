@@ -45,13 +45,16 @@ function NotificationBadge() {
       try {
         const res = await api<{ unread: number }>("/notifications?limit=1", { silent: true });
         if (!cancelled) setCount(res.unread);
-      } catch { /* silent */ }
+      } catch {
+        /* silent */
+      }
     };
     const token = localStorage.getItem("survhub_token");
     if (token) {
       void refresh();
       const ws = connectLogs((payload) => {
-        if (typeof payload === "object" && payload && (payload as any).type === "notification") void refresh();
+        if (typeof payload === "object" && payload && (payload as any).type === "notification")
+          void refresh();
       });
       const intv = setInterval(() => void refresh(), 60000);
       return () => {
@@ -75,13 +78,16 @@ function ServicesCountBadge() {
       try {
         const res = await api<Array<{ status: string }>>("/services", { silent: true });
         if (!cancelled) setCount(res.filter((s) => s.status === "running").length);
-      } catch { /* silent */ }
+      } catch {
+        /* silent */
+      }
     };
     const token = localStorage.getItem("survhub_token");
     if (token) {
       void refresh();
       const ws = connectLogs((payload) => {
-        if (typeof payload === "object" && payload && (payload as any).type === "service_status") void refresh();
+        if (typeof payload === "object" && payload && (payload as any).type === "service_status")
+          void refresh();
       });
       const intv = setInterval(() => void refresh(), 60000);
       return () => {
@@ -132,8 +138,12 @@ function Breadcrumbs({ pathname }: { pathname: string }) {
 }
 
 export function App() {
-  const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem("survhub_sidebar") === "collapsed");
-  const [theme, setTheme] = useState<"dark" | "light">(() => (localStorage.getItem("survhub_theme") as "dark" | "light") || "dark");
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => localStorage.getItem("survhub_sidebar") === "collapsed"
+  );
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("survhub_theme") as "dark" | "light") || "dark"
+  );
   const [bootstrapped, setBootstrapped] = useState<boolean | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [recentServices, setRecentServices] = useState<SidebarService[]>([]);
@@ -154,10 +164,15 @@ export function App() {
       try {
         const res = await api<{ bootstrapped: boolean }>("/auth/status", { silent: true });
         setBootstrapped(res.bootstrapped);
-        if (!res.bootstrapped && location.pathname !== "/onboarding") {
+        // Never bounce an already-authenticated user back to bootstrap; their
+        // session is what matters, even if /auth/status flips during a race.
+        const hasToken = Boolean(localStorage.getItem("survhub_token"));
+        if (!res.bootstrapped && !hasToken && location.pathname !== "/onboarding") {
           navigate("/onboarding");
         }
-      } catch { /* silent */ }
+      } catch {
+        /* silent */
+      }
     }
     void checkStatus();
   }, [location.pathname, navigate]);
@@ -170,7 +185,9 @@ export function App() {
       try {
         const res = await api<SidebarService[]>("/services", { silent: true });
         if (!cancelled) setRecentServices(res.slice(0, 5));
-      } catch { /* silent */ }
+      } catch {
+        /* silent */
+      }
     };
     void refreshServices();
     const intv = setInterval(() => void refreshServices(), 60000);
@@ -187,14 +204,21 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/onboarding" element={<OnboardingPage />} />
-        <Route path="*" element={<Navigate to={bootstrapped === false ? "/onboarding" : "/login"} replace />} />
+        <Route
+          path="*"
+          element={<Navigate to={bootstrapped === false ? "/onboarding" : "/login"} replace />}
+        />
       </Routes>
     );
   }
 
   return (
     <div className="layout" data-sidebar={collapsed ? "collapsed" : "expanded"}>
-      <CommandPalette theme={theme} onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")} recentServices={recentServices} />
+      <CommandPalette
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
+        recentServices={recentServices}
+      />
 
       <aside className="sidebar">
         <header className="sidebar-header">
@@ -223,36 +247,94 @@ export function App() {
               onChange={(event) => setSidebarSearch(event.target.value)}
               placeholder="Quick search..."
             />
-            <kbd><Command size={11} />K</kbd>
+            <kbd>
+              <Command size={11} />K
+            </kbd>
           </div>
         )}
 
         <nav>
-          <NavLink to="/dashboard" aria-label="Dashboard" data-tooltip={collapsed ? "Dashboard" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <LayoutDashboard size={20} /><span className="sidebar-label">Dashboard</span>
+          <NavLink
+            to="/dashboard"
+            aria-label="Dashboard"
+            data-tooltip={collapsed ? "Dashboard" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <LayoutDashboard size={20} />
+            <span className="sidebar-label">Dashboard</span>
           </NavLink>
-          <NavLink to="/services" aria-label="Apps" data-tooltip={collapsed ? "Apps" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Server size={20} /><span className="sidebar-label">Apps</span>
+          <NavLink
+            to="/services"
+            aria-label="Apps"
+            data-tooltip={collapsed ? "Apps" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Server size={20} />
+            <span className="sidebar-label">Apps</span>
             {!collapsed && <ServicesCountBadge />}
           </NavLink>
-          <NavLink to="/projects" aria-label="Projects" data-tooltip={collapsed ? "Projects" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <FolderKanban size={20} /><span className="sidebar-label">Projects</span>
+          <NavLink
+            to="/projects"
+            aria-label="Projects"
+            data-tooltip={collapsed ? "Projects" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <FolderKanban size={20} />
+            <span className="sidebar-label">Projects</span>
           </NavLink>
-          <NavLink to="/databases" aria-label="Databases" data-tooltip={collapsed ? "Databases" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Database size={20} /><span className="sidebar-label">Databases</span>
+          <NavLink
+            to="/databases"
+            aria-label="Databases"
+            data-tooltip={collapsed ? "Databases" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Database size={20} />
+            <span className="sidebar-label">Databases</span>
           </NavLink>
-          <NavLink to="/proxy" aria-label="Edge Ingress" data-tooltip={collapsed ? "Edge Ingress" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Activity size={20} /><span className="sidebar-label">Edge Ingress</span>
+          <NavLink
+            to="/proxy"
+            aria-label="Edge Ingress"
+            data-tooltip={collapsed ? "Edge Ingress" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Activity size={20} />
+            <span className="sidebar-label">Edge Ingress</span>
           </NavLink>
-          <NavLink to="/deployments" aria-label="Deployments" data-tooltip={collapsed ? "Deployments" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Terminal size={20} /><span className="sidebar-label">Deployments</span>
+          <NavLink
+            to="/deployments"
+            aria-label="Deployments"
+            data-tooltip={collapsed ? "Deployments" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Terminal size={20} />
+            <span className="sidebar-label">Deployments</span>
           </NavLink>
-          <NavLink to="/notifications" aria-label="Alerts" data-tooltip={collapsed ? "Alerts" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Bell size={20} /><span className="sidebar-label">Alerts</span>
+          <NavLink
+            to="/notifications"
+            aria-label="Alerts"
+            data-tooltip={collapsed ? "Alerts" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Bell size={20} />
+            <span className="sidebar-label">Alerts</span>
             {!collapsed && <NotificationBadge />}
           </NavLink>
-          <NavLink to="/settings" aria-label="Settings" data-tooltip={collapsed ? "Settings" : undefined} data-tooltip-side="right" className={({ isActive }) => isActive ? "nav-link active" : "nav-link"}>
-            <Settings size={20} /><span className="sidebar-label">Settings</span>
+          <NavLink
+            to="/settings"
+            aria-label="Settings"
+            data-tooltip={collapsed ? "Settings" : undefined}
+            data-tooltip-side="right"
+            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+          >
+            <Settings size={20} />
+            <span className="sidebar-label">Settings</span>
           </NavLink>
         </nav>
 
@@ -291,7 +373,10 @@ export function App() {
           </button>
           <button
             className="ghost logout"
-            onClick={() => { clearAuthToken(); navigate("/login"); }}
+            onClick={() => {
+              clearAuthToken();
+              navigate("/login");
+            }}
             aria-label="Sign out"
             data-tooltip={collapsed ? "Sign out" : undefined}
             data-tooltip-side="right"
@@ -314,15 +399,78 @@ export function App() {
           >
             <Routes location={location} key={location.pathname}>
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-              <Route path="/services" element={<ProtectedRoute><ServicesPage /></ProtectedRoute>} />
-              <Route path="/services/:id/logs" element={<ProtectedRoute><ServiceLogsPage /></ProtectedRoute>} />
-              <Route path="/projects" element={<ProtectedRoute><ProjectsPage /></ProtectedRoute>} />
-              <Route path="/databases" element={<ProtectedRoute><DatabasesPage /></ProtectedRoute>} />
-              <Route path="/proxy" element={<ProtectedRoute><ProxyPage /></ProtectedRoute>} />
-              <Route path="/deployments" element={<ProtectedRoute><DeploymentsPage /></ProtectedRoute>} />
-              <Route path="/notifications" element={<ProtectedRoute><NotificationsPage /></ProtectedRoute>} />
-              <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute>
+                    <DashboardPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/services"
+                element={
+                  <ProtectedRoute>
+                    <ServicesPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/services/:id/logs"
+                element={
+                  <ProtectedRoute>
+                    <ServiceLogsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/projects"
+                element={
+                  <ProtectedRoute>
+                    <ProjectsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/databases"
+                element={
+                  <ProtectedRoute>
+                    <DatabasesPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/proxy"
+                element={
+                  <ProtectedRoute>
+                    <ProxyPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/deployments"
+                element={
+                  <ProtectedRoute>
+                    <DeploymentsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/notifications"
+                element={
+                  <ProtectedRoute>
+                    <NotificationsPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <ProtectedRoute>
+                    <SettingsPage />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </motion.div>

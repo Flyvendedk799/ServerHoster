@@ -27,7 +27,11 @@ const serviceSchema = z.object({
   quickTunnelEnabled: z.number().int().min(0).max(1).default(0).optional()
 });
 
-const envSchema = z.object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) });
+const envSchema = z.object({
+  key: z.string().min(1),
+  value: z.string(),
+  isSecret: z.boolean().default(false)
+});
 const composeImportSchema = z.object({
   projectId: z.string(),
   composeFilePath: z.string().optional(),
@@ -70,7 +74,13 @@ type DevServerCandidate = {
 };
 
 function normalizeProjectName(localPath: string): string {
-  return path.basename(localPath).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "local-app";
+  return (
+    path
+      .basename(localPath)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "local-app"
+  );
 }
 
 function extractPort(command: string): number | undefined {
@@ -129,7 +139,11 @@ function scanLocalProject(localPath: string): {
       }
       for (const [scriptName, scriptValue] of Object.entries(scripts)) {
         if (preferred.includes(scriptName)) continue;
-        if (!/(dev|serve|start|preview|watch|server)/i.test(scriptName) && !/(vite|next|astro|nuxt|remix|svelte|serve|node|tsx|ts-node)/i.test(scriptValue)) continue;
+        if (
+          !/(dev|serve|start|preview|watch|server)/i.test(scriptName) &&
+          !/(vite|next|astro|nuxt|remix|svelte|serve|node|tsx|ts-node)/i.test(scriptValue)
+        )
+          continue;
         pushCandidate(candidates, {
           id: `npm-${scriptName}`,
           label: `npm script: ${scriptName}`,
@@ -140,41 +154,93 @@ function scanLocalProject(localPath: string): {
       }
       const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
       if (deps.vite && !candidates.some((item) => item.command === "npm run dev")) {
-        pushCandidate(candidates, { id: "vite-dev", label: "Vite dev server", command: "npm run dev", source: "vite", port: 5173, recommended: true });
+        pushCandidate(candidates, {
+          id: "vite-dev",
+          label: "Vite dev server",
+          command: "npm run dev",
+          source: "vite",
+          port: 5173,
+          recommended: true
+        });
       }
       if (deps.next && !candidates.some((item) => item.command === "npm run dev")) {
-        pushCandidate(candidates, { id: "next-dev", label: "Next.js dev server", command: "npm run dev", source: "next dev", port: 3000, recommended: true });
+        pushCandidate(candidates, {
+          id: "next-dev",
+          label: "Next.js dev server",
+          command: "npm run dev",
+          source: "next dev",
+          port: 3000,
+          recommended: true
+        });
       }
     } catch (error) {
-      warnings.push(`package.json could not be parsed: ${error instanceof Error ? error.message : String(error)}`);
+      warnings.push(
+        `package.json could not be parsed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
   if (hasRequirements || hasPyproject) {
     if (files.includes("main.py")) {
-      pushCandidate(candidates, { id: "python-main", label: "Python app", command: "python main.py", source: "main.py", recommended: candidates.length === 0 });
+      pushCandidate(candidates, {
+        id: "python-main",
+        label: "Python app",
+        command: "python main.py",
+        source: "main.py",
+        recommended: candidates.length === 0
+      });
     }
     if (files.includes("app.py")) {
-      pushCandidate(candidates, { id: "python-app", label: "Python app", command: "python app.py", source: "app.py", recommended: candidates.length === 0 });
+      pushCandidate(candidates, {
+        id: "python-app",
+        label: "Python app",
+        command: "python app.py",
+        source: "app.py",
+        recommended: candidates.length === 0
+      });
     }
     if (files.includes("manage.py")) {
-      pushCandidate(candidates, { id: "django", label: "Django dev server", command: "python manage.py runserver 0.0.0.0:$PORT", source: "manage.py", port: 8000 });
+      pushCandidate(candidates, {
+        id: "django",
+        label: "Django dev server",
+        command: "python manage.py runserver 0.0.0.0:$PORT",
+        source: "manage.py",
+        port: 8000
+      });
     }
     if (files.includes("main.py") || files.includes("app.py")) {
       const moduleName = files.includes("main.py") ? "main" : "app";
-      pushCandidate(candidates, { id: "uvicorn", label: "Uvicorn ASGI server", command: `python -m uvicorn ${moduleName}:app --host 0.0.0.0 --port $PORT`, source: `${moduleName}.py`, port: 8000 });
+      pushCandidate(candidates, {
+        id: "uvicorn",
+        label: "Uvicorn ASGI server",
+        command: `python -m uvicorn ${moduleName}:app --host 0.0.0.0 --port $PORT`,
+        source: `${moduleName}.py`,
+        port: 8000
+      });
     }
   }
 
   if (hasDockerfile) {
-    pushCandidate(candidates, { id: "docker", label: "Dockerfile", command: "", source: "Dockerfile", recommended: candidates.length === 0 });
+    pushCandidate(candidates, {
+      id: "docker",
+      label: "Dockerfile",
+      command: "",
+      source: "Dockerfile",
+      recommended: candidates.length === 0
+    });
   }
 
   if (candidates.length === 0) {
     warnings.push("No obvious dev server script was found. Add a command manually before launching.");
   }
 
-  const buildType = hasDockerfile ? "docker" : fs.existsSync(packagePath) ? "node" : hasRequirements || hasPyproject ? "python" : "unknown";
+  const buildType = hasDockerfile
+    ? "docker"
+    : fs.existsSync(packagePath)
+      ? "node"
+      : hasRequirements || hasPyproject
+        ? "python"
+        : "unknown";
   return {
     name: normalizeProjectName(resolved),
     buildType,
@@ -186,25 +252,35 @@ function scanLocalProject(localPath: string): {
 
 export function registerServiceRoutes(ctx: AppContext): void {
   ctx.app.get("/services", async () => {
-    return ctx.db.prepare(`
+    return ctx.db
+      .prepare(
+        `
       SELECT
         s.*,
         p.domain,
+        c.expires_at AS cert_expires_at,
         (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash
       FROM services s
       LEFT JOIN proxy_routes p ON p.service_id = s.id
+      LEFT JOIN certificates c ON c.domain = s.domain
       ORDER BY s.created_at DESC
-    `).all();
+    `
+      )
+      .all();
   });
 
   ctx.app.get("/services/:id", async (req) => {
     const { id } = req.params as { id: string };
-    const service = ctx.db.prepare(`
+    const service = ctx.db
+      .prepare(
+        `
       SELECT s.*, p.domain
       FROM services s
       LEFT JOIN proxy_routes p ON p.service_id = s.id
       WHERE s.id = ?
-    `).get(id);
+    `
+      )
+      .get(id);
     if (!service) throw new Error("Service not found");
     return service;
   });
@@ -218,22 +294,38 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = localDeploySchema.parse(req.body);
     const createdAt = nowIso();
     const serviceId = nanoid();
-    const assignedPort = p.port ?? await findFreePort(3000, 3999);
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
 
-    ctx.db.prepare(`INSERT INTO services (
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, quick_tunnel_enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
       .run(
-        serviceId, p.projectId, p.name,
-        "process", "", p.localPath, "", "",
-        assignedPort, "building",
-        1, 0, 5, "manual",
-        createdAt, createdAt,
+        serviceId,
+        p.projectId,
+        p.name,
+        "process",
+        "",
+        p.localPath,
+        "",
+        "",
+        assignedPort,
+        "building",
+        1,
+        0,
+        5,
+        "manual",
+        createdAt,
+        createdAt,
         p.enableQuickTunnel ? 1 : 0
       );
 
-    const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath, "manual", { command: p.command });
+    const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath, "manual", {
+      command: p.command
+    });
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
 
     if (p.enableQuickTunnel && p.startAfterDeploy && deployment.status === "success") {
@@ -241,7 +333,12 @@ export function registerServiceRoutes(ctx: AppContext): void {
         const { startQuickTunnel } = await import("../services/cloudflare.js");
         startQuickTunnel(ctx, serviceId, assignedPort);
       } catch (err) {
-        insertLog(ctx, serviceId, "warn", `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`);
+        insertLog(
+          ctx,
+          serviceId,
+          "warn",
+          `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
 
@@ -251,7 +348,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
   ctx.app.post("/services", async (req) => {
     const p = serviceSchema.parse(req.body);
-    const assignedPort = p.port ?? await findFreePort(3000, 3999);
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
     const row = {
       id: nanoid(),
       project_id: p.projectId,
@@ -272,14 +369,32 @@ export function registerServiceRoutes(ctx: AppContext): void {
       created_at: nowIso(),
       updated_at: nowIso()
     };
-    ctx.db.prepare(`INSERT INTO services (
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, healthcheck_path, start_mode, quick_tunnel_enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
       .run(
-        row.id, row.project_id, row.name, row.type, row.command, row.working_dir, row.docker_image, row.dockerfile, row.port,
-        row.status, row.auto_restart, row.restart_count, row.max_restarts, row.healthcheck_path, row.start_mode,
-        row.quick_tunnel_enabled, row.created_at, row.updated_at
+        row.id,
+        row.project_id,
+        row.name,
+        row.type,
+        row.command,
+        row.working_dir,
+        row.docker_image,
+        row.dockerfile,
+        row.port,
+        row.status,
+        row.auto_restart,
+        row.restart_count,
+        row.max_restarts,
+        row.healthcheck_path,
+        row.start_mode,
+        row.quick_tunnel_enabled,
+        row.created_at,
+        row.updated_at
       );
     return row;
   });
@@ -288,9 +403,26 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const { id } = req.params as { id: string };
     const purgeDisk = (req.query as { purgeDisk?: string })?.purgeDisk === "true";
     const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(id) as
-      | { id: string; type: string; working_dir?: string; status?: string }
+      | { id: string; type: string; working_dir?: string; status?: string; domain?: string }
       | undefined;
     if (!service) throw new Error("Service not found");
+
+    // Tear down any Cloudflare-bound domain so we don't leave orphan DNS or
+    // ingress entries in the user's account. Failures are queued for retry.
+    if (service.domain) {
+      const { removeTunnelIngress, deleteDnsRecord } = await import("../services/cloudflare.js");
+      const { enqueueCleanup } = await import("../services/cleanupQueue.js");
+      try {
+        await removeTunnelIngress(ctx, service.domain);
+      } catch {
+        enqueueCleanup(ctx, "remove_ingress", { domain: service.domain });
+      }
+      try {
+        await deleteDnsRecord(ctx, service.domain);
+      } catch {
+        enqueueCleanup(ctx, "delete_dns", { domain: service.domain });
+      }
+    }
 
     // Stop the service (best effort)
     try {
@@ -315,7 +447,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM logs WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(id);
     try {
-      ctx.db.prepare("DELETE FROM certificates WHERE domain IN (SELECT domain FROM proxy_routes WHERE service_id = ?)").run(id);
+      ctx.db
+        .prepare(
+          "DELETE FROM certificates WHERE domain IN (SELECT domain FROM proxy_routes WHERE service_id = ?)"
+        )
+        .run(id);
     } catch {
       /* certificates table may not yet exist on older installs */
     }
@@ -340,11 +476,16 @@ export function registerServiceRoutes(ctx: AppContext): void {
     return { ok: true };
   });
 
-  ctx.app.post("/services/:id/start", async (req) => ({ ok: true, ...(await startService(ctx, (req.params as { id: string }).id).then(() => ({}))) }));
+  ctx.app.post("/services/:id/start", async (req) => ({
+    ok: true,
+    ...(await startService(ctx, (req.params as { id: string }).id).then(() => ({})))
+  }));
   ctx.app.post("/services/:id/stop", async (req) => {
     const { id } = req.params as { id: string };
     const dependents = getDependents(ctx, id).filter((depId) => {
-      const s = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(depId) as { status?: string } | undefined;
+      const s = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(depId) as
+        | { status?: string }
+        | undefined;
       return s?.status === "running";
     });
     if (dependents.length > 0) {
@@ -355,8 +496,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     await stopService(ctx, id);
     return { ok: true, warnedDependents: dependents };
   });
-  ctx.app.post("/services/:id/restart", async (req) => ({ ok: true, ...(await restartService(ctx, (req.params as { id: string }).id).then(() => ({}))) }));
-  
+  ctx.app.post("/services/:id/restart", async (req) => ({
+    ok: true,
+    ...(await restartService(ctx, (req.params as { id: string }).id).then(() => ({})))
+  }));
+
   const updateServiceSchema = z.object({
     name: z.string().optional(),
     type: z.enum(["process", "docker", "static"]).optional(),
@@ -397,7 +541,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
       const domainLower = p.domain.toLowerCase().trim();
       // Hostname validation: labels of [a-z0-9-], no leading/trailing hyphen, TLD required.
       const domainRe = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
-      const isLocal = domainLower === "localhost" || domainLower.endsWith(".localhost") || domainLower.endsWith(".local");
+      const isLocal =
+        domainLower === "localhost" || domainLower.endsWith(".localhost") || domainLower.endsWith(".local");
       if (!isLocal && !domainRe.test(domainLower)) {
         errors.domain = `"${p.domain}" is not a valid domain`;
       } else {
@@ -425,12 +570,19 @@ export function registerServiceRoutes(ctx: AppContext): void {
       return reply.code(400).send({ error: "Validation failed", fields: errors });
     }
 
-    if (p.name !== undefined) ctx.db.prepare("UPDATE services SET name = ?, updated_at = ? WHERE id = ?").run(p.name, nowIso(), id);
+    if (p.name !== undefined)
+      ctx.db.prepare("UPDATE services SET name = ?, updated_at = ? WHERE id = ?").run(p.name, nowIso(), id);
     if (p.type !== undefined) ctx.db.prepare("UPDATE services SET type = ? WHERE id = ?").run(p.type, id);
-    if (p.command !== undefined) ctx.db.prepare("UPDATE services SET command = ? WHERE id = ?").run(p.command, id);
-    if (p.workingDir !== undefined) ctx.db.prepare("UPDATE services SET working_dir = ? WHERE id = ?").run(p.workingDir, id);
-    if (p.githubAutoPull !== undefined) ctx.db.prepare("UPDATE services SET github_auto_pull = ? WHERE id = ?").run(p.githubAutoPull ? 1 : 0, id);
-    if (p.autoRestart !== undefined) ctx.db.prepare("UPDATE services SET auto_restart = ? WHERE id = ?").run(p.autoRestart ? 1 : 0, id);
+    if (p.command !== undefined)
+      ctx.db.prepare("UPDATE services SET command = ? WHERE id = ?").run(p.command, id);
+    if (p.workingDir !== undefined)
+      ctx.db.prepare("UPDATE services SET working_dir = ? WHERE id = ?").run(p.workingDir, id);
+    if (p.githubAutoPull !== undefined)
+      ctx.db
+        .prepare("UPDATE services SET github_auto_pull = ? WHERE id = ?")
+        .run(p.githubAutoPull ? 1 : 0, id);
+    if (p.autoRestart !== undefined)
+      ctx.db.prepare("UPDATE services SET auto_restart = ? WHERE id = ?").run(p.autoRestart ? 1 : 0, id);
     if (p.dependsOn !== undefined) {
       ctx.db.prepare("UPDATE services SET depends_on = ? WHERE id = ?").run(JSON.stringify(p.dependsOn), id);
     }
@@ -441,18 +593,20 @@ export function registerServiceRoutes(ctx: AppContext): void {
       ctx.db.prepare("UPDATE services SET linked_database_id = ? WHERE id = ?").run(p.linkedDatabaseId, id);
     }
 
-    let finalPort = p.port !== undefined ? p.port : service.port;
+    const finalPort = p.port !== undefined ? p.port : service.port;
     if (p.port !== undefined) {
       ctx.db.prepare("UPDATE services SET port = ? WHERE id = ?").run(p.port, id);
     }
 
     if (p.domain !== undefined || p.port !== undefined) {
       const finalDomain = p.domain !== undefined ? p.domain.toLowerCase() : null;
-      
+
       // Update proxy routes
       // Remove old ingress from Cloudflare tunnel if any existed
       try {
-        const oldRoutes = ctx.db.prepare("SELECT domain FROM proxy_routes WHERE service_id = ?").all(id) as Array<{ domain: string }>;
+        const oldRoutes = ctx.db
+          .prepare("SELECT domain FROM proxy_routes WHERE service_id = ?")
+          .all(id) as Array<{ domain: string }>;
         const { getTunnelStatus, removeTunnelIngress } = await import("../services/cloudflare.js");
         const status = getTunnelStatus(ctx);
         if (status.tunnelId && status.apiTokenConfigured) {
@@ -466,7 +620,10 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
       ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(id);
       if (finalDomain && finalPort) {
-        ctx.db.prepare("INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)")
+        ctx.db
+          .prepare(
+            "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+          )
           .run(nanoid(), id, finalDomain, finalPort, nowIso());
 
         const isRealDomain =
@@ -477,7 +634,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         let handledByTunnel = false;
         if (isRealDomain) {
           try {
-            const { getTunnelStatus, upsertDnsCname, upsertTunnelIngress } = await import("../services/cloudflare.js");
+            const { getTunnelStatus, upsertDnsCname, upsertTunnelIngress } =
+              await import("../services/cloudflare.js");
             const status = getTunnelStatus(ctx);
             if (status.tunnelId && status.zoneId && status.apiTokenConfigured) {
               await upsertDnsCname(ctx, finalDomain);
@@ -506,14 +664,21 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
   ctx.app.get("/services/:id/env", async (req) => {
     const serviceId = (req.params as { id: string }).id;
-    const rows = ctx.db.prepare("SELECT id, key, value, is_secret FROM env_vars WHERE service_id = ?").all(serviceId) as Array<{
-      id: string; key: string; value: string; is_secret: number;
+    const rows = ctx.db
+      .prepare("SELECT id, key, value, is_secret, system FROM env_vars WHERE service_id = ?")
+      .all(serviceId) as Array<{
+      id: string;
+      key: string;
+      value: string;
+      is_secret: number;
+      system: number;
     }>;
     return rows.map((row) => ({
       id: row.id,
       key: row.key,
       value: row.is_secret ? maskSecret(decryptSecret(row.value, ctx.config.secretKey)) : row.value,
-      is_secret: row.is_secret
+      is_secret: row.is_secret,
+      system: Boolean(row.system)
     }));
   });
 
@@ -522,20 +687,29 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = envSchema.parse(req.body);
     const storedValue = p.isSecret ? encryptSecret(p.value, ctx.config.secretKey) : p.value;
     const rowId = nanoid();
-    ctx.db.prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
+    ctx.db
+      .prepare(
+        "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 0)"
+      )
       .run(rowId, serviceId, p.key, storedValue, p.isSecret ? 1 : 0);
     return { ok: true, id: rowId };
   });
 
   ctx.app.delete("/services/:id/env/:envId", async (req) => {
     const { id, envId } = req.params as { id: string; envId: string };
-    ctx.db.prepare("DELETE FROM env_vars WHERE id = ? AND service_id = ?").run(envId, id);
+    // Refuse to delete system-managed rows (e.g. PUBLIC_URL injected by the
+    // Go-Public wizard); they're owned by the platform.
+    ctx.db
+      .prepare("DELETE FROM env_vars WHERE id = ? AND service_id = ? AND COALESCE(system, 0) = 0")
+      .run(envId, id);
     return { ok: true };
   });
 
   ctx.app.get("/services/:id/logs", async (req) => {
     const serviceId = (req.params as { id: string }).id;
-    return ctx.db.prepare("SELECT * FROM logs WHERE service_id = ? ORDER BY timestamp DESC LIMIT 1000").all(serviceId);
+    return ctx.db
+      .prepare("SELECT * FROM logs WHERE service_id = ? ORDER BY timestamp DESC LIMIT 1000")
+      .all(serviceId);
   });
 
   ctx.app.post("/services/import-compose", async (req) => {
@@ -569,7 +743,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
     for (const [serviceName, definition] of Object.entries(services)) {
       const id = nameToId.get(serviceName)!;
-      const existing = ctx.db.prepare("SELECT id FROM services WHERE id = ?").get(id) as { id?: string } | undefined;
+      const existing = ctx.db.prepare("SELECT id FROM services WHERE id = ?").get(id) as
+        | { id?: string }
+        | undefined;
 
       const image = typeof definition.image === "string" ? definition.image : "";
       const commandValue = definition.command;
@@ -586,10 +762,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
       // Resolve depends_on against the in-import map first, then fall back to
       // existing services by compose name.
       const rawDeps = definition.depends_on;
-      const depNames: string[] =
-        Array.isArray(rawDeps) ? rawDeps.map(String) :
-        rawDeps && typeof rawDeps === "object" ? Object.keys(rawDeps as Record<string, unknown>) :
-        [];
+      const depNames: string[] = Array.isArray(rawDeps)
+        ? rawDeps.map(String)
+        : rawDeps && typeof rawDeps === "object"
+          ? Object.keys(rawDeps as Record<string, unknown>)
+          : [];
       const depIds = depNames
         .map((n) => {
           const mapped = nameToId.get(n);
@@ -601,9 +778,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         })
         .filter((v): v is string => Boolean(v));
 
-      const healthcheckPath = typeof (definition.healthcheck as Record<string, unknown> | undefined)?.test === "string"
-        ? ""
-        : "";
+      const healthcheckPath =
+        typeof (definition.healthcheck as Record<string, unknown> | undefined)?.test === "string" ? "" : "";
 
       if (existing) {
         ctx.db
@@ -638,9 +814,26 @@ export function registerServiceRoutes(ctx: AppContext): void {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
-            id, p.projectId, serviceName, "docker", command, workDir, image, "", hostPort, "stopped",
-            1, 0, 5, "manual", now, now,
-            JSON.stringify(depIds), serviceName, composeHash, healthcheckPath
+            id,
+            p.projectId,
+            serviceName,
+            "docker",
+            command,
+            workDir,
+            image,
+            "",
+            hostPort,
+            "stopped",
+            1,
+            0,
+            5,
+            "manual",
+            now,
+            now,
+            JSON.stringify(depIds),
+            serviceName,
+            composeHash,
+            healthcheckPath
           );
       }
 
@@ -650,13 +843,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
           const raw = String(value);
           const sep = raw.indexOf("=");
           if (sep > 0) {
-            ctx.db.prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
+            ctx.db
+              .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
               .run(nanoid(), id, raw.slice(0, sep), raw.slice(sep + 1), 0);
           }
         }
       } else if (env && typeof env === "object") {
         for (const [key, value] of Object.entries(env)) {
-          ctx.db.prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
+          ctx.db
+            .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
             .run(nanoid(), id, key, String(value ?? ""), 0);
         }
       }
@@ -675,33 +870,37 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = directDeploySchema.parse(req.body);
     const createdAt = nowIso();
     const serviceId = nanoid();
-    const assignedPort = p.port ?? await findFreePort(3000, 3999);
-    ctx.db.prepare(`INSERT INTO services (
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, github_repo_url, github_branch, github_auto_pull,
       quick_tunnel_enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      serviceId,
-      p.projectId,
-      p.name,
-      "process",
-      "",
-      "",
-      "",
-      "",
-      assignedPort,
-      "building",
-      1,
-      0,
-      5,
-      "manual",
-      createdAt,
-      createdAt,
-      p.repoUrl,
-      p.branch,
-      p.autoPull ? 1 : 0,
-      p.enableQuickTunnel ? 1 : 0
-    );
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        serviceId,
+        p.projectId,
+        p.name,
+        "process",
+        "",
+        "",
+        "",
+        "",
+        assignedPort,
+        "building",
+        1,
+        0,
+        5,
+        "manual",
+        createdAt,
+        createdAt,
+        p.repoUrl,
+        p.branch,
+        p.autoPull ? 1 : 0,
+        p.enableQuickTunnel ? 1 : 0
+      );
 
     const deployment = await deployFromGit(ctx, serviceId, p.repoUrl, p.branch);
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
@@ -711,7 +910,12 @@ export function registerServiceRoutes(ctx: AppContext): void {
         const { startQuickTunnel } = await import("../services/cloudflare.js");
         startQuickTunnel(ctx, serviceId, assignedPort);
       } catch (err) {
-        insertLog(ctx, serviceId, "warn", `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`);
+        insertLog(
+          ctx,
+          serviceId,
+          "warn",
+          `Quick tunnel start failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
 
@@ -719,7 +923,10 @@ export function registerServiceRoutes(ctx: AppContext): void {
       const domain = p.domain.toLowerCase();
       const existingDomain = ctx.db.prepare("SELECT id FROM proxy_routes WHERE domain = ?").get(domain);
       if (!existingDomain) {
-        ctx.db.prepare("INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)")
+        ctx.db
+          .prepare(
+            "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+          )
           .run(nanoid(), serviceId, domain, assignedPort, nowIso());
       }
     }

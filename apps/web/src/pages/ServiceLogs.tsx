@@ -35,7 +35,9 @@ export function ServiceLogsPage() {
       try {
         const [rows, svc] = await Promise.all([
           api<LogRow[]>(`/services/${serviceId}/logs`),
-          api<Service>(`/services`).then((all: any) => all.find((s: any) => s.id === serviceId) ?? { id: serviceId, name: serviceId })
+          api<Service>(`/services`).then(
+            (all: any) => all.find((s: any) => s.id === serviceId) ?? { id: serviceId, name: serviceId }
+          )
         ]);
         if (cancelled) return;
         // API returns newest-first; display oldest-first so auto-scroll lands on newest.
@@ -96,10 +98,14 @@ export function ServiceLogsPage() {
 
   function levelColor(level: string | undefined): string {
     switch (level) {
-      case "error": return "#fca5a5";
-      case "warn": return "#fcd34d";
-      case "info": return "#a5f3fc";
-      default: return "#cbd5e1";
+      case "error":
+        return "#fca5a5";
+      case "warn":
+        return "#fcd34d";
+      case "info":
+        return "#a5f3fc";
+      default:
+        return "#cbd5e1";
     }
   }
 
@@ -110,7 +116,9 @@ export function ServiceLogsPage() {
           <h2>Terminal Pro</h2>
           <p className="muted">Live logs for {service?.name ?? serviceId}</p>
         </div>
-        <Link to="/services" className="button ghost small">Back to Services</Link>
+        <Link to="/services" className="button ghost small">
+          Back to Services
+        </Link>
       </div>
 
       <div className="card terminal-card">
@@ -124,21 +132,16 @@ export function ServiceLogsPage() {
           </select>
           <div className="terminal-search">
             <Search size={15} />
-            <input
-              placeholder="Search logs..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+            <input placeholder="Search logs..." value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           <label className="toggle-inline">
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
             Auto-scroll
           </label>
-          <button onClick={downloadLogs}><Download size={15} /> Export</button>
-          <button
-            onClick={() => setLogs([])}
-            title="Clear buffer (does not delete from server)"
-          >
+          <button onClick={downloadLogs}>
+            <Download size={15} /> Export
+          </button>
+          <button onClick={() => setLogs([])} title="Clear buffer (does not delete from server)">
             <Eraser size={15} /> Clear
           </button>
         </div>

@@ -37,30 +37,41 @@ const pythonAnywhereImportSchema = z.object({
 function insertService(
   ctx: AppContext,
   projectId: string,
-  service: { name: string; type: "docker" | "process" | "static"; image?: string; command?: string; port?: number; workingDir?: string }
+  service: {
+    name: string;
+    type: "docker" | "process" | "static";
+    image?: string;
+    command?: string;
+    port?: number;
+    workingDir?: string;
+  }
 ) {
   const serviceId = nanoid();
-  ctx.db.prepare(`INSERT INTO services (
+  ctx.db
+    .prepare(
+      `INSERT INTO services (
     id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
     auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    serviceId,
-    projectId,
-    service.name,
-    service.type,
-    service.command ?? "",
-    service.workingDir ?? "",
-    service.image ?? "",
-    "",
-    service.port ?? null,
-    "stopped",
-    1,
-    0,
-    5,
-    "manual",
-    nowIso(),
-    nowIso()
-  );
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      serviceId,
+      projectId,
+      service.name,
+      service.type,
+      service.command ?? "",
+      service.workingDir ?? "",
+      service.image ?? "",
+      "",
+      service.port ?? null,
+      "stopped",
+      1,
+      0,
+      5,
+      "manual",
+      nowIso(),
+      nowIso()
+    );
   return serviceId;
 }
 
@@ -80,7 +91,10 @@ export function registerMigrationRoutes(ctx: AppContext): void {
     const imported: Array<{ projectId: string; serviceIds: string[] }> = [];
     for (const project of parsed.projects) {
       const projectId = nanoid();
-      ctx.db.prepare("INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      ctx.db
+        .prepare(
+          "INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+        )
         .run(projectId, project.name, project.description ?? "Imported from Railway", "", nowIso(), nowIso());
 
       const serviceIds: string[] = [];
@@ -109,7 +123,10 @@ export function registerMigrationRoutes(ctx: AppContext): void {
     }
 
     const projectId = nanoid();
-    ctx.db.prepare("INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    ctx.db
+      .prepare(
+        "INSERT INTO projects (id, name, description, git_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      )
       .run(projectId, "PythonAnywhere Migration", "Imported from PythonAnywhere", "", nowIso(), nowIso());
 
     const serviceIds: string[] = [];

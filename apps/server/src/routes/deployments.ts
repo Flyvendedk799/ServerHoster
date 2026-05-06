@@ -1,17 +1,28 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { applyPostDeployServiceState, deployFromGit, rollbackDeployment, stopServiceIfRunning } from "../services/deploy.js";
+import {
+  applyPostDeployServiceState,
+  deployFromGit,
+  rollbackDeployment,
+  stopServiceIfRunning
+} from "../services/deploy.js";
 
-const deploySchema = z.object({ serviceId: z.string(), repoUrl: z.string().url().optional(), branch: z.string().optional() });
+const deploySchema = z.object({
+  serviceId: z.string(),
+  repoUrl: z.string().url().optional(),
+  branch: z.string().optional()
+});
 const rollbackSchema = z.object({ serviceId: z.string(), deploymentId: z.string() });
 
 export function registerDeploymentRoutes(ctx: AppContext): void {
   ctx.app.post("/deployments/from-git", async (req) => {
     const p = deploySchema.parse(req.body);
-    const service = ctx.db.prepare("SELECT github_repo_url, github_branch FROM services WHERE id = ?").get(p.serviceId) as { github_repo_url?: string; github_branch?: string } | undefined;
+    const service = ctx.db
+      .prepare("SELECT github_repo_url, github_branch FROM services WHERE id = ?")
+      .get(p.serviceId) as { github_repo_url?: string; github_branch?: string } | undefined;
     const repoUrl = p.repoUrl || service?.github_repo_url;
     const branch = p.branch || service?.github_branch || "main";
-    
+
     if (!repoUrl) throw new Error("repoUrl is required, and service has no github_repo_url");
 
     await stopServiceIfRunning(ctx, p.serviceId);
@@ -39,5 +50,7 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
     return rollbackDeployment(ctx, p.serviceId, p.deploymentId);
   });
 
-  ctx.app.get("/deployments", async () => ctx.db.prepare("SELECT * FROM deployments ORDER BY created_at DESC").all());
+  ctx.app.get("/deployments", async () =>
+    ctx.db.prepare("SELECT * FROM deployments ORDER BY created_at DESC").all()
+  );
 }

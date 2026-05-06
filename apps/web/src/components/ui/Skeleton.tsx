@@ -18,8 +18,8 @@ export function CardSkeleton() {
       <Skeleton style={{ height: "1.5rem", width: "60%", marginBottom: "1rem" }} />
       <Skeleton style={{ height: "4rem", width: "100%", marginBottom: "1.5rem" }} />
       <div className="row">
-         <Skeleton style={{ height: "2rem", width: "80px", borderRadius: "var(--radius-full)" }} />
-         <Skeleton style={{ height: "2rem", width: "120px", borderRadius: "var(--radius-md)" }} />
+        <Skeleton style={{ height: "2rem", width: "80px", borderRadius: "var(--radius-full)" }} />
+        <Skeleton style={{ height: "2rem", width: "120px", borderRadius: "var(--radius-md)" }} />
       </div>
     </div>
   );

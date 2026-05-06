@@ -1,0 +1,14 @@
+{
+  "name": "@survhub/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron wrapper around the LocalSURV server — local-launch convenience.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^32.2.0"
+  }
+}

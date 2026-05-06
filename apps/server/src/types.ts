@@ -18,6 +18,11 @@ export type AppContext = {
   docker: Docker;
   proxy: httpProxy;
   wsSubscribers: Set<WebSocket>;
+  /**
+   * Per-transferId subscribers. Used by /databases/:id/transfer/stream so chunk
+   * events only reach the originating tab instead of every connected admin.
+   */
+  transferSubscribers: Map<string, Set<WebSocket>>;
   runtimeProcesses: Map<string, RuntimeProcess>;
   actionLocks: Set<string>;
   manuallyStopped: Set<string>;

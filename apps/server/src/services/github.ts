@@ -19,11 +19,7 @@ function requirePat(ctx: AppContext): string {
   return pat;
 }
 
-async function gh<T>(
-  pat: string,
-  endpoint: string,
-  init: RequestInit = {}
-): Promise<T> {
+async function gh<T>(pat: string, endpoint: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`https://api.github.com${endpoint}`, {
     ...init,
     headers: {
@@ -96,7 +92,10 @@ export function parseRepoFullName(repoUrl: string): string | null {
   try {
     const u = new URL(repoUrl);
     if (!/github\.com$/i.test(u.hostname)) return null;
-    const parts = u.pathname.replace(/^\//, "").replace(/\.git$/, "").split("/");
+    const parts = u.pathname
+      .replace(/^\//, "")
+      .replace(/\.git$/, "")
+      .split("/");
     if (parts.length < 2) return null;
     return `${parts[0]}/${parts[1]}`;
   } catch {

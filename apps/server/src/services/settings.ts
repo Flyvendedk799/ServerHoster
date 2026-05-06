@@ -18,12 +18,15 @@ export const ENCRYPTED_SETTINGS = new Set<string>([
 ]);
 
 export function getSetting(ctx: AppContext, key: string): string | null {
-  const row = ctx.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+  const row = ctx.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
   return row?.value ?? null;
 }
 
 export function setSetting(ctx: AppContext, key: string, value: string): void {
-  ctx.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+  ctx.db
+    .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
     .run(key, value, value);
 }
 
@@ -47,7 +50,10 @@ export function setSecretSetting(ctx: AppContext, key: string, value: string): v
 
 /** List all settings with encrypted values masked (never leaks plaintext secrets). */
 export function listMaskedSettings(ctx: AppContext): Array<{ key: string; value: string; secret: boolean }> {
-  const rows = ctx.db.prepare("SELECT key, value FROM settings ORDER BY key ASC").all() as Array<{ key: string; value: string }>;
+  const rows = ctx.db.prepare("SELECT key, value FROM settings ORDER BY key ASC").all() as Array<{
+    key: string;
+    value: string;
+  }>;
   return rows.map((r) => {
     const secret = ENCRYPTED_SETTINGS.has(r.key);
     if (!secret) return { key: r.key, value: r.value, secret: false };
@@ -93,7 +99,11 @@ export function buildGitEnv(ctx: AppContext): NodeJS.ProcessEnv {
 }
 
 /** Resolve the server's public SSH key so users can add it as a GitHub deploy key. */
-export function getServerPublicKey(ctx: AppContext): { path: string | null; publicKey: string | null; source: string } {
+export function getServerPublicKey(ctx: AppContext): {
+  path: string | null;
+  publicKey: string | null;
+  source: string;
+} {
   const configured = getSetting(ctx, "ssh_key_path");
   const candidates: string[] = [];
   if (configured) candidates.push(configured);
@@ -113,7 +123,10 @@ export function getServerPublicKey(ctx: AppContext): { path: string | null; publ
     if (fs.existsSync(priv)) {
       // Private key exists but no .pub sibling — attempt ssh-keygen -y.
       try {
-        const out = execSync(`ssh-keygen -y -f "${priv}"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        const out = execSync(`ssh-keygen -y -f "${priv}"`, {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"]
+        });
         return { path: priv, publicKey: out.trim(), source: "derived" };
       } catch {
         continue;

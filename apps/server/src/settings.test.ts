@@ -10,7 +10,9 @@ test("settings: encrypted github_pat round-trip", async () => {
     setSecretSetting(ctx, "github_pat", "ghp_testtokenvalue123");
     assert.equal(getSecretSetting(ctx, "github_pat"), "ghp_testtokenvalue123");
     // Raw row in DB must NOT equal plaintext (it's ciphertext).
-    const row = ctx.db.prepare("SELECT value FROM settings WHERE key = ?").get("github_pat") as { value: string };
+    const row = ctx.db.prepare("SELECT value FROM settings WHERE key = ?").get("github_pat") as {
+      value: string;
+    };
     assert.notEqual(row.value, "ghp_testtokenvalue123");
   } finally {
     ctx.db.prepare("DELETE FROM settings WHERE key = 'github_pat'").run();

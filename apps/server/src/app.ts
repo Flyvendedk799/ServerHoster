@@ -25,13 +25,25 @@ import { registerMigrationRoutes } from "./routes/migrations.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerCloudflareRoutes } from "./routes/cloudflare.js";
+import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
+import { registerTunnelRoutes } from "./routes/tunnels.js";
+import { registerInspectorRoutes } from "./routes/inspector.js";
+import { registerCrashReporter } from "./services/crashReporter.js";
 import { startMetricsLoop } from "./services/metrics.js";
 import { startSystemHealthLoop } from "./services/health.js";
+import { startSslRenewalLoop } from "./services/sslRenewal.js";
+import { startUpdateCheckLoop } from "./services/updateCheck.js";
+import { startScheduledBackupsLoop } from "./services/scheduledBackups.js";
 import { enforceSecretPolicy } from "./services/auth.js";
-import { reconcileRuntimeStateOnBoot, startHealthcheckLoop } from "./services/runtime.js";
+import {
+  reconcileRuntimeStateOnBoot,
+  startHealthcheckLoop,
+  startContainerDriftLoop
+} from "./services/runtime.js";
 import { startGitPollerLoop } from "./services/poller.js";
 import { writeAuditLog } from "./services/audit.js";
+import { registerBuiltinTunnelAdapters } from "./services/tunnels/register.js";
 
 const secureContextCache = new Map<string, tls.SecureContext>();
 
@@ -65,6 +77,7 @@ export async function buildApp(): Promise<AppContext> {
     docker,
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
+    transferSubscribers: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     manuallyStopped: new Set(),
@@ -72,9 +85,10 @@ export async function buildApp(): Promise<AppContext> {
     shutdownTasks: []
   });
 
-  const localCert = fs.existsSync(config.certPath) && fs.existsSync(config.keyPath)
-    ? { cert: fs.readFileSync(config.certPath), key: fs.readFileSync(config.keyPath) }
-    : null;
+  const localCert =
+    fs.existsSync(config.certPath) && fs.existsSync(config.keyPath)
+      ? { cert: fs.readFileSync(config.certPath), key: fs.readFileSync(config.keyPath) }
+      : null;
 
   const httpsOptions = config.enableHttps
     ? {
@@ -83,7 +97,9 @@ export async function buildApp(): Promise<AppContext> {
             const cached = secureContextCache.get(servername);
             if (cached) return cb(null, cached);
 
-            const row = db.prepare("SELECT fullchain, privkey FROM certificates WHERE domain = ?").get(servername) as { fullchain: string, privkey: string } | undefined;
+            const row = db
+              .prepare("SELECT fullchain, privkey FROM certificates WHERE domain = ?")
+              .get(servername) as { fullchain: string; privkey: string } | undefined;
             if (row) {
               const sc = tls.createSecureContext({ cert: row.fullchain, key: row.privkey });
               secureContextCache.set(servername, sc);
@@ -104,8 +120,31 @@ export async function buildApp(): Promise<AppContext> {
       }
     : {};
 
-  const app = Fastify({ logger: true, ...httpsOptions });
-  await app.register(cors, { origin: true });
+  // 50 MiB body limit so backup import (`/backup/import`) can carry a full
+  // database snapshot. Default Fastify is 1 MiB which trips even on modest
+  // installations once audit_logs accumulates.
+  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, ...httpsOptions });
+
+  // Capture raw request bytes so webhook handlers can verify HMAC signatures.
+  // GitHub signs the raw body, so JSON.stringify(req.body) is not byte-equivalent.
+  app.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+    (req as unknown as { rawBody: Buffer }).rawBody = body as Buffer;
+    try {
+      const parsed = (body as Buffer).length > 0 ? JSON.parse((body as Buffer).toString("utf8")) : {};
+      done(null, parsed);
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
+
+  // CORS: same-origin only in production (the dashboard is bundled and served
+  // by this same Fastify instance). Allow localhost in dev so the Vite dev
+  // server on :5173 can talk to the API on :8787.
+  const corsOrigin: false | RegExp[] =
+    config.nodeEnv === "production"
+      ? false
+      : [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/];
+  await app.register(cors, { origin: corsOrigin });
   await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
 
   const ctx: AppContext = {
@@ -114,6 +153,7 @@ export async function buildApp(): Promise<AppContext> {
     docker,
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
+    transferSubscribers: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     manuallyStopped: new Set(),
@@ -145,7 +185,13 @@ export async function buildApp(): Promise<AppContext> {
   registerWebhookRoutes(ctx);
   registerSettingsRoutes(ctx);
   registerCloudflareRoutes(ctx);
+  registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
+  registerBuiltinTunnelAdapters();
+  registerTunnelRoutes(ctx);
+  registerInspectorRoutes(ctx);
+  const stopCrashReporter = registerCrashReporter(ctx);
+  ctx.shutdownTasks.push(() => stopCrashReporter());
 
   // --- Static dashboard bundle --------------------------------------------
   // When SURVHub is distributed as a single binary/npm package, the built
@@ -171,15 +217,27 @@ export async function buildApp(): Promise<AppContext> {
     });
   });
 
-  reconcileRuntimeStateOnBoot(ctx);
+  // Fire-and-forget on purpose: Docker query may be slow if the daemon is
+  // starting; we don't want to block API readiness on it.
+  void reconcileRuntimeStateOnBoot(ctx).catch((err) => {
+    app.log.error({ err }, "reconcileRuntimeStateOnBoot failed");
+  });
   const stopHealthLoop = startHealthcheckLoop(ctx);
   ctx.shutdownTasks.push(() => stopHealthLoop());
+  const stopDriftLoop = startContainerDriftLoop(ctx);
+  ctx.shutdownTasks.push(() => stopDriftLoop());
   const stopGitLoop = startGitPollerLoop(ctx);
   ctx.shutdownTasks.push(() => stopGitLoop());
   const stopMetricsLoop = startMetricsLoop(ctx);
   ctx.shutdownTasks.push(() => stopMetricsLoop());
   const stopHealthLoopSys = startSystemHealthLoop(ctx);
   ctx.shutdownTasks.push(() => stopHealthLoopSys());
+  const stopSslRenewal = startSslRenewalLoop(ctx);
+  ctx.shutdownTasks.push(() => stopSslRenewal());
+  const stopUpdateCheck = startUpdateCheckLoop(ctx);
+  ctx.shutdownTasks.push(() => stopUpdateCheck());
+  const stopScheduledBackups = startScheduledBackupsLoop(ctx);
+  ctx.shutdownTasks.push(() => stopScheduledBackups());
   return ctx;
 }
 
@@ -225,10 +283,28 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
   if (!webDist) return;
 
   const reservedPrefixes = [
-    "/auth", "/projects", "/services", "/databases", "/deployments",
-    "/proxy", "/settings", "/cloudflare", "/notifications", "/metrics",
-    "/health", "/ops", "/github", "/webhooks", "/migrations", "/backup",
-    "/ws", "/.well-known", "/onboarding", "/service-templates", "/project-templates"
+    "/auth",
+    "/projects",
+    "/services",
+    "/databases",
+    "/deployments",
+    "/proxy",
+    "/settings",
+    "/cloudflare",
+    "/notifications",
+    "/metrics",
+    "/health",
+    "/ops",
+    "/github",
+    "/webhooks",
+    "/migrations",
+    "/backup",
+    "/ws",
+    "/.well-known",
+    "/onboarding",
+    "/service-templates",
+    "/project-templates",
+    "/tunnels"
   ];
 
   app.addHook("onRequest", async (req: any, reply: any) => {

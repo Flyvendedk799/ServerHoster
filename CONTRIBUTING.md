@@ -54,7 +54,7 @@ docs/               Contributor and user docs
 1. **Open an issue first** for anything bigger than a one-line fix so we can agree on the approach before you spend time.
 2. **Branch from `main`.** Name branches descriptively: `fix/git-poller-tab-bug`, `feature/cloudflare-dns01`.
 3. **Write tests.** If you change behavior, either the existing test suite should cover it or you add a test that would have failed before your change.
-4. **Keep commits focused.** One logical change per commit, with a message that explains *why*, not just *what*.
+4. **Keep commits focused.** One logical change per commit, with a message that explains _why_, not just _what_.
 5. **Run before pushing:**
    ```bash
    npm run build

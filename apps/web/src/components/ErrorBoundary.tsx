@@ -21,25 +21,31 @@ export class ErrorBoundary extends React.Component<Props, State> {
   render(): React.ReactNode {
     if (this.state.error) {
       return (
-        <div style={{
-          padding: "2rem",
-          margin: "2rem auto",
-          maxWidth: "640px",
-          background: "#1e1b1b",
-          border: "1px solid #b91c1c",
-          borderRadius: "8px",
-          color: "#fecaca",
-          fontFamily: "system-ui, sans-serif"
-        }}>
+        <div
+          style={{
+            padding: "2rem",
+            margin: "2rem auto",
+            maxWidth: "640px",
+            background: "#1e1b1b",
+            border: "1px solid #b91c1c",
+            borderRadius: "8px",
+            color: "#fecaca",
+            fontFamily: "system-ui, sans-serif"
+          }}
+        >
           <h2 style={{ marginTop: 0 }}>Something went wrong</h2>
           <p>The dashboard hit a rendering error. This is a bug in the UI.</p>
-          <pre style={{
-            background: "#0f0f0f",
-            padding: "1rem",
-            borderRadius: "4px",
-            overflowX: "auto",
-            fontSize: "0.85rem"
-          }}>{this.state.error.message}</pre>
+          <pre
+            style={{
+              background: "#0f0f0f",
+              padding: "1rem",
+              borderRadius: "4px",
+              overflowX: "auto",
+              fontSize: "0.85rem"
+            }}
+          >
+            {this.state.error.message}
+          </pre>
           <button
             onClick={this.reset}
             style={{

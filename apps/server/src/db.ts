@@ -186,7 +186,22 @@ const migrations = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_project_env_vars_project ON project_env_vars(project_id)",
   "ALTER TABLE services ADD COLUMN tunnel_url TEXT",
-  "ALTER TABLE services ADD COLUMN quick_tunnel_enabled INTEGER NOT NULL DEFAULT 0"
+  "ALTER TABLE services ADD COLUMN quick_tunnel_enabled INTEGER NOT NULL DEFAULT 0",
+  // System-managed env rows are written by the platform (e.g. PUBLIC_URL from
+  // the Go-Public wizard) and survive manual env CRUD calls.
+  "ALTER TABLE env_vars ADD COLUMN system INTEGER NOT NULL DEFAULT 0",
+  // Best-effort retry queue for asynchronous Cloudflare cleanups (DNS records,
+  // tunnel ingress) when a service deletion would otherwise leak resources.
+  `CREATE TABLE IF NOT EXISTS cleanup_queue (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_cleanup_queue_created ON cleanup_queue(created_at)"
 ];
 
 for (const statement of migrations) {

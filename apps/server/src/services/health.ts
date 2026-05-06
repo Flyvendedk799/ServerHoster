@@ -63,9 +63,7 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
     checkDocker(ctx)
   ]);
   const memoryUsedPercent =
-    os.totalmem() > 0
-      ? Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 10000) / 100
-      : 0;
+    os.totalmem() > 0 ? Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 10000) / 100 : 0;
   const loadAvg1m = os.loadavg()[0] ?? 0;
 
   const warnings: string[] = [];
