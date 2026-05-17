@@ -57,6 +57,10 @@ type Service = {
   github_branch?: string;
   github_auto_pull?: number;
   latest_commit_hash?: string;
+  latest_git_commit_hash?: string | null;
+  latest_git_updated_at?: string | null;
+  latest_git_trigger_source?: string | null;
+  latest_git_branch?: string | null;
   ssl_status?: string;
   environment?: string;
   tunnel_url?: string | null;
@@ -73,6 +77,32 @@ function certBadgeState(
   if (days < 7) return { color: "stale", days };
   if (days < 30) return { color: "warn", days };
   return { color: "ok", days };
+}
+
+function gitSourceLabel(source: string | null | undefined): string {
+  if (source === "gitops-poller") return "Git poller";
+  if (source === "webhook") return "GitHub webhook";
+  if (source === "manual") return "manual Git redeploy";
+  return "Git";
+}
+
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  const diffMs = Date.now() - then;
+  const absMs = Math.abs(diffMs);
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["day", 86400000],
+    ["hour", 3600000],
+    ["minute", 60000]
+  ];
+  if (absMs < 60000) return diffMs >= 0 ? "just now" : "soon";
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, ms] of units) {
+    if (absMs >= ms) return formatter.format(Math.round(-diffMs / ms), unit);
+  }
+  return new Date(iso).toLocaleString();
 }
 
 type Project = {
@@ -117,6 +147,14 @@ type ServiceOperation = {
   status: "queued" | "active" | "success" | "error";
   message: string;
   startedAt: number;
+};
+
+type GitUpdateInfo = {
+  serviceName: string;
+  commitHash: string;
+  updatedAt: string;
+  triggerSource: string | null;
+  branch: string | null;
 };
 
 type ServiceStack = {
@@ -525,6 +563,34 @@ export function ServicesPage() {
     return serviceUrl(frontend ?? stack.services[0]);
   }
 
+  function serviceGitUpdate(service: Service): GitUpdateInfo | null {
+    if (!service.latest_git_commit_hash || !service.latest_git_updated_at) return null;
+    return {
+      serviceName: service.name,
+      commitHash: service.latest_git_commit_hash,
+      updatedAt: service.latest_git_updated_at,
+      triggerSource: service.latest_git_trigger_source ?? null,
+      branch: service.latest_git_branch ?? service.github_branch ?? null
+    };
+  }
+
+  function stackGitUpdate(stack: ServiceStack): GitUpdateInfo | null {
+    return stack.services.reduce<GitUpdateInfo | null>((latest, service) => {
+      const current = serviceGitUpdate(service);
+      if (!current) return latest;
+      if (!latest) return current;
+      return Date.parse(current.updatedAt) > Date.parse(latest.updatedAt) ? current : latest;
+    }, null);
+  }
+
+  function gitUpdateTitle(info: GitUpdateInfo): string {
+    const date = new Date(info.updatedAt).toLocaleString();
+    const branch = info.branch ? ` on ${info.branch}` : "";
+    return `${info.serviceName} pulled ${info.commitHash.slice(0, 7)}${branch} via ${gitSourceLabel(
+      info.triggerSource
+    )} at ${date}`;
+  }
+
   function ServerNodeIcon({ role }: { role: string }) {
     if (role === "Frontend") return <Globe size={16} />;
     if (role === "API") return <Terminal size={16} />;
@@ -823,7 +889,10 @@ export function ServicesPage() {
               <section key={group.id} className="service-group">
                 {groupByProject && <h4 className="service-group-title">{group.title}</h4>}
                 <div className="app-stack-list">
-                  {buildServiceStacks(group.services).map((stack) => (
+                  {buildServiceStacks(group.services).map((stack) => {
+                    const latestGitUpdate = stackGitUpdate(stack);
+                    const hasGitLinkedService = stack.services.some((service) => Boolean(service.github_repo_url));
+                    return (
                     <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
                       <div className="app-stack-header">
                         <div>
@@ -840,6 +909,23 @@ export function ServicesPage() {
                               ? ` • ${stack.databases.length} managed database${stack.databases.length === 1 ? "" : "s"}`
                               : ""}
                           </p>
+                          {hasGitLinkedService && (
+                            <div
+                              className={`stack-git-update ${latestGitUpdate ? "" : "empty"}`}
+                              title={latestGitUpdate ? gitUpdateTitle(latestGitUpdate) : undefined}
+                            >
+                              <GitBranch size={13} />
+                              {latestGitUpdate ? (
+                                <span>
+                                  Last Git update {relativeTime(latestGitUpdate.updatedAt)} via{" "}
+                                  {gitSourceLabel(latestGitUpdate.triggerSource)} ·{" "}
+                                  <code>{latestGitUpdate.commitHash.slice(0, 7)}</code>
+                                </span>
+                              ) : (
+                                <span>Git linked, no successful pull recorded yet</span>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="stack-service-pills">
                           {primaryStackUrl(stack) && (
@@ -985,9 +1071,26 @@ export function ServicesPage() {
                                         </span>
                                         <span className="tiny muted font-bold uppercase">{service.type}</span>
                                         {service.github_repo_url && (
-                                          <span className="tiny muted row">
-                                            <GitBranch size={10} />{" "}
-                                            {service.github_auto_pull === 0 ? "GitHub Linked" : "Sync Active"}
+                                          <span
+                                            className="tiny muted row service-git-chip"
+                                            title={
+                                              serviceGitUpdate(service)
+                                                ? gitUpdateTitle(serviceGitUpdate(service)!)
+                                                : "Git repository linked, but no successful Git deployment is recorded yet"
+                                            }
+                                          >
+                                            <GitBranch size={10} />
+                                            {(() => {
+                                              const info = serviceGitUpdate(service);
+                                              if (!info) {
+                                                return service.github_auto_pull === 0
+                                                  ? "Git linked · auto off"
+                                                  : "Git linked · never pulled";
+                                              }
+                                              return `Git updated ${relativeTime(info.updatedAt)} via ${gitSourceLabel(
+                                                info.triggerSource
+                                              )}`;
+                                            })()}
                                           </span>
                                         )}
                                       </div>
@@ -1245,7 +1348,8 @@ export function ServicesPage() {
                         </AnimatePresence>
                       </div>
                     </section>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             ))}

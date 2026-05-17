@@ -291,7 +291,43 @@ export function registerServiceRoutes(ctx: AppContext): void {
         s.*,
         p.domain,
         c.expires_at AS cert_expires_at,
-        (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash
+        (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash,
+        (SELECT commit_hash FROM deployments d
+          WHERE d.service_id = s.id
+            AND d.status = 'success'
+            AND d.commit_hash IS NOT NULL
+            AND d.commit_hash != ''
+            AND (d.trigger_source IN ('manual', 'webhook', 'gitops-poller') OR d.trigger_source IS NULL)
+          ORDER BY COALESCE(d.finished_at, d.created_at) DESC
+          LIMIT 1
+        ) as latest_git_commit_hash,
+        (SELECT COALESCE(d.finished_at, d.created_at) FROM deployments d
+          WHERE d.service_id = s.id
+            AND d.status = 'success'
+            AND d.commit_hash IS NOT NULL
+            AND d.commit_hash != ''
+            AND (d.trigger_source IN ('manual', 'webhook', 'gitops-poller') OR d.trigger_source IS NULL)
+          ORDER BY COALESCE(d.finished_at, d.created_at) DESC
+          LIMIT 1
+        ) as latest_git_updated_at,
+        (SELECT d.trigger_source FROM deployments d
+          WHERE d.service_id = s.id
+            AND d.status = 'success'
+            AND d.commit_hash IS NOT NULL
+            AND d.commit_hash != ''
+            AND (d.trigger_source IN ('manual', 'webhook', 'gitops-poller') OR d.trigger_source IS NULL)
+          ORDER BY COALESCE(d.finished_at, d.created_at) DESC
+          LIMIT 1
+        ) as latest_git_trigger_source,
+        (SELECT d.branch FROM deployments d
+          WHERE d.service_id = s.id
+            AND d.status = 'success'
+            AND d.commit_hash IS NOT NULL
+            AND d.commit_hash != ''
+            AND (d.trigger_source IN ('manual', 'webhook', 'gitops-poller') OR d.trigger_source IS NULL)
+          ORDER BY COALESCE(d.finished_at, d.created_at) DESC
+          LIMIT 1
+        ) as latest_git_branch
       FROM services s
       LEFT JOIN proxy_routes p ON p.service_id = s.id
       LEFT JOIN certificates c ON c.domain = p.domain

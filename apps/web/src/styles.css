@@ -693,6 +693,31 @@ h2 {
   letter-spacing: 0;
 }
 
+.stack-git-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.stack-git-update code {
+  color: var(--accent-light);
+  font-size: 0.7rem;
+}
+
+.stack-git-update.empty {
+  color: var(--text-muted);
+}
+
+.service-git-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .stack-service-pills {
   display: flex;
   flex-wrap: wrap;
