@@ -4,3 +4,4 @@ dist/
 .survhub/
 .env
 .env.*
+apps/web/src/**/*.js

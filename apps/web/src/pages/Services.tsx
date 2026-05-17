@@ -591,6 +591,49 @@ export function ServicesPage() {
     )} at ${date}`;
   }
 
+  function serviceGitSummary(service: Service):
+    | { text: string; title: string; empty: boolean; commitHash?: string }
+    | null {
+    const info = serviceGitUpdate(service);
+    if (info) {
+      return {
+        text: `Last updated by Git ${relativeTime(info.updatedAt)} via ${gitSourceLabel(info.triggerSource)}`,
+        title: gitUpdateTitle(info),
+        empty: false,
+        commitHash: info.commitHash
+      };
+    }
+    if (!service.github_repo_url) return null;
+    return {
+      text:
+        service.github_auto_pull === 0
+          ? "Last updated by Git: never (auto off)"
+          : "Last updated by Git: never pulled",
+      title: "Git repository linked, but no successful Git pull/deployment is recorded yet",
+      empty: true
+    };
+  }
+
+  function stackGitSummary(stack: ServiceStack):
+    | { text: string; title: string; empty: boolean; commitHash?: string }
+    | null {
+    const latest = stackGitUpdate(stack);
+    if (latest) {
+      return {
+        text: `Last updated by Git ${relativeTime(latest.updatedAt)} via ${gitSourceLabel(latest.triggerSource)}`,
+        title: gitUpdateTitle(latest),
+        empty: false,
+        commitHash: latest.commitHash
+      };
+    }
+    if (!stack.services.some((service) => Boolean(service.github_repo_url))) return null;
+    return {
+      text: "Last updated by Git: never pulled",
+      title: "At least one service is linked to Git, but no successful Git pull/deployment is recorded yet",
+      empty: true
+    };
+  }
+
   function ServerNodeIcon({ role }: { role: string }) {
     if (role === "Frontend") return <Globe size={16} />;
     if (role === "API") return <Terminal size={16} />;
@@ -890,8 +933,7 @@ export function ServicesPage() {
                 {groupByProject && <h4 className="service-group-title">{group.title}</h4>}
                 <div className="app-stack-list">
                   {buildServiceStacks(group.services).map((stack) => {
-                    const latestGitUpdate = stackGitUpdate(stack);
-                    const hasGitLinkedService = stack.services.some((service) => Boolean(service.github_repo_url));
+                    const stackGit = stackGitSummary(stack);
                     return (
                     <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
                       <div className="app-stack-header">
@@ -909,25 +951,27 @@ export function ServicesPage() {
                               ? ` • ${stack.databases.length} managed database${stack.databases.length === 1 ? "" : "s"}`
                               : ""}
                           </p>
-                          {hasGitLinkedService && (
+                          {stackGit && (
                             <div
-                              className={`stack-git-update ${latestGitUpdate ? "" : "empty"}`}
-                              title={latestGitUpdate ? gitUpdateTitle(latestGitUpdate) : undefined}
+                              className={`stack-git-update ${stackGit.empty ? "empty" : ""}`}
+                              title={stackGit.title}
                             >
                               <GitBranch size={13} />
-                              {latestGitUpdate ? (
-                                <span>
-                                  Last Git update {relativeTime(latestGitUpdate.updatedAt)} via{" "}
-                                  {gitSourceLabel(latestGitUpdate.triggerSource)} ·{" "}
-                                  <code>{latestGitUpdate.commitHash.slice(0, 7)}</code>
-                                </span>
-                              ) : (
-                                <span>Git linked, no successful pull recorded yet</span>
-                              )}
+                              <span>{stackGit.text}</span>
+                              {stackGit.commitHash && <code>{stackGit.commitHash.slice(0, 7)}</code>}
                             </div>
                           )}
                         </div>
                         <div className="stack-service-pills">
+                          {stackGit && (
+                            <span
+                              className={`stack-service-pill git-update-pill ${stackGit.empty ? "empty" : ""}`}
+                              title={stackGit.title}
+                            >
+                              <GitBranch size={12} />
+                              {stackGit.text}
+                            </span>
+                          )}
                           {primaryStackUrl(stack) && (
                             <a
                               href={primaryStackUrl(stack)!}
@@ -1028,6 +1072,7 @@ export function ServicesPage() {
                               const op = operations[service.id];
                               const url = serviceUrl(service);
                               const recent = serviceLogs[service.id] ?? [];
+                              const gitSummary = serviceGitSummary(service);
                               const actionBusy =
                                 op?.status === "queued" ||
                                 op?.status === "active" ||
@@ -1070,27 +1115,14 @@ export function ServicesPage() {
                                           {serviceRole(service, stack.services.length)}
                                         </span>
                                         <span className="tiny muted font-bold uppercase">{service.type}</span>
-                                        {service.github_repo_url && (
+                                        {gitSummary && (
                                           <span
-                                            className="tiny muted row service-git-chip"
-                                            title={
-                                              serviceGitUpdate(service)
-                                                ? gitUpdateTitle(serviceGitUpdate(service)!)
-                                                : "Git repository linked, but no successful Git deployment is recorded yet"
-                                            }
+                                            className={`tiny row service-git-chip ${gitSummary.empty ? "empty" : ""}`}
+                                            title={gitSummary.title}
                                           >
                                             <GitBranch size={10} />
-                                            {(() => {
-                                              const info = serviceGitUpdate(service);
-                                              if (!info) {
-                                                return service.github_auto_pull === 0
-                                                  ? "Git linked · auto off"
-                                                  : "Git linked · never pulled";
-                                              }
-                                              return `Git updated ${relativeTime(info.updatedAt)} via ${gitSourceLabel(
-                                                info.triggerSource
-                                              )}`;
-                                            })()}
+                                            {gitSummary.text}
+                                            {gitSummary.commitHash && <code>{gitSummary.commitHash.slice(0, 7)}</code>}
                                           </span>
                                         )}
                                       </div>

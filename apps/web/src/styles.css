@@ -696,12 +696,20 @@ h2 {
 .stack-git-update {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.4rem;
-  color: var(--text-secondary);
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  padding: 0.32rem 0.52rem;
+  width: fit-content;
+  max-width: min(100%, 560px);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-light);
   font-size: 0.72rem;
-  font-weight: 750;
+  font-weight: 850;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .stack-git-update code {
@@ -711,11 +719,34 @@ h2 {
 
 .stack-git-update.empty {
   color: var(--text-muted);
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .service-git-chip {
-  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: min(100%, 380px);
+  padding: 0.28rem 0.48rem;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-light);
+  font-weight: 850;
   overflow-wrap: anywhere;
+}
+
+.service-git-chip.empty {
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-muted);
+}
+
+.service-git-chip code {
+  color: var(--accent-light);
+  font-size: 0.68rem;
 }
 
 .stack-service-pills {
@@ -750,6 +781,23 @@ h2 {
   color: var(--success);
   text-decoration: none;
   border-color: rgba(16, 185, 129, 0.24);
+}
+
+.stack-service-pill.git-update-pill {
+  max-width: 320px;
+  color: var(--accent-light);
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.12);
+  line-height: 1.25;
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.stack-service-pill.git-update-pill.empty {
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .app-stack-actions {
@@ -892,6 +940,13 @@ a.resource-node {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+}
+
+.service-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
 .service-title-group h3 {
