@@ -23,7 +23,9 @@ import {
   Loader2,
   XCircle,
   Sparkles,
-  Database as DatabaseIcon
+  Database as DatabaseIcon,
+  KeyRound,
+  Bot
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -35,8 +37,10 @@ import { TemplateModal } from "../components/TemplateModal";
 import { ComposeModal } from "../components/ComposeModal";
 import { QuickLaunchModal } from "../components/QuickLaunchModal";
 import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
+import { PromoteEmbeddedDbModal, type EmbeddedDb } from "../components/PromoteEmbeddedDbModal";
 import { GoPublicWizard } from "../components/GoPublicWizard";
 import { StatusBadge } from "../components/StatusBadge";
+import { openServiceTerminal } from "../components/TerminalDock";
 import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
 import { Skeleton, CardSkeleton } from "../components/ui/Skeleton";
@@ -51,7 +55,12 @@ type Service = {
   port?: number;
   github_repo_url?: string;
   github_branch?: string;
+  github_auto_pull?: number;
   latest_commit_hash?: string;
+  latest_git_commit_hash?: string | null;
+  latest_git_updated_at?: string | null;
+  latest_git_trigger_source?: string | null;
+  latest_git_branch?: string | null;
   ssl_status?: string;
   environment?: string;
   tunnel_url?: string | null;
@@ -68,6 +77,32 @@ function certBadgeState(
   if (days < 7) return { color: "stale", days };
   if (days < 30) return { color: "warn", days };
   return { color: "ok", days };
+}
+
+function gitSourceLabel(source: string | null | undefined): string {
+  if (source === "gitops-poller") return "Git poller";
+  if (source === "webhook") return "GitHub webhook";
+  if (source === "manual") return "manual Git redeploy";
+  return "Git";
+}
+
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  const diffMs = Date.now() - then;
+  const absMs = Math.abs(diffMs);
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["day", 86400000],
+    ["hour", 3600000],
+    ["minute", 60000]
+  ];
+  if (absMs < 60000) return diffMs >= 0 ? "just now" : "soon";
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, ms] of units) {
+    if (absMs >= ms) return formatter.format(Math.round(-diffMs / ms), unit);
+  }
+  return new Date(iso).toLocaleString();
 }
 
 type Project = {
@@ -90,10 +125,13 @@ type OrphanInfo = {
   code_signals: Array<{ driver: string; ecosystem: string; source_file: string }>;
 };
 
-type EmbeddedInfo = {
-  service_id: string;
-  file_path: string;
-  persistent: boolean;
+type EnvRequirement = {
+  key: string;
+  source_file: string;
+  reason: "required-check" | "production-config" | "integration-secret" | "infrastructure-url";
+  status: "missing" | "present";
+  provided_by?: "service" | "project" | "linked-database";
+  value_preview?: string;
 };
 
 type LogEntry = {
@@ -109,6 +147,14 @@ type ServiceOperation = {
   status: "queued" | "active" | "success" | "error";
   message: string;
   startedAt: number;
+};
+
+type GitUpdateInfo = {
+  serviceName: string;
+  commitHash: string;
+  updatedAt: string;
+  triggerSource: string | null;
+  branch: string | null;
 };
 
 type ServiceStack = {
@@ -134,12 +180,14 @@ export function ServicesPage() {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showQuickLaunch, setShowQuickLaunch] = useState(false);
   const [databaseDraft, setDatabaseDraft] = useState<{ projectId: string; name: string } | null>(null);
+  const [promoteTarget, setPromoteTarget] = useState<EmbeddedDb | null>(null);
 
   const [envFilter, setEnvFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [groupByProject, setGroupByProject] = useState(false);
   const [orphans, setOrphans] = useState<Map<string, OrphanInfo>>(new Map());
-  const [embeddedDbs, setEmbeddedDbs] = useState<Map<string, EmbeddedInfo>>(new Map());
+  const [embeddedDbs, setEmbeddedDbs] = useState<Map<string, EmbeddedDb>>(new Map());
+  const [envRequirements, setEnvRequirements] = useState<Map<string, EnvRequirement[]>>(new Map());
   const [provisioningId, setProvisioningId] = useState<string | null>(null);
   const [goPublicId, setGoPublicId] = useState<string | null>(null);
 
@@ -157,8 +205,13 @@ export function ServicesPage() {
       api<OrphanInfo[]>("/databases/orphan-services", { silent: true })
         .then((rows) => setOrphans(new Map(rows.map((r) => [r.service_id, r]))))
         .catch(() => undefined);
-      api<EmbeddedInfo[]>("/databases/embedded", { silent: true })
+      api<EmbeddedDb[]>("/databases/embedded", { silent: true })
         .then((rows) => setEmbeddedDbs(new Map(rows.map((r) => [r.service_id, r]))))
+        .catch(() => undefined);
+      api<Array<{ service_id: string; requirements: EnvRequirement[] }>>("/services/env-requirements", {
+        silent: true
+      })
+        .then((rows) => setEnvRequirements(new Map(rows.map((r) => [r.service_id, r.requirements]))))
         .catch(() => undefined);
       const logPairs = await Promise.all(
         serviceData.slice(0, 20).map(async (service) => {
@@ -372,6 +425,36 @@ export function ServicesPage() {
     }
   }
 
+  function databaseServiceForStack(stack: ServiceStack): Service | null {
+    return (
+      stack.services.find((service) => embeddedDbs.has(service.id)) ??
+      stack.services.find((service) => {
+        const orphan = orphans.get(service.id);
+        return orphan && orphan.code_signals.length > 0;
+      }) ??
+      stack.services.find((service) => serviceRole(service, stack.services.length) === "API") ??
+      stack.services[0] ??
+      null
+    );
+  }
+
+  function openDatabaseFlowForStack(stack: ServiceStack): void {
+    const service = databaseServiceForStack(stack);
+    if (!service) return;
+    const embedded = embeddedDbs.get(service.id);
+    if (embedded) {
+      setPromoteTarget(embedded);
+      return;
+    }
+    void quickAddDatabase(service);
+  }
+
+  function databaseActionLabel(stack: ServiceStack): string {
+    const service = databaseServiceForStack(stack);
+    if (!service) return "Add database";
+    return embeddedDbs.has(service.id) ? "Promote data" : "Add database";
+  }
+
   async function deleteService(service: Service): Promise<void> {
     const confirmed = await confirmDialog({
       title: `Purge service "${service.name}"?`,
@@ -478,6 +561,77 @@ export function ServicesPage() {
       (service) => serviceRole(service, stack.services.length) === "Frontend"
     );
     return serviceUrl(frontend ?? stack.services[0]);
+  }
+
+  function serviceGitUpdate(service: Service): GitUpdateInfo | null {
+    if (!service.latest_git_commit_hash || !service.latest_git_updated_at) return null;
+    return {
+      serviceName: service.name,
+      commitHash: service.latest_git_commit_hash,
+      updatedAt: service.latest_git_updated_at,
+      triggerSource: service.latest_git_trigger_source ?? null,
+      branch: service.latest_git_branch ?? service.github_branch ?? null
+    };
+  }
+
+  function stackGitUpdate(stack: ServiceStack): GitUpdateInfo | null {
+    return stack.services.reduce<GitUpdateInfo | null>((latest, service) => {
+      const current = serviceGitUpdate(service);
+      if (!current) return latest;
+      if (!latest) return current;
+      return Date.parse(current.updatedAt) > Date.parse(latest.updatedAt) ? current : latest;
+    }, null);
+  }
+
+  function gitUpdateTitle(info: GitUpdateInfo): string {
+    const date = new Date(info.updatedAt).toLocaleString();
+    const branch = info.branch ? ` on ${info.branch}` : "";
+    return `${info.serviceName} pulled ${info.commitHash.slice(0, 7)}${branch} via ${gitSourceLabel(
+      info.triggerSource
+    )} at ${date}`;
+  }
+
+  function serviceGitSummary(
+    service: Service
+  ): { text: string; title: string; empty: boolean; commitHash?: string } | null {
+    const info = serviceGitUpdate(service);
+    if (info) {
+      return {
+        text: `Last updated by Git ${relativeTime(info.updatedAt)} via ${gitSourceLabel(info.triggerSource)}`,
+        title: gitUpdateTitle(info),
+        empty: false,
+        commitHash: info.commitHash
+      };
+    }
+    if (!service.github_repo_url) return null;
+    return {
+      text:
+        service.github_auto_pull === 0
+          ? "Last updated by Git: never (auto off)"
+          : "Last updated by Git: never pulled",
+      title: "Git repository linked, but no successful Git pull/deployment is recorded yet",
+      empty: true
+    };
+  }
+
+  function stackGitSummary(
+    stack: ServiceStack
+  ): { text: string; title: string; empty: boolean; commitHash?: string } | null {
+    const latest = stackGitUpdate(stack);
+    if (latest) {
+      return {
+        text: `Last updated by Git ${relativeTime(latest.updatedAt)} via ${gitSourceLabel(latest.triggerSource)}`,
+        title: gitUpdateTitle(latest),
+        empty: false,
+        commitHash: latest.commitHash
+      };
+    }
+    if (!stack.services.some((service) => Boolean(service.github_repo_url))) return null;
+    return {
+      text: "Last updated by Git: never pulled",
+      title: "At least one service is linked to Git, but no successful Git pull/deployment is recorded yet",
+      empty: true
+    };
   }
 
   function ServerNodeIcon({ role }: { role: string }) {
@@ -778,367 +932,463 @@ export function ServicesPage() {
               <section key={group.id} className="service-group">
                 {groupByProject && <h4 className="service-group-title">{group.title}</h4>}
                 <div className="app-stack-list">
-                  {buildServiceStacks(group.services).map((stack) => (
-                    <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
-                      <div className="app-stack-header">
-                        <div>
-                          <div className="row">
-                            <Layers size={18} className="text-accent" />
-                            <h4>{stack.title}</h4>
-                            <StatusBadge status={stackStatus(stack)} label={stackStatus(stack)} />
+                  {buildServiceStacks(group.services).map((stack) => {
+                    const stackGit = stackGitSummary(stack);
+                    return (
+                      <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
+                        <div className="app-stack-header">
+                          <div>
+                            <div className="row">
+                              <Layers size={18} className="text-accent" />
+                              <h4>{stack.title}</h4>
+                              <StatusBadge status={stackStatus(stack)} label={stackStatus(stack)} />
+                            </div>
+                            <p className="muted tiny">
+                              {stack.services.length === 1
+                                ? "Single runtime service"
+                                : `${stack.services.length} linked runtime services from one app`}
+                              {stack.databases.length > 0
+                                ? ` • ${stack.databases.length} managed database${stack.databases.length === 1 ? "" : "s"}`
+                                : ""}
+                            </p>
+                            {stackGit && (
+                              <div
+                                className={`stack-git-update ${stackGit.empty ? "empty" : ""}`}
+                                title={stackGit.title}
+                              >
+                                <GitBranch size={13} />
+                                <span>{stackGit.text}</span>
+                                {stackGit.commitHash && <code>{stackGit.commitHash.slice(0, 7)}</code>}
+                              </div>
+                            )}
                           </div>
-                          <p className="muted tiny">
-                            {stack.services.length === 1
-                              ? "Single runtime service"
-                              : `${stack.services.length} linked runtime services from one app`}
-                            {stack.databases.length > 0
-                              ? ` • ${stack.databases.length} managed database${stack.databases.length === 1 ? "" : "s"}`
-                              : ""}
-                          </p>
+                          <div className="stack-service-pills">
+                            {stackGit && (
+                              <span
+                                className={`stack-service-pill git-update-pill ${stackGit.empty ? "empty" : ""}`}
+                                title={stackGit.title}
+                              >
+                                <GitBranch size={12} />
+                                {stackGit.text}
+                              </span>
+                            )}
+                            {primaryStackUrl(stack) && (
+                              <a
+                                href={primaryStackUrl(stack)!}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="stack-service-pill stack-open-pill"
+                                data-tooltip="Open the primary app endpoint"
+                              >
+                                <ExternalLink size={12} />
+                                Open app
+                              </a>
+                            )}
+                            {stack.services.map((service) => (
+                              <span key={service.id} className="stack-service-pill">
+                                <StatusBadge status={service.status} dotOnly />
+                                {serviceRole(service, stack.services.length)}
+                              </span>
+                            ))}
+                            {stack.databases.map((db) => (
+                              <Link
+                                key={db.id}
+                                to="/databases"
+                                className="stack-service-pill database-pill"
+                                aria-label={`Open database ${db.name}`}
+                                data-tooltip={`${db.engine} database on port ${db.port}`}
+                              >
+                                <StatusBadge status={db.container_status?.state ?? "stopped"} dotOnly />
+                                <DatabaseIcon size={12} />
+                                {db.engine}
+                              </Link>
+                            ))}
+                          </div>
                         </div>
-                        <div className="stack-service-pills">
-                          {primaryStackUrl(stack) && (
-                            <a
-                              href={primaryStackUrl(stack)!}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="stack-service-pill stack-open-pill"
-                              data-tooltip="Open the primary app endpoint"
-                            >
-                              <ExternalLink size={12} />
-                              Open app
-                            </a>
-                          )}
+                        <div className="app-stack-actions">
+                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "start")}>
+                            <Play size={14} /> Start stack
+                          </button>
+                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "restart")}>
+                            <RotateCw size={14} /> Restart stack
+                          </button>
+                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "stop")}>
+                            <Square size={14} /> Stop stack
+                          </button>
+                          <button
+                            className="ghost xsmall"
+                            disabled={provisioningId === databaseServiceForStack(stack)?.id}
+                            onClick={() => openDatabaseFlowForStack(stack)}
+                            data-tooltip="Create and link a managed database for this app. Existing embedded SQLite data is detected before setup."
+                          >
+                            {provisioningId === databaseServiceForStack(stack)?.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <DatabaseIcon size={14} />
+                            )}
+                            {databaseActionLabel(stack)}
+                          </button>
+                        </div>
+                        <div className="stack-resource-map">
                           {stack.services.map((service) => (
-                            <span key={service.id} className="stack-service-pill">
-                              <StatusBadge status={service.status} dotOnly />
-                              {serviceRole(service, stack.services.length)}
-                            </span>
+                            <div key={service.id} className={`resource-node ${service.status}`}>
+                              <ServerNodeIcon role={serviceRole(service, stack.services.length)} />
+                              <strong>{serviceRole(service, stack.services.length)}</strong>
+                              <span>{service.status}</span>
+                            </div>
                           ))}
                           {stack.databases.map((db) => (
                             <Link
                               key={db.id}
                               to="/databases"
-                              className="stack-service-pill database-pill"
-                              aria-label={`Open database ${db.name}`}
-                              data-tooltip={`${db.engine} database on port ${db.port}`}
+                              className={`resource-node database ${db.container_status?.state ?? "stopped"}`}
                             >
-                              <StatusBadge status={db.container_status?.state ?? "stopped"} dotOnly />
-                              <DatabaseIcon size={12} />
-                              {db.engine}
+                              <DatabaseIcon size={16} />
+                              <strong>{db.engine}</strong>
+                              <span>{db.container_status?.state ?? "stopped"}</span>
                             </Link>
                           ))}
                         </div>
-                      </div>
-                      <div className="app-stack-actions">
-                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "start")}>
-                          <Play size={14} /> Start stack
-                        </button>
-                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "restart")}>
-                          <RotateCw size={14} /> Restart stack
-                        </button>
-                        <button className="ghost xsmall" onClick={() => void stackAction(stack, "stop")}>
-                          <Square size={14} /> Stop stack
-                        </button>
-                        <button
-                          className="ghost xsmall"
-                          onClick={() =>
-                            setDatabaseDraft({
-                              projectId: stack.services[0]?.project_id ?? projects[0]?.id ?? "",
-                              name: `${stack.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-db`
-                            })
-                          }
-                          data-tooltip="Create a managed database in this app's project"
-                        >
-                          <DatabaseIcon size={14} /> Add database
-                        </button>
-                      </div>
-                      <div className="stack-resource-map">
-                        {stack.services.map((service) => (
-                          <div key={service.id} className={`resource-node ${service.status}`}>
-                            <ServerNodeIcon role={serviceRole(service, stack.services.length)} />
-                            <strong>{serviceRole(service, stack.services.length)}</strong>
-                            <span>{service.status}</span>
+                        {stack.databases.length > 0 && (
+                          <div className="stack-database-rail">
+                            {stack.databases.map((db) => (
+                              <Link key={db.id} to="/databases" className="stack-db-resource">
+                                <DatabaseIcon size={15} />
+                                <div>
+                                  <strong>{db.name}</strong>
+                                  <span>
+                                    {db.engine} • localhost:{db.port} •{" "}
+                                    {db.container_status?.state ?? "stopped"}
+                                  </span>
+                                </div>
+                              </Link>
+                            ))}
                           </div>
-                        ))}
-                        {stack.databases.map((db) => (
-                          <Link
-                            key={db.id}
-                            to="/databases"
-                            className={`resource-node database ${db.container_status?.state ?? "stopped"}`}
-                          >
-                            <DatabaseIcon size={16} />
-                            <strong>{db.engine}</strong>
-                            <span>{db.container_status?.state ?? "stopped"}</span>
-                          </Link>
-                        ))}
-                      </div>
-                      {stack.databases.length > 0 && (
-                        <div className="stack-database-rail">
-                          {stack.databases.map((db) => (
-                            <Link key={db.id} to="/databases" className="stack-db-resource">
-                              <DatabaseIcon size={15} />
-                              <div>
-                                <strong>{db.name}</strong>
-                                <span>
-                                  {db.engine} • localhost:{db.port} •{" "}
-                                  {db.container_status?.state ?? "stopped"}
-                                </span>
-                              </div>
-                            </Link>
-                          ))}
-                        </div>
-                      )}
-                      <div className="grid stack-grid">
-                        <AnimatePresence>
-                          {stack.services.map((service) =>
-                            (() => {
-                              const op = operations[service.id];
-                              const url = serviceUrl(service);
-                              const recent = serviceLogs[service.id] ?? [];
-                              const actionBusy =
-                                op?.status === "queued" ||
-                                op?.status === "active" ||
-                                service.status === "starting" ||
-                                service.status === "stopping";
-                              return (
-                                <motion.div
-                                  key={service.id}
-                                  layout
-                                  initial={{ opacity: 0, scale: 0.9 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.9 }}
-                                  className="card service-card"
-                                >
-                                  <div className="env-tag">{service.environment ?? "production"}</div>
+                        )}
+                        <div className="grid stack-grid">
+                          <AnimatePresence>
+                            {stack.services.map((service) =>
+                              (() => {
+                                const op = operations[service.id];
+                                const url = serviceUrl(service);
+                                const recent = serviceLogs[service.id] ?? [];
+                                const gitSummary = serviceGitSummary(service);
+                                const actionBusy =
+                                  op?.status === "queued" ||
+                                  op?.status === "active" ||
+                                  service.status === "starting" ||
+                                  service.status === "stopping";
+                                return (
+                                  <motion.div
+                                    key={service.id}
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.9 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.9 }}
+                                    className="card service-card"
+                                  >
+                                    <div className="env-tag">{service.environment ?? "production"}</div>
 
-                                  <div className="service-header">
-                                    <div className="service-title-group">
-                                      <div className="row">
-                                        <h3>{service.name}</h3>
-                                        <StatusBadge status={service.status} dotOnly />
-                                        {(() => {
-                                          const cert = certBadgeState(service);
-                                          if (!cert) return null;
-                                          const tip =
-                                            cert.color === "neutral"
-                                              ? "TLS terminated at Cloudflare edge"
-                                              : `Let's Encrypt cert · expires in ${cert.days}d`;
-                                          return (
-                                            <span
-                                              className={`cert-dot ${cert.color}`}
-                                              title={tip}
-                                              aria-label={tip}
-                                            />
-                                          );
-                                        })()}
-                                      </div>
-                                      <div className="service-meta" style={{ marginTop: "0.25rem" }}>
-                                        <span className="role-chip">
-                                          {serviceRole(service, stack.services.length)}
-                                        </span>
-                                        <span className="tiny muted font-bold uppercase">{service.type}</span>
-                                        {service.github_repo_url && (
-                                          <span className="tiny muted row">
-                                            <GitBranch size={10} /> Sync Active
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <button
-                                      className="ghost icon-only"
-                                      onClick={() => setEditingService(service)}
-                                      aria-label={`Open settings for ${service.name}`}
-                                      data-tooltip="Service settings"
-                                    >
-                                      <Settings2 size={18} />
-                                    </button>
-                                  </div>
-
-                                  <div className="service-body">
-                                    {url ? (
-                                      <div className="list-link row small">
-                                        <Globe size={14} className="text-accent" />
-                                        <a
-                                          href={url}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          className="link font-bold"
-                                        >
-                                          {service.domain ?? `localhost:${service.port}`}
-                                        </a>
-                                        <ExternalLink size={10} className="muted" />
-                                      </div>
-                                    ) : (
-                                      <div className="muted tiny italic">No public endpoint attached</div>
-                                    )}
-
-                                    {service.tunnel_url && (
-                                      <div className="tunnel-badge">
-                                        <Zap size={14} />
-                                        <a
-                                          href={service.tunnel_url}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          className="text-truncate"
-                                        >
-                                          {service.tunnel_url}
-                                        </a>
-                                      </div>
-                                    )}
-
-                                    {(() => {
-                                      const orphan = orphans.get(service.id);
-                                      const embedded = embeddedDbs.get(service.id);
-                                      // Only nag when we have a real reason: detected SQLite or
-                                      // a code-level driver. Silent for orphans that legitimately
-                                      // don't need a DB (static frontends, etc.).
-                                      if (!orphan || (!embedded && orphan.code_signals.length === 0))
-                                        return null;
-                                      const drivers = orphan.code_signals.map((s) => s.driver);
-                                      const uniqueDrivers = Array.from(new Set(drivers));
-                                      const headline = embedded
-                                        ? "SQLite detected — promote to Postgres"
-                                        : "No managed database";
-                                      const detail = embedded
-                                        ? `${embedded.file_path} won't survive container recreates.`
-                                        : `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "…" : ""}. Add Postgres so data persists.`;
-                                      return (
-                                        <div className="db-suggest-banner">
-                                          <DatabaseIcon size={14} />
-                                          <div className="db-suggest-text">
-                                            <strong>{headline}</strong>
-                                            <span>{detail}</span>
-                                          </div>
-                                          <button
-                                            className="primary xsmall"
-                                            disabled={provisioningId === service.id}
-                                            onClick={() => void quickAddDatabase(service)}
-                                          >
-                                            {provisioningId === service.id ? (
-                                              <>
-                                                <Loader2 size={12} className="animate-spin" /> Provisioning…
-                                              </>
-                                            ) : (
-                                              "Add Postgres"
-                                            )}
-                                          </button>
-                                        </div>
-                                      );
-                                    })()}
-
-                                    <div className={`launch-panel ${op?.status ?? service.status}`}>
-                                      <div className="launch-panel-head">
+                                    <div className="service-header">
+                                      <div className="service-title-group">
                                         <div className="row">
-                                          {operationIcon(op, service.status)}
-                                          <span className="tiny uppercase font-bold">
-                                            {op?.stage ?? service.status}
-                                          </span>
+                                          <h3>{service.name}</h3>
+                                          <StatusBadge status={service.status} dotOnly />
+                                          {(() => {
+                                            const cert = certBadgeState(service);
+                                            if (!cert) return null;
+                                            const tip =
+                                              cert.color === "neutral"
+                                                ? "TLS terminated at Cloudflare edge"
+                                                : `Let's Encrypt cert · expires in ${cert.days}d`;
+                                            return (
+                                              <span
+                                                className={`cert-dot ${cert.color}`}
+                                                title={tip}
+                                                aria-label={tip}
+                                              />
+                                            );
+                                          })()}
                                         </div>
-                                        {url && service.status === "running" && (
+                                        <div className="service-meta" style={{ marginTop: "0.25rem" }}>
+                                          <span className="role-chip">
+                                            {serviceRole(service, stack.services.length)}
+                                          </span>
+                                          <span className="tiny muted font-bold uppercase">
+                                            {service.type}
+                                          </span>
+                                          {gitSummary && (
+                                            <span
+                                              className={`tiny row service-git-chip ${gitSummary.empty ? "empty" : ""}`}
+                                              title={gitSummary.title}
+                                            >
+                                              <GitBranch size={10} />
+                                              {gitSummary.text}
+                                              {gitSummary.commitHash && (
+                                                <code>{gitSummary.commitHash.slice(0, 7)}</code>
+                                              )}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <button
+                                        className="ghost icon-only"
+                                        onClick={() => setEditingService(service)}
+                                        aria-label={`Open settings for ${service.name}`}
+                                        data-tooltip="Service settings"
+                                      >
+                                        <Settings2 size={18} />
+                                      </button>
+                                    </div>
+
+                                    <div className="service-body">
+                                      {url ? (
+                                        <div className="list-link row small">
+                                          <Globe size={14} className="text-accent" />
                                           <a
-                                            className="tiny link"
                                             href={url}
                                             target="_blank"
                                             rel="noreferrer"
+                                            className="link font-bold"
                                           >
-                                            Open live app
+                                            {service.domain ?? `localhost:${service.port}`}
                                           </a>
-                                        )}
-                                      </div>
-                                      <p className="launch-message">{operationLabel(op, service)}</p>
-                                      <div className="launch-steps">
-                                        {["queued", "starting", "healthcheck", "live"].map((stage) => (
-                                          <span
-                                            key={stage}
-                                            className={`launch-step ${op?.stage === stage || (stage === "live" && service.status === "running") ? "active" : ""} ${service.status === "running" && stage !== "queued" ? "complete" : ""}`}
-                                          />
-                                        ))}
-                                      </div>
-                                      {recent.length > 0 && (
-                                        <div className="mini-log">
-                                          {recent.slice(0, 3).map((log, index) => (
-                                            <div
-                                              key={`${log.timestamp ?? index}-${index}`}
-                                              className={`mini-log-line ${log.level ?? "info"}`}
-                                            >
-                                              <span>{log.level ?? "info"}</span>
-                                              <p>{log.message}</p>
-                                            </div>
-                                          ))}
+                                          <ExternalLink size={10} className="muted" />
+                                        </div>
+                                      ) : (
+                                        <div className="muted tiny italic">No public endpoint attached</div>
+                                      )}
+
+                                      {service.tunnel_url && (
+                                        <div className="tunnel-badge">
+                                          <Zap size={14} />
+                                          <a
+                                            href={service.tunnel_url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-truncate"
+                                          >
+                                            {service.tunnel_url}
+                                          </a>
                                         </div>
                                       )}
+
+                                      {(() => {
+                                        const orphan = orphans.get(service.id);
+                                        const embedded = embeddedDbs.get(service.id);
+                                        const isFrontend =
+                                          serviceRole(service, stack.services.length) === "Frontend";
+                                        const stackHasDatabaseOwner = stack.services.some(
+                                          (candidate) =>
+                                            candidate.id !== service.id &&
+                                            (embeddedDbs.has(candidate.id) ||
+                                              serviceRole(candidate, stack.services.length) === "API")
+                                        );
+                                        // Only nag when we have a real reason: detected SQLite or
+                                        // a code-level driver. Silent for orphans that legitimately
+                                        // don't need a DB (static frontends, etc.). In multi-service
+                                        // apps, the API owns the DB; the frontend should call the API.
+                                        if (!embedded && isFrontend && stackHasDatabaseOwner) return null;
+                                        if (!orphan || (!embedded && orphan.code_signals.length === 0))
+                                          return null;
+                                        const drivers = orphan.code_signals.map((s) => s.driver);
+                                        const uniqueDrivers = Array.from(new Set(drivers));
+                                        const headline = embedded
+                                          ? "SQLite detected — promote to Postgres"
+                                          : "No managed database";
+                                        const detail = embedded
+                                          ? `${embedded.file_path} won't survive container recreates.`
+                                          : `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "…" : ""}. Add Postgres so data persists.`;
+                                        return (
+                                          <div className="db-suggest-banner">
+                                            <DatabaseIcon size={14} />
+                                            <div className="db-suggest-text">
+                                              <strong>{headline}</strong>
+                                              <span>{detail}</span>
+                                            </div>
+                                            <button
+                                              className="primary xsmall"
+                                              disabled={provisioningId === service.id}
+                                              onClick={() =>
+                                                embedded
+                                                  ? setPromoteTarget(embedded)
+                                                  : void quickAddDatabase(service)
+                                              }
+                                            >
+                                              {provisioningId === service.id ? (
+                                                <>
+                                                  <Loader2 size={12} className="animate-spin" /> Provisioning…
+                                                </>
+                                              ) : embedded ? (
+                                                "Promote data"
+                                              ) : (
+                                                "Add Postgres"
+                                              )}
+                                            </button>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      {(() => {
+                                        const missing = (envRequirements.get(service.id) ?? []).filter(
+                                          (item) => item.status === "missing"
+                                        );
+                                        if (missing.length === 0) return null;
+                                        const preview = missing.slice(0, 5).map((item) => item.key);
+                                        const extra = missing.length - preview.length;
+                                        return (
+                                          <div className="env-missing-banner">
+                                            <KeyRound size={14} />
+                                            <div className="env-missing-text">
+                                              <strong>Missing required env</strong>
+                                              <span>
+                                                {preview.join(", ")}
+                                                {extra > 0 ? ` +${extra} more` : ""}
+                                              </span>
+                                            </div>
+                                            <button
+                                              className="ghost xsmall"
+                                              onClick={() => setEditingService(service)}
+                                              data-tooltip="Add service or project environment variables"
+                                              aria-label={`Open environment settings for ${service.name}`}
+                                            >
+                                              Add env
+                                            </button>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      <div className={`launch-panel ${op?.status ?? service.status}`}>
+                                        <div className="launch-panel-head">
+                                          <div className="row">
+                                            {operationIcon(op, service.status)}
+                                            <span className="tiny uppercase font-bold">
+                                              {op?.stage ?? service.status}
+                                            </span>
+                                          </div>
+                                          {url && service.status === "running" && (
+                                            <a
+                                              className="tiny link"
+                                              href={url}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                            >
+                                              Open live app
+                                            </a>
+                                          )}
+                                        </div>
+                                        <p className="launch-message">{operationLabel(op, service)}</p>
+                                        <div className="launch-steps">
+                                          {["queued", "starting", "healthcheck", "live"].map((stage) => (
+                                            <span
+                                              key={stage}
+                                              className={`launch-step ${op?.stage === stage || (stage === "live" && service.status === "running") ? "active" : ""} ${service.status === "running" && stage !== "queued" ? "complete" : ""}`}
+                                            />
+                                          ))}
+                                        </div>
+                                        {recent.length > 0 && (
+                                          <div className="mini-log">
+                                            {recent.slice(0, 3).map((log, index) => (
+                                              <div
+                                                key={`${log.timestamp ?? index}-${index}`}
+                                                className={`mini-log-line ${log.level ?? "info"}`}
+                                              >
+                                                <span>{log.level ?? "info"}</span>
+                                                <p>{log.message}</p>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
-                                  </div>
 
-                                  <div className="service-footer">
-                                    <div className="row" style={{ gap: "0.25rem" }}>
+                                    <div className="service-footer">
+                                      <div className="row" style={{ gap: "0.25rem" }}>
+                                        <button
+                                          className="ghost xsmall"
+                                          disabled={actionBusy}
+                                          aria-label={`Start ${service.name}`}
+                                          data-tooltip="Start service and stream launch progress"
+                                          onClick={() => serviceAction(service.id, "start")}
+                                        >
+                                          <Play size={14} />
+                                        </button>
+                                        <button
+                                          className="ghost xsmall"
+                                          disabled={actionBusy}
+                                          aria-label={`Stop ${service.name}`}
+                                          data-tooltip="Stop service and show shutdown progress"
+                                          onClick={() => serviceAction(service.id, "stop")}
+                                        >
+                                          <Square size={14} />
+                                        </button>
+                                        <button
+                                          className="ghost xsmall"
+                                          disabled={actionBusy}
+                                          aria-label={`Restart ${service.name}`}
+                                          data-tooltip="Restart service with live progress"
+                                          onClick={() => serviceAction(service.id, "restart")}
+                                        >
+                                          <RotateCw size={14} />
+                                        </button>
+                                      </div>
+
+                                      <Link
+                                        to={`/services/${service.id}/logs`}
+                                        className="button ghost xsmall"
+                                        aria-label={`Open logs for ${service.name}`}
+                                        data-tooltip="Open logs"
+                                      >
+                                        <Terminal size={14} /> Logs
+                                      </Link>
+
                                       <button
                                         className="ghost xsmall"
-                                        disabled={actionBusy}
-                                        aria-label={`Start ${service.name}`}
-                                        data-tooltip="Start service and stream launch progress"
-                                        onClick={() => serviceAction(service.id, "start")}
+                                        onClick={() => openServiceTerminal(service, "shell")}
+                                        aria-label={`Open console for ${service.name}`}
+                                        data-tooltip="Open interactive console"
                                       >
-                                        <Play size={14} />
+                                        <Terminal size={14} /> Console
                                       </button>
+
                                       <button
                                         className="ghost xsmall"
-                                        disabled={actionBusy}
-                                        aria-label={`Stop ${service.name}`}
-                                        data-tooltip="Stop service and show shutdown progress"
-                                        onClick={() => serviceAction(service.id, "stop")}
+                                        onClick={() => openServiceTerminal(service, "agents")}
+                                        aria-label={`Open agents for ${service.name}`}
+                                        data-tooltip="Install, authenticate, and run AI agents"
                                       >
-                                        <Square size={14} />
+                                        <Bot size={14} /> Agents
                                       </button>
+
                                       <button
                                         className="ghost xsmall"
-                                        disabled={actionBusy}
-                                        aria-label={`Restart ${service.name}`}
-                                        data-tooltip="Restart service with live progress"
-                                        onClick={() => serviceAction(service.id, "restart")}
+                                        onClick={() => setGoPublicId(service.id)}
+                                        aria-label={`Go public for ${service.name}`}
+                                        data-tooltip="Expose this service publicly"
                                       >
-                                        <RotateCw size={14} />
+                                        <Sparkles size={14} /> Go Public
+                                      </button>
+
+                                      <button
+                                        className="ghost xsmall text-danger"
+                                        style={{ marginLeft: "auto" }}
+                                        onClick={() => deleteService(service)}
+                                        aria-label={`Delete ${service.name}`}
+                                        data-tooltip="Delete service"
+                                        data-tooltip-side="left"
+                                      >
+                                        <Trash2 size={14} />
                                       </button>
                                     </div>
-
-                                    <Link
-                                      to={`/services/${service.id}/logs`}
-                                      className="button ghost xsmall"
-                                      aria-label={`Open logs for ${service.name}`}
-                                      data-tooltip="Open logs"
-                                    >
-                                      <Terminal size={14} /> Logs
-                                    </Link>
-
-                                    <button
-                                      className="ghost xsmall"
-                                      onClick={() => setGoPublicId(service.id)}
-                                      aria-label={`Go public for ${service.name}`}
-                                      data-tooltip="Expose this service publicly"
-                                    >
-                                      <Sparkles size={14} /> Go Public
-                                    </button>
-
-                                    <button
-                                      className="ghost xsmall text-danger"
-                                      style={{ marginLeft: "auto" }}
-                                      onClick={() => deleteService(service)}
-                                      aria-label={`Delete ${service.name}`}
-                                      data-tooltip="Delete service"
-                                      data-tooltip-side="left"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                </motion.div>
-                              );
-                            })()
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </section>
-                  ))}
+                                  </motion.div>
+                                );
+                              })()
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </section>
+                    );
+                  })}
                 </div>
               </section>
             ))}
@@ -1223,6 +1473,13 @@ export function ServicesPage() {
         />
       )}
       {goPublicId && <GoPublicWizard serviceId={goPublicId} onClose={() => setGoPublicId(null)} />}
+      {promoteTarget && (
+        <PromoteEmbeddedDbModal
+          embedded={promoteTarget}
+          onClose={() => setPromoteTarget(null)}
+          onPromoted={() => void load()}
+        />
+      )}
       {databaseDraft && (
         <CreateDatabaseModal
           projects={projects}
@@ -1263,6 +1520,21 @@ export function ServicesPage() {
         .db-suggest-text strong { font-size: 0.78rem; }
         .db-suggest-text span { font-size: 0.7rem; color: var(--text-muted); }
         .db-suggest-banner button.primary { white-space: nowrap; }
+        .env-missing-banner {
+          display: flex;
+          align-items: center;
+          gap: 0.65rem;
+          margin: 0.5rem 0;
+          padding: 0.55rem 0.75rem;
+          border: 1px dashed color-mix(in srgb, var(--warn, #d97706) 55%, transparent);
+          border-radius: var(--radius-md);
+          background: color-mix(in srgb, var(--warn, #d97706) 10%, var(--bg-sunken));
+          color: var(--text-primary);
+        }
+        .env-missing-banner svg { color: var(--warn, #d97706); flex-shrink: 0; }
+        .env-missing-text { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.25; }
+        .env-missing-text strong { font-size: 0.78rem; }
+        .env-missing-text span { font-size: 0.7rem; color: var(--text-muted); overflow-wrap: anywhere; }
         .animate-spin { animation: dbspin 1s linear infinite; }
         @keyframes dbspin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .cert-dot {

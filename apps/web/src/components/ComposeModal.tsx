@@ -9,7 +9,7 @@ type Props = {
 };
 
 export function ComposeModal({ projects, onClose, onImported }: Props) {
-  const [projectId, setProjectId] = useState(projects[0]?.id || "");
+  const [projectId, setProjectId] = useState("");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -46,6 +46,7 @@ export function ComposeModal({ projects, onClose, onImported }: Props) {
           <div className="form-group">
             <label>Target Project</label>
             <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">Auto: create or reuse stack project</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

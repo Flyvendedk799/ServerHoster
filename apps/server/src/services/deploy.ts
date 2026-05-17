@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import simpleGit from "simple-git";
 import { nanoid } from "nanoid";
@@ -6,6 +7,7 @@ import {
   broadcast,
   detectBuildType,
   getServiceEnv,
+  findStaticEntry,
   insertLog,
   nowIso,
   runCommand,
@@ -21,6 +23,271 @@ import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
+
+type NodePackageManager = "npm" | "pnpm" | "yarn" | "bun";
+type NodeLaunchKind = "electron" | "web" | "node";
+type NodeLaunchTarget = {
+  kind: NodeLaunchKind;
+  workingDir: string;
+  command: string;
+  buildCommand?: string;
+  skipBuild?: boolean;
+  reason: string;
+};
+
+function detectNodePackageManager(projectPath: string): NodePackageManager {
+  if (fs.existsSync(path.join(projectPath, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(projectPath, "yarn.lock"))) return "yarn";
+  if (fs.existsSync(path.join(projectPath, "bun.lockb")) || fs.existsSync(path.join(projectPath, "bun.lock")))
+    return "bun";
+  return "npm";
+}
+
+function nodeInstallCommand(pm: NodePackageManager): string {
+  if (pm === "pnpm") return "pnpm install --frozen-lockfile=false";
+  if (pm === "yarn") return "yarn install";
+  if (pm === "bun") return "bun install";
+  return "npm install";
+}
+
+function nodeBuildCommand(pm: NodePackageManager): string {
+  if (pm === "pnpm") return "pnpm run --if-present build";
+  if (pm === "yarn") return "yarn run build";
+  if (pm === "bun") return "bun run build";
+  return "npm run build --if-present";
+}
+
+function packageRunCommand(pm: NodePackageManager, script: string): string {
+  if (pm === "pnpm") return `pnpm run ${script}`;
+  if (pm === "yarn") return `yarn run ${script}`;
+  if (pm === "bun") return `bun run ${script}`;
+  return `npm run ${script}`;
+}
+
+function packageDevCommand(pm: NodePackageManager, kind: NodeLaunchKind): string {
+  const base = packageRunCommand(pm, "dev");
+  return kind === "web" ? `${base} -- --host 0.0.0.0 --port $PORT` : base;
+}
+
+function staticServeCommand(): string {
+  const candidates = [
+    path.resolve(process.cwd(), "apps/server/dist/static-server.js"),
+    path.resolve(process.cwd(), "dist/static-server.js")
+  ];
+  const entry = candidates.find((candidate) => fs.existsSync(candidate));
+  return entry ? `node ${JSON.stringify(entry)}` : "python3 -m http.server $PORT --bind 0.0.0.0";
+}
+
+function hasCommand(command: string): boolean {
+  return (
+    process.env.PATH?.split(path.delimiter).some((dir) => fs.existsSync(path.join(dir, command))) ?? false
+  );
+}
+
+function godotCommand(): string {
+  if (hasCommand("godot")) return "godot";
+  if (hasCommand("godot4")) return "godot4";
+  return "godot";
+}
+
+function godotTemplatesDir(templateVersion: string): string {
+  if (process.platform === "darwin") {
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      "Godot",
+      "export_templates",
+      templateVersion
+    );
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA ?? os.homedir(), "Godot", "export_templates", templateVersion);
+  }
+  return path.join(
+    process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"),
+    "godot",
+    "export_templates",
+    templateVersion
+  );
+}
+
+async function ensureGodotWebExportTemplates(
+  projectPath: string,
+  env: NodeJS.ProcessEnv,
+  stream: (chunk: string, s: "stdout" | "stderr") => void
+): Promise<string> {
+  const cmd = godotCommand();
+  const versionResult = await runCommand(`${cmd} --version`, projectPath, env, { timeoutMs: 30000 });
+  if (versionResult.code !== 0) throw new Error(`Godot is not available: ${versionResult.output}`);
+  const versionLine = versionResult.output.split(/\r?\n/).find(Boolean) ?? "";
+  const match = versionLine.match(/(\d+\.\d+\.\d+)\.(stable|beta|rc|dev)/);
+  if (!match) throw new Error(`Could not parse Godot version from: ${versionLine}`);
+
+  const [, version, channel] = match;
+  const templateVersion = `${version}.${channel}`;
+  const dest = godotTemplatesDir(templateVersion);
+  if (fs.existsSync(path.join(dest, "web_release.zip")) && fs.existsSync(path.join(dest, "web_debug.zip"))) {
+    return cmd;
+  }
+
+  const tag = `${version}-${channel}`;
+  const fileName = `Godot_v${version}-${channel}_export_templates.tpz`;
+  const url = `https://github.com/godotengine/godot/releases/download/${tag}/${fileName}`;
+  const tmpDir = path.join(os.tmpdir(), `survhub-godot-templates-${templateVersion}`);
+  const archivePath = path.join(tmpDir, fileName);
+  const installCommand = [
+    `rm -rf ${JSON.stringify(tmpDir)}`,
+    `mkdir -p ${JSON.stringify(tmpDir)} ${JSON.stringify(dest)}`,
+    `curl -L --fail -o ${JSON.stringify(archivePath)} ${JSON.stringify(url)}`,
+    `unzip -q -o ${JSON.stringify(archivePath)} -d ${JSON.stringify(tmpDir)}`,
+    `cp -R ${JSON.stringify(path.join(tmpDir, "templates"))}/. ${JSON.stringify(dest)}/`
+  ].join(" && ");
+  stream(`Godot Web export templates missing; installing ${templateVersion} from ${url}\n`, "stdout");
+  const install = await runCommand(installCommand, projectPath, env, {
+    timeoutMs: 240000,
+    onChunk: stream
+  });
+  if (install.code !== 0) {
+    throw new Error(`Failed to install Godot export templates: ${install.output}`);
+  }
+  return cmd;
+}
+
+function parseGodotWebExportPath(projectPath: string): string {
+  const presetsPath = path.join(projectPath, "export_presets.cfg");
+  if (!fs.existsSync(presetsPath)) return path.join(projectPath, "build", "web", "index.html");
+  const raw = fs.readFileSync(presetsPath, "utf8");
+  const sections = raw.split(/\n(?=\[preset\.\d+\])/);
+  for (const section of sections) {
+    if (!/\bplatform="Web"/.test(section)) continue;
+    const match = section.match(/\bexport_path="([^"]+)"/);
+    if (match?.[1]) return path.resolve(projectPath, match[1]);
+  }
+  return path.join(projectPath, "build", "web", "index.html");
+}
+
+function readPackageJson(packagePath: string): {
+  name?: string;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+} | null {
+  try {
+    return JSON.parse(fs.readFileSync(packagePath, "utf8")) as {
+      name?: string;
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function findPackageDirs(rootPath: string): string[] {
+  const out: string[] = [];
+  const ignored = new Set([".git", "node_modules", "dist", "out", "release", ".turbo"]);
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    if (fs.existsSync(path.join(dir, "package.json"))) out.push(dir);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+      walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  walk(rootPath, 0);
+  return out;
+}
+
+export function detectNodeLaunchTarget(
+  projectPath: string,
+  serviceName = "",
+  packageManager: NodePackageManager = detectNodePackageManager(projectPath)
+): NodeLaunchTarget {
+  const normalizedServiceName = normalizeName(serviceName);
+  const packageDirs = findPackageDirs(projectPath);
+  let best: {
+    score: number;
+    target: NodeLaunchTarget;
+  } | null = null;
+
+  for (const dir of packageDirs) {
+    const pkg = readPackageJson(path.join(dir, "package.json"));
+    if (!pkg) continue;
+    const scripts = pkg.scripts ?? {};
+    const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+    const rel = path.relative(projectPath, dir) || ".";
+    const nameText = normalizeName(`${pkg.name ?? ""} ${rel}`);
+    const nameBonus = normalizedServiceName && nameText.includes(normalizedServiceName) ? 20 : 0;
+    const hasDev = Boolean(scripts.dev);
+    const hasStart = Boolean(scripts.start);
+    const hasBuild = Boolean(scripts.build);
+    const scriptText = Object.values(scripts).join(" ");
+
+    let score = 0;
+    let kind: NodeLaunchKind = "node";
+    let command = hasDev
+      ? packageRunCommand(packageManager, "dev")
+      : packageRunCommand(packageManager, "start");
+    let buildCommand = hasBuild ? packageRunCommand(packageManager, "build") : undefined;
+    let skipBuild = false;
+    let reason = rel === "." ? "root package" : `workspace package ${rel}`;
+
+    if (deps.electron || deps["electron-vite"] || /electron(-vite)?\b/i.test(scriptText)) {
+      score = 100;
+      kind = "electron";
+      command = packageDevCommand(packageManager, "electron");
+      buildCommand = undefined;
+      skipBuild = true;
+      reason = `Electron package ${rel}`;
+    } else if (deps.vitepress || /vitepress\b/i.test(scriptText)) {
+      score = 80;
+      kind = "web";
+      command = packageDevCommand(packageManager, "web");
+      reason = `VitePress package ${rel}`;
+    } else if (deps.vite || deps.next || deps.astro || deps.nuxt || deps["@sveltejs/kit"]) {
+      score = 70;
+      kind = "web";
+      command = packageDevCommand(packageManager, "web");
+      reason = `web package ${rel}`;
+    } else if (hasStart || hasDev) {
+      score = rel === "." ? 30 : 45;
+      kind = "node";
+      command = hasStart
+        ? packageRunCommand(packageManager, "start")
+        : packageRunCommand(packageManager, "dev");
+    }
+
+    if (score === 0) continue;
+    score += nameBonus;
+    if (rel.includes("apps/desktop")) score += 5;
+    if (rel.includes("website") && kind === "web") score += 3;
+
+    const target = { kind, workingDir: dir, command, buildCommand, skipBuild, reason };
+    if (!best || score > best.score) best = { score, target };
+  }
+
+  return (
+    best?.target ?? {
+      kind: "node",
+      workingDir: projectPath,
+      command: nodeStartCommand(packageManager),
+      buildCommand: nodeBuildCommand(packageManager),
+      reason: "root package fallback"
+    }
+  );
+}
 
 function emitBuildLog(
   ctx: AppContext,
@@ -54,7 +321,7 @@ export async function runBuildPipeline(
   ctx: AppContext,
   serviceId: string,
   projectPath: string,
-  opts: { deploymentId?: string; onPhase?: (phase: DeployPhase) => void } = {}
+  opts: { deploymentId?: string; onPhase?: (phase: DeployPhase) => void; nodeTarget?: NodeLaunchTarget } = {}
 ): Promise<{ status: "success" | "failed"; buildLog: string; artifactPath: string }> {
   const deploymentId = opts.deploymentId;
   const env = { ...process.env, ...getServiceEnv(ctx, serviceId) };
@@ -73,21 +340,44 @@ export async function runBuildPipeline(
   if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, buildLog, "stdout");
 
   if (buildType === "node") {
+    const packageManager = detectNodePackageManager(projectPath);
+    const nodeTarget = opts.nodeTarget ?? detectNodeLaunchTarget(projectPath, "", packageManager);
+    const installCommand = nodeInstallCommand(packageManager);
+    const buildCommand = nodeTarget.buildCommand ?? nodeBuildCommand(packageManager);
+    const buildCwd = nodeTarget.workingDir || projectPath;
+    buildLog += `Detected package manager: ${packageManager}\n`;
+    buildLog += `Selected launch target: ${path.relative(projectPath, nodeTarget.workingDir) || "."} (${nodeTarget.reason})\n`;
+    if (deploymentId)
+      emitBuildLog(ctx, serviceId, deploymentId, `Detected package manager: ${packageManager}\n`);
+    if (deploymentId)
+      emitBuildLog(
+        ctx,
+        serviceId,
+        deploymentId,
+        `Selected launch target: ${path.relative(projectPath, nodeTarget.workingDir) || "."} (${nodeTarget.reason})\n`
+      );
+
     opts.onPhase?.("installing");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "installing");
-    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, "\n$ npm install\n", "stdout");
-    const install = await runCommand("npm install", projectPath, env, { onChunk: stream });
-    buildLog += `\n$ npm install\n${install.output}\n`;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${installCommand}\n`, "stdout");
+    const install = await runCommand(installCommand, projectPath, env, { onChunk: stream });
+    buildLog += `\n$ ${installCommand}\n${install.output}\n`;
     if (install.code !== 0) return { status: "failed", buildLog, artifactPath };
+
+    if (nodeTarget.skipBuild) {
+      const msg = `\nSkipping package build for ${nodeTarget.reason}; the launch command performs its own development build.\n`;
+      buildLog += msg;
+      if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stdout");
+      return { status: "success", buildLog, artifactPath };
+    }
 
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
-    if (deploymentId)
-      emitBuildLog(ctx, serviceId, deploymentId, "\n$ npm run build --if-present\n", "stdout");
-    const build = await runCommand("npm run build --if-present", projectPath, env, { onChunk: stream });
-    buildLog += `\n$ npm run build --if-present\n${build.output}\n`;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${buildCommand}\n`, "stdout");
+    const build = await runCommand(buildCommand, buildCwd, env, { onChunk: stream });
+    buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
     if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
-    if (fs.existsSync(path.join(projectPath, "dist"))) artifactPath = path.join(projectPath, "dist");
+    if (fs.existsSync(path.join(buildCwd, "dist"))) artifactPath = path.join(buildCwd, "dist");
   } else if (buildType === "python") {
     opts.onPhase?.("installing");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "installing");
@@ -98,6 +388,27 @@ export async function runBuildPipeline(
     const install = await runCommand(installCmd, projectPath, env, { onChunk: stream });
     buildLog += `\n$ ${installCmd}\n${install.output}\n`;
     if (install.code !== 0) return { status: "failed", buildLog, artifactPath };
+  } else if (buildType === "godot") {
+    opts.onPhase?.("building");
+    if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
+    const exportPath = parseGodotWebExportPath(projectPath);
+    fs.mkdirSync(path.dirname(exportPath), { recursive: true });
+    const godot = await ensureGodotWebExportTemplates(projectPath, env, stream);
+    const command = `${godot} --headless --path . --export-release Web ${JSON.stringify(exportPath)}`;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${command}\n`, "stdout");
+    const build = await runCommand(command, projectPath, env, {
+      timeoutMs: 240000,
+      onChunk: stream
+    });
+    buildLog += `\n$ ${command}\n${build.output}\n`;
+    if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
+    artifactPath = path.dirname(exportPath);
+  } else if (buildType === "static") {
+    const staticDir = findStaticEntry(projectPath);
+    artifactPath = staticDir ?? projectPath;
+    const msg = `Static site detected at ${path.relative(projectPath, artifactPath) || "."}; no build step required.\n`;
+    buildLog += msg;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stdout");
   } else if (buildType === "docker") {
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
@@ -117,7 +428,7 @@ export async function runBuildPipeline(
       .run(imageTag, nowIso(), serviceId);
   } else if (buildType === "unknown") {
     const msg =
-      "\nNo Dockerfile, package.json, requirements.txt, or pyproject.toml found. Cannot deploy this repository layout.\n";
+      "\nNo Dockerfile, package.json, Python markers, Godot project, or static index.html found. Cannot deploy this repository layout.\n";
     buildLog += msg;
     if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
     return { status: "failed", buildLog, artifactPath };
@@ -183,20 +494,39 @@ export async function deployFromGit(
       buildType === "docker" && fs.existsSync(path.join(targetPath, "Dockerfile.frontend"))
         ? "Dockerfile.frontend"
         : "";
-    const inferred = inferServiceRuntimeDefaults(buildType);
+    const service = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
+      | { name?: string }
+      | undefined;
+    const nodeTarget =
+      buildType === "node" ? detectNodeLaunchTarget(targetPath, service?.name ?? "") : undefined;
+    const inferred = inferServiceRuntimeDefaults(buildType, nodeTarget?.workingDir ?? targetPath);
     ctx.db
       .prepare(
         "UPDATE services SET type = ?, command = ?, working_dir = ?, dockerfile = ?, updated_at = ? WHERE id = ?"
       )
-      .run(inferred.type, inferred.command, targetPath, preferredDockerfile, nowIso(), serviceId);
+      .run(
+        inferred.type,
+        nodeTarget?.command ?? inferred.command,
+        nodeTarget?.workingDir ?? targetPath,
+        preferredDockerfile,
+        nowIso(),
+        serviceId
+      );
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
     failureStage = "building";
     transition(ctx, deploymentId, "building", { gitSha: commitHash });
-    const result = await runBuildPipeline(ctx, serviceId, targetPath, { deploymentId });
+    const result = await runBuildPipeline(ctx, serviceId, targetPath, { deploymentId, nodeTarget });
     status = result.status;
     buildLog += result.buildLog;
     artifactPath = result.artifactPath;
     if (status === "success") {
+      if (buildType === "godot" || buildType === "static") {
+        ctx.db
+          .prepare(
+            "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+          )
+          .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+      }
       transition(ctx, deploymentId, "starting", { gitSha: commitHash });
     }
   } catch (error) {
@@ -302,7 +632,17 @@ export async function stopServiceIfRunning(ctx: AppContext, serviceId: string): 
   }
 }
 
-export function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectBuildType>): {
+function nodeStartCommand(pm: NodePackageManager): string {
+  if (pm === "pnpm") return "pnpm run start";
+  if (pm === "yarn") return "yarn run start";
+  if (pm === "bun") return "bun run start";
+  return "npm run start";
+}
+
+export function inferServiceRuntimeDefaults(
+  buildType: ReturnType<typeof detectBuildType>,
+  projectPath?: string
+): {
   type: "process" | "docker" | "static";
   command: string;
 } {
@@ -313,7 +653,11 @@ export function inferServiceRuntimeDefaults(buildType: ReturnType<typeof detectB
     return { type: "process", command: "python app.py" };
   }
   if (buildType === "node") {
-    return { type: "process", command: "npm run start" };
+    const packageManager = projectPath ? detectNodePackageManager(projectPath) : "npm";
+    return { type: "process", command: nodeStartCommand(packageManager) };
+  }
+  if (buildType === "godot" || buildType === "static") {
+    return { type: "static", command: staticServeCommand() };
   }
   return { type: "process", command: "" };
 }
@@ -332,6 +676,7 @@ export async function deployFromLocalPath(
   const startedAt = nowIso();
   let buildLog = `Source: local directory ${localPath}\n`;
   let status: "success" | "failed" = "success";
+  let artifactPath = localPath;
 
   ctx.db
     .prepare(
@@ -346,16 +691,30 @@ export async function deployFromLocalPath(
 
   try {
     const buildType = detectBuildType(localPath);
-    const inferred = inferServiceRuntimeDefaults(buildType);
-    const command = options.command !== undefined ? options.command : inferred.command;
+    const service = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
+      | { name?: string }
+      | undefined;
+    const nodeTarget =
+      buildType === "node" ? detectNodeLaunchTarget(localPath, service?.name ?? "") : undefined;
+    const inferred = inferServiceRuntimeDefaults(buildType, nodeTarget?.workingDir ?? localPath);
+    const command =
+      options.command !== undefined ? options.command : (nodeTarget?.command ?? inferred.command);
     ctx.db
       .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
-      .run(inferred.type, command, localPath, nowIso(), serviceId);
+      .run(inferred.type, command, nodeTarget?.workingDir ?? localPath, nowIso(), serviceId);
 
     emitBuildLog(ctx, serviceId, deploymentId, `Detected build type: ${buildType}\n`);
-    const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId });
+    const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId, nodeTarget });
     status = result.status;
     buildLog += result.buildLog;
+    artifactPath = result.artifactPath;
+    if (status === "success" && (buildType === "godot" || buildType === "static")) {
+      ctx.db
+        .prepare(
+          "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+        )
+        .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+    }
   } catch (error) {
     status = "failed";
     const msg = `Deploy failed: ${error instanceof Error ? error.message : String(error)}\n`;
@@ -370,7 +729,7 @@ export async function deployFromLocalPath(
     .prepare(
       `UPDATE deployments SET status = ?, build_log = ?, artifact_path = ?, finished_at = ? WHERE id = ?`
     )
-    .run(status, buildLog, localPath, finishedAt, deploymentId);
+    .run(status, buildLog, artifactPath, finishedAt, deploymentId);
 
   broadcast(ctx, {
     type: "deployment_finished",
@@ -386,7 +745,7 @@ export async function deployFromLocalPath(
     commit_hash: "",
     status,
     build_log: buildLog,
-    artifact_path: localPath,
+    artifact_path: artifactPath,
     created_at: startedAt,
     started_at: startedAt,
     finished_at: finishedAt,

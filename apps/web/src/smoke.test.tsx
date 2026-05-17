@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, beforeAll, describe, it, expect } from "vitest";
+import type { ComponentType } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { App } from "./App";
 import { inferNameFromRepoUrl } from "./lib/repo";
 
 class MockWebSocket {
@@ -42,7 +42,16 @@ globalThis.localStorage = {
   }
 } as Storage;
 
+HTMLCanvasElement.prototype.getContext =
+  (() => ({})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+
+let App: ComponentType;
+
 describe("App smoke", () => {
+  beforeAll(async () => {
+    App = (await import("./App")).App;
+  });
+
   afterEach(() => cleanup());
 
   it("renders primary navigation", () => {

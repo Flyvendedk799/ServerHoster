@@ -17,6 +17,15 @@ function hasGit(): boolean {
   }
 }
 
+function hasPnpm(): boolean {
+  try {
+    execSync("pnpm --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function initGitFixture(
   dir: string,
   pkgOrReadme: { kind: "package"; pkg: Record<string, unknown> } | { kind: "readme" }
@@ -117,6 +126,186 @@ test("deploy-from-github: minimal npm repo via file URL", { skip: !hasGit() }, a
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test(
+  "deploy-from-github: pnpm workspace repo uses pnpm install",
+  { skip: !hasGit() || !hasPnpm() },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-git-pnpm-"));
+    fs.mkdirSync(path.join(tmp, "packages/shared"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "package.json"),
+      JSON.stringify(
+        {
+          name: "fixture-pnpm-workspace",
+          version: "1.0.0",
+          private: true,
+          packageManager: "pnpm@9.15.0",
+          scripts: { build: 'node -e "process.exit(0)"', start: 'node -e "process.exit(0)"' },
+          dependencies: { "@fixture/shared": "workspace:*" }
+        },
+        null,
+        2
+      )
+    );
+    fs.writeFileSync(path.join(tmp, "pnpm-workspace.yaml"), "packages:\n  - 'packages/*'\n");
+    fs.writeFileSync(
+      path.join(tmp, "packages/shared/package.json"),
+      JSON.stringify({ name: "@fixture/shared", version: "1.0.0", main: "index.js" }, null, 2)
+    );
+    execSync("pnpm install --lockfile-only", { cwd: tmp, stdio: "ignore" });
+    execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
+    execSync('git config user.email "survhub-test@example.com"', { cwd: tmp, stdio: "ignore" });
+    execSync('git config user.name "SURVHub Test"', { cwd: tmp, stdio: "ignore" });
+    execSync("git add -A", { cwd: tmp, stdio: "ignore" });
+    execSync("git commit -m init", { cwd: tmp, stdio: "ignore" });
+    const repoUrl = pathToFileURL(tmp).href;
+
+    const ctx = await buildApp();
+    try {
+      ctx.db.prepare("DELETE FROM sessions").run();
+      ctx.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+        .run();
+      const login = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/login",
+        payload: { password: "test-pass" }
+      });
+      const token = login.json().token as string;
+
+      const proj = await ctx.app.inject({
+        method: "POST",
+        url: "/projects",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { name: `deploy-pnpm-${Date.now()}` }
+      });
+      const projectId = (proj.json() as { id: string }).id;
+
+      const dep = await ctx.app.inject({
+        method: "POST",
+        url: "/services/deploy-from-github",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          projectId,
+          name: `svc-pnpm-${Date.now()}`,
+          repoUrl,
+          startAfterDeploy: false
+        }
+      });
+      assert.equal(dep.statusCode, 200);
+      const body = dep.json() as {
+        deployment: { status: string; build_log: string };
+        service: { id: string; command: string };
+      };
+      assert.equal(body.deployment.status, "success");
+      assert.match(body.deployment.build_log, /Detected package manager: pnpm/);
+      assert.match(body.deployment.build_log, /\$ pnpm install/);
+      assert.equal(body.service.command, "pnpm run start");
+
+      cleanupDeployArtifacts(ctx, body.service.id, projectId);
+    } finally {
+      await gracefulShutdown(ctx);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "deploy-from-github: pnpm electron workspace selects desktop package automatically",
+  { skip: !hasGit() || !hasPnpm() },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-git-electron-"));
+    fs.mkdirSync(path.join(tmp, "apps/desktop"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "package.json"),
+      JSON.stringify(
+        {
+          name: "fixture-electron-workspace",
+          version: "1.0.0",
+          private: true,
+          packageManager: "pnpm@9.15.0",
+          scripts: {
+            build: 'node -e "process.exit(42)"',
+            start: 'node -e "process.exit(0)"'
+          }
+        },
+        null,
+        2
+      )
+    );
+    fs.writeFileSync(path.join(tmp, "pnpm-workspace.yaml"), "packages:\n  - 'apps/*'\n");
+    fs.writeFileSync(
+      path.join(tmp, "apps/desktop/package.json"),
+      JSON.stringify(
+        {
+          name: "@fixture/desktop",
+          version: "1.0.0",
+          private: true,
+          scripts: { dev: "electron-vite dev" }
+        },
+        null,
+        2
+      )
+    );
+    execSync("pnpm install --lockfile-only", { cwd: tmp, stdio: "ignore" });
+    execSync("git init -b main", { cwd: tmp, stdio: "ignore" });
+    execSync('git config user.email "survhub-test@example.com"', { cwd: tmp, stdio: "ignore" });
+    execSync('git config user.name "SURVHub Test"', { cwd: tmp, stdio: "ignore" });
+    execSync("git add -A", { cwd: tmp, stdio: "ignore" });
+    execSync("git commit -m init", { cwd: tmp, stdio: "ignore" });
+    const repoUrl = pathToFileURL(tmp).href;
+
+    const ctx = await buildApp();
+    try {
+      ctx.db.prepare("DELETE FROM sessions").run();
+      ctx.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+        .run();
+      const login = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/login",
+        payload: { password: "test-pass" }
+      });
+      const token = login.json().token as string;
+
+      const proj = await ctx.app.inject({
+        method: "POST",
+        url: "/projects",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { name: `deploy-electron-${Date.now()}` }
+      });
+      const projectId = (proj.json() as { id: string }).id;
+
+      const dep = await ctx.app.inject({
+        method: "POST",
+        url: "/services/deploy-from-github",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          projectId,
+          name: `svc-electron-${Date.now()}`,
+          repoUrl,
+          startAfterDeploy: false
+        }
+      });
+      assert.equal(dep.statusCode, 200);
+      const body = dep.json() as {
+        deployment: { status: string; build_log: string };
+        service: { id: string; command: string; working_dir: string };
+      };
+      assert.equal(body.deployment.status, "success");
+      assert.match(body.deployment.build_log, /Selected launch target: apps\/desktop/);
+      assert.match(body.deployment.build_log, /Skipping package build for Electron package apps\/desktop/);
+      assert.equal(body.service.command, "pnpm run dev");
+      assert.equal(path.basename(body.service.working_dir), "desktop");
+
+      cleanupDeployArtifacts(ctx, body.service.id, projectId);
+    } finally {
+      await gracefulShutdown(ctx);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
 
 test(
   "deploy-from-github: failing npm build marks deployment failed and service stopped",

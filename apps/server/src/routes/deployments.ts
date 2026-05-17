@@ -6,6 +6,7 @@ import {
   rollbackDeployment,
   stopServiceIfRunning
 } from "../services/deploy.js";
+import { getGithubSyncStatus } from "../services/poller.js";
 
 const deploySchema = z.object({
   serviceId: z.string(),
@@ -29,6 +30,11 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
     const deployment = await deployFromGit(ctx, p.serviceId, repoUrl, branch, "manual");
     await applyPostDeployServiceState(ctx, p.serviceId, deployment, { startAfterDeploy: true });
     return deployment;
+  });
+
+  ctx.app.get("/services/:id/github-sync-status", async (req) => {
+    const { id } = req.params as { id: string };
+    return getGithubSyncStatus(ctx, id);
   });
 
   // Redeploy current branch HEAD for a service that already has a git repo.

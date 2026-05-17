@@ -47,6 +47,8 @@ const API_PREFIXES = [
   "/webhooks",
   "/migrations",
   "/backup",
+  "/agents",
+  "/mcp",
   "/ws",
   "/onboarding",
   "/service-templates",
@@ -89,6 +91,9 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // Webhooks authenticate via HMAC signature (verified inside the route),
     // not via Bearer token. Skipping the auth gate here is intentional.
     if (path.startsWith("/webhooks/")) return;
+    // MCP sessions use short-lived per-agent bearer tokens, validated inside
+    // the MCP route instead of dashboard session tokens.
+    if (path.startsWith("/mcp/")) return;
     // The admin reset endpoint authenticates via X-Admin-Reset-Token (a
     // pre-shared secret set on the host); skipping the bearer-token gate
     // here lets locked-out operators recover even when their session token

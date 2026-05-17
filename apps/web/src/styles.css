@@ -693,6 +693,62 @@ h2 {
   letter-spacing: 0;
 }
 
+.stack-git-update {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+  padding: 0.32rem 0.52rem;
+  width: fit-content;
+  max-width: min(100%, 560px);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-light);
+  font-size: 0.72rem;
+  font-weight: 850;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.stack-git-update code {
+  color: var(--accent-light);
+  font-size: 0.7rem;
+}
+
+.stack-git-update.empty {
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.service-git-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: min(100%, 380px);
+  padding: 0.28rem 0.48rem;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent-light);
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.service-git-chip.empty {
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text-muted);
+}
+
+.service-git-chip code {
+  color: var(--accent-light);
+  font-size: 0.68rem;
+}
+
 .stack-service-pills {
   display: flex;
   flex-wrap: wrap;
@@ -725,6 +781,23 @@ h2 {
   color: var(--success);
   text-decoration: none;
   border-color: rgba(16, 185, 129, 0.24);
+}
+
+.stack-service-pill.git-update-pill {
+  max-width: 320px;
+  color: var(--accent-light);
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.12);
+  line-height: 1.25;
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.stack-service-pill.git-update-pill.empty {
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .app-stack-actions {
@@ -867,6 +940,13 @@ a.resource-node {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+}
+
+.service-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
 .service-title-group h3 {
@@ -1698,6 +1778,237 @@ label {
 
 .terminal-pro .log-msg {
   word-break: break-word;
+}
+
+/* Service Console Dock */
+.terminal-dock {
+  position: fixed;
+  left: 280px;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  height: min(48vh, 520px);
+  min-height: 300px;
+  background: #020617;
+  border-top: 1px solid var(--border-color);
+  box-shadow: 0 -18px 50px rgba(2, 6, 23, 0.45);
+  display: grid;
+  grid-template-rows: 42px 1fr;
+}
+
+.layout[data-sidebar="collapsed"] .terminal-dock {
+  left: 78px;
+}
+
+.terminal-dock.maximized {
+  top: 0;
+  height: auto;
+}
+
+.terminal-dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.98);
+  min-width: 0;
+}
+
+.terminal-dock-grip,
+.terminal-tab,
+.terminal-dock-actions .icon-button {
+  height: 30px;
+  border-radius: 6px;
+}
+
+.terminal-dock-grip {
+  width: 32px;
+  display: grid;
+  place-items: center;
+}
+
+.terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 220px;
+  min-width: 0;
+  padding: 0 0.6rem;
+  background: rgba(30, 41, 59, 0.76);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  color: var(--text-secondary);
+}
+
+.terminal-tab.active {
+  color: var(--text-primary);
+  border-color: rgba(34, 211, 238, 0.45);
+  background: rgba(8, 47, 73, 0.7);
+}
+
+.terminal-tab span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-tab small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.terminal-dock-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.terminal-dock-search {
+  width: 150px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.65);
+}
+
+.terminal-dock-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text-primary);
+  background: transparent;
+  font-size: 0.8rem;
+}
+
+.terminal-dock-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+}
+
+.terminal-dock-body.shell-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.terminal-stage {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.terminal-xterm {
+  height: 100%;
+  min-height: 250px;
+  padding: 0.65rem;
+}
+
+.terminal-xterm .xterm {
+  height: 100%;
+}
+
+.terminal-empty {
+  height: 100%;
+  min-height: 250px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+}
+
+.terminal-close-tab {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  opacity: 0.75;
+}
+
+.agent-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.85rem;
+  border-left: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.agent-panel-header {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.agent-panel-header h3,
+.agent-provider-card h4 {
+  margin: 0;
+}
+
+.agent-warning {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  padding: 0.65rem;
+  border-radius: 6px;
+  color: #fde68a;
+  background: rgba(120, 53, 15, 0.25);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  font-size: 0.82rem;
+  margin-bottom: 0.8rem;
+}
+
+.agent-provider-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.agent-provider-card {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 0.8rem;
+  background: rgba(2, 6, 23, 0.38);
+}
+
+.agent-home {
+  margin: 0.65rem 0;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: rgba(15, 23, 42, 0.8);
+  font:
+    0.72rem SFMono-Regular,
+    Consolas,
+    Liberation Mono,
+    Menlo,
+    monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-secret-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.agent-secret-row input {
+  min-width: 0;
+}
+
+.agent-actions {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.icon-button.danger {
+  color: #fca5a5;
 }
 
 /* Responsive */

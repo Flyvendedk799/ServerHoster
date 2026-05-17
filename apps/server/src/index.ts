@@ -4,6 +4,11 @@ import httpProxy from "http-proxy";
 import { buildApp } from "./app.js";
 import { isAuthorizedToken } from "./services/auth.js";
 import { gracefulShutdown } from "./services/runtime.js";
+import {
+  cleanupTerminalSocket,
+  handleTerminalWebSocketMessage,
+  stopAllTerminalSessions
+} from "./services/terminals.js";
 
 const ctx = await buildApp();
 const server = await ctx.app.listen({ port: ctx.config.apiPort, host: ctx.config.host });
@@ -22,6 +27,7 @@ wss.on("connection", (ws: WebSocket, req) => {
   // Per-client set of transferIds this socket has subscribed to. We track here
   // so the on-close cleanup can prune the global ctx.transferSubscribers map.
   const attachedTransfers = new Set<string>();
+  const attachedTerminals = new Set<string>();
 
   ws.on("message", (raw) => {
     let msg: { type?: string; transferId?: string };
@@ -30,6 +36,7 @@ wss.on("connection", (ws: WebSocket, req) => {
     } catch {
       return;
     }
+    if (handleTerminalWebSocketMessage(ctx, ws, msg as Record<string, unknown>, attachedTerminals)) return;
     if (!msg || typeof msg.type !== "string" || typeof msg.transferId !== "string") return;
     const transferId = msg.transferId;
     if (msg.type === "attach_transfer") {
@@ -49,6 +56,7 @@ wss.on("connection", (ws: WebSocket, req) => {
 
   ws.on("close", () => {
     ctx.wsSubscribers.delete(ws);
+    cleanupTerminalSocket(ctx, ws, attachedTerminals);
     for (const transferId of attachedTransfers) {
       const set = ctx.transferSubscribers.get(transferId);
       if (set) {
@@ -104,6 +112,7 @@ process.on("SIGTERM", () => {
 
 wss.on("close", () => {
   ctx.wsSubscribers.clear();
+  stopAllTerminalSessions(ctx);
 });
 
 ctx.app.log.info(`SURVHub running at ${server}`);

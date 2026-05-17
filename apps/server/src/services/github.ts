@@ -54,37 +54,48 @@ export async function listUserRepos(ctx: AppContext): Promise<GithubRepo[]> {
 
 /**
  * Ensure a GitHub push-event webhook exists pointing at webhookUrl.
- * Idempotent: if a webhook with the same URL is already registered, does nothing.
- * Returns the hook id and whether it was newly created.
+ * If a hook with the same URL already exists, refresh its config so changes
+ * to the ServerHoster webhook secret actually take effect in GitHub.
  */
 export async function ensureRepoWebhook(
   ctx: AppContext,
   repoFullName: string,
   webhookUrl: string,
   secret?: string
-): Promise<{ id: number; created: boolean }> {
+): Promise<{ id: number; created: boolean; updated: boolean }> {
   const pat = requirePat(ctx);
   const existing = await gh<Array<{ id: number; config?: { url?: string } }>>(
     pat,
     `/repos/${repoFullName}/hooks?per_page=100`
   );
+  const config = {
+    url: webhookUrl,
+    content_type: "json",
+    insecure_ssl: "0",
+    ...(secret ? { secret } : {})
+  };
   const already = existing.find((h) => h.config?.url === webhookUrl);
-  if (already) return { id: already.id, created: false };
+  if (already) {
+    await gh<{ id: number }>(pat, `/repos/${repoFullName}/hooks/${already.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        active: true,
+        events: ["push"],
+        config
+      })
+    });
+    return { id: already.id, created: false, updated: true };
+  }
   const created = await gh<{ id: number }>(pat, `/repos/${repoFullName}/hooks`, {
     method: "POST",
     body: JSON.stringify({
       name: "web",
       active: true,
       events: ["push"],
-      config: {
-        url: webhookUrl,
-        content_type: "json",
-        insecure_ssl: "0",
-        ...(secret ? { secret } : {})
-      }
+      config
     })
   });
-  return { id: created.id, created: true };
+  return { id: created.id, created: true, updated: false };
 }
 
 /** Parse "https://github.com/org/repo.git" or similar into "org/repo". */

@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { nanoid } from "nanoid";
 import { buildApp } from "./app.js";
+import { nowIso } from "./lib/core.js";
 import { gracefulShutdown } from "./services/runtime.js";
 import { listTunnelAdapters } from "./services/tunnels/index.js";
 import { registerBuiltinTunnelAdapters } from "./services/tunnels/register.js";
@@ -100,6 +102,30 @@ test("webhook: accepts a payload signed with the configured secret", async () =>
   }
 });
 
+test("webhook: ignores deleted branch payloads", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    const body = JSON.stringify({ ...fakePayload, deleted: true });
+    const resp = await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": sign(SECRET, body)
+      },
+      payload: body
+    });
+    assert.equal(resp.statusCode, 200);
+    const json = resp.json() as { matched: number; skippedDeleted: boolean };
+    assert.equal(json.matched, 0);
+    assert.equal(json.skippedDeleted, true);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
 test("webhook: rejects replayed delivery ids", async () => {
   const ctx = await buildApp();
   try {
@@ -125,6 +151,72 @@ test("webhook: rejects replayed delivery ids", async () => {
       payload: body
     });
     assert.equal(second.statusCode, 409);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("webhook: honors per-service GitHub auto-update toggle", async () => {
+  const ctx = await buildApp();
+  const projectId = nanoid();
+  const serviceId = nanoid();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    const now = nowIso();
+    ctx.db
+      .prepare("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(projectId, "webhook-project", now, now);
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
+          id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
+          auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at,
+          github_repo_url, github_branch, github_auto_pull
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        serviceId,
+        projectId,
+        "webhook-disabled-service",
+        "process",
+        "",
+        "",
+        "",
+        "",
+        0,
+        "stopped",
+        1,
+        0,
+        5,
+        "manual",
+        now,
+        now,
+        "https://github.com/example/widget.git",
+        "main",
+        0
+      );
+    const body = JSON.stringify({
+      ref: "refs/heads/main",
+      repository: {
+        full_name: "example/widget",
+        clone_url: "https://github.com/example/widget.git",
+        html_url: "https://github.com/example/widget"
+      }
+    });
+    const resp = await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": sign(SECRET, body)
+      },
+      payload: body
+    });
+    assert.equal(resp.statusCode, 200);
+    const json = resp.json() as { matched: number; skippedAutoPull: number };
+    assert.equal(json.matched, 0);
+    assert.equal(json.skippedAutoPull, 1);
   } finally {
     await gracefulShutdown(ctx);
   }

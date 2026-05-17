@@ -20,7 +20,7 @@ import {
   Play
 } from "lucide-react";
 
-import { api, clearAuthToken } from "../lib/api";
+import { API_BASE_URL, api, clearAuthToken } from "../lib/api";
 import { toast } from "../lib/toast";
 import { connectLogs } from "../lib/ws";
 import { StatusBadge } from "../components/StatusBadge";
@@ -43,8 +43,13 @@ export function SettingsPage() {
   const [githubStatus, setGithubStatus] = useState<{
     configured: boolean;
     tokenPrefix: string | null;
+    pollIntervalMs: number;
+    webhookUrl: string | null;
+    webhookSecretConfigured: boolean;
+    webhookInsecure: boolean;
   } | null>(null);
   const [githubTokenInput, setGithubTokenInput] = useState("");
+  const [githubWebhookUrl, setGithubWebhookUrl] = useState("");
   const [sshInfo, setSshInfo] = useState<{ publicKey: string | null; source: string } | null>(null);
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [cfConfig, setCfConfig] = useState({ accountId: "", tunnelId: "", zoneId: "" });
@@ -58,6 +63,7 @@ export function SettingsPage() {
         api<TunnelStatus>("/cloudflare/status", { silent: true })
       ]);
       setGithubStatus(gh);
+      setGithubWebhookUrl(gh?.webhookUrl ?? `${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
       setSshInfo(ssh);
       setTunnel(t);
       if (t)
@@ -83,6 +89,19 @@ export function SettingsPage() {
       });
       toast.success("GitHub identity verified and linked");
       setGithubTokenInput("");
+      await loadAll();
+    } catch {
+      /* toasted */
+    }
+  }
+
+  async function saveGithubWebhookUrl() {
+    try {
+      await api("/settings/github/webhook-url", {
+        method: "PUT",
+        body: JSON.stringify({ url: githubWebhookUrl })
+      });
+      toast.success("GitHub webhook URL saved");
       await loadAll();
     } catch {
       /* toasted */
@@ -272,6 +291,35 @@ export function SettingsPage() {
                     </div>
                     <button className="primary" style={{ marginTop: "1rem" }} onClick={saveGithubPat}>
                       Update Token
+                    </button>
+
+                    <div className="form-group" style={{ marginTop: "1.75rem" }}>
+                      <label className="tiny uppercase font-bold muted">Webhook Payload URL</label>
+                      <input
+                        value={githubWebhookUrl}
+                        onChange={(e) => setGithubWebhookUrl(e.target.value)}
+                        placeholder="https://host.example.com/webhooks/github"
+                      />
+                      <div className="row small" style={{ marginTop: "1rem", flexWrap: "wrap" }}>
+                        <span className="muted">
+                          Polling every{" "}
+                          <code className="text-accent">
+                            {Math.round((githubStatus?.pollIntervalMs ?? 60000) / 1000)}s
+                          </code>
+                        </span>
+                        {githubStatus?.webhookSecretConfigured || githubStatus?.webhookInsecure ? (
+                          <span className="row muted">
+                            <CheckCircle2 size={14} className="text-success" /> Webhook receiver ready
+                          </span>
+                        ) : (
+                          <span className="row muted">
+                            <AlertCircle size={14} className="text-warning" /> Webhook secret missing
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button className="ghost" style={{ marginTop: "1rem" }} onClick={saveGithubWebhookUrl}>
+                      Save Webhook URL
                     </button>
                   </div>
 

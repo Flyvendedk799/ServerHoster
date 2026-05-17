@@ -29,6 +29,9 @@ import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
 import { registerTunnelRoutes } from "./routes/tunnels.js";
 import { registerInspectorRoutes } from "./routes/inspector.js";
+import { registerTerminalRoutes } from "./routes/terminal.js";
+import { registerAgentRoutes } from "./routes/agents.js";
+import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerCrashReporter } from "./services/crashReporter.js";
 import { startMetricsLoop } from "./services/metrics.js";
@@ -45,6 +48,7 @@ import {
 import { startGitPollerLoop } from "./services/poller.js";
 import { writeAuditLog } from "./services/audit.js";
 import { registerBuiltinTunnelAdapters } from "./services/tunnels/register.js";
+import { stopAllTerminalSessions } from "./services/terminals.js";
 
 const secureContextCache = new Map<string, tls.SecureContext>();
 
@@ -79,6 +83,8 @@ export async function buildApp(): Promise<AppContext> {
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
     transferSubscribers: new Map(),
+    terminalSubscribers: new Map(),
+    terminalSessions: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     manuallyStopped: new Set(),
@@ -173,6 +179,8 @@ export async function buildApp(): Promise<AppContext> {
     proxy: httpProxy.createProxyServer({}),
     wsSubscribers: new Set(),
     transferSubscribers: new Map(),
+    terminalSubscribers: new Map(),
+    terminalSessions: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     manuallyStopped: new Set(),
@@ -206,12 +214,16 @@ export async function buildApp(): Promise<AppContext> {
   registerCloudflareRoutes(ctx);
   registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
+  registerTerminalRoutes(ctx);
+  registerAgentRoutes(ctx);
+  registerMcpRoutes(ctx);
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
   registerAdminRoutes(ctx);
   const stopCrashReporter = registerCrashReporter(ctx);
   ctx.shutdownTasks.push(() => stopCrashReporter());
+  ctx.shutdownTasks.push(() => stopAllTerminalSessions(ctx));
 
   // --- Static dashboard bundle --------------------------------------------
   // When SURVHub is distributed as a single binary/npm package, the built
@@ -323,6 +335,8 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/webhooks",
     "/migrations",
     "/backup",
+    "/agents",
+    "/mcp",
     "/ws",
     "/.well-known",
     "/onboarding",

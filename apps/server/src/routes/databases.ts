@@ -43,6 +43,20 @@ const linkSchema = z.object({ serviceId: z.string(), databaseId: z.string().null
 const seedSchema = z.object({ sql: z.string().min(1) });
 const restoreSchema = z.object({ backupId: z.string() });
 
+const DATABASE_INTERNAL_PORT: Record<"postgres" | "mysql" | "redis" | "mongo", number> = {
+  postgres: 5432,
+  mysql: 3306,
+  redis: 6379,
+  mongo: 27017
+};
+
+const DATABASE_DATA_PATH: Record<"postgres" | "mysql" | "redis" | "mongo", string> = {
+  postgres: "/var/lib/postgresql/data",
+  mysql: "/var/lib/mysql",
+  redis: "/data",
+  mongo: "/data/db"
+};
+
 const promoteSchema = z.object({
   mode: z.enum(["managed", "external"]),
   // managed mode: spin up a new Postgres for this service
@@ -156,6 +170,7 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
     };
 
     const containerName = `survhub-db-${id.slice(0, 8)}`;
+    const internalPort = DATABASE_INTERNAL_PORT[p.engine];
     let containerId = "";
     try {
       await pullImage(ctx, imageMap[p.engine]);
@@ -163,11 +178,11 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
         Image: imageMap[p.engine],
         name: containerName,
         Env: envMap[p.engine],
-        ExposedPorts: { [`${p.port}/tcp`]: {} },
+        ExposedPorts: { [`${internalPort}/tcp`]: {} },
         HostConfig: {
-          PortBindings: { [`${p.port}/tcp`]: [{ HostPort: String(p.port) }] },
+          PortBindings: { [`${internalPort}/tcp`]: [{ HostPort: String(p.port) }] },
           RestartPolicy: { Name: "unless-stopped" },
-          Binds: [`survhub_${p.engine}_${p.name}:/var/lib/${p.engine}`]
+          Binds: [`survhub_${p.engine}_${p.name}:${DATABASE_DATA_PATH[p.engine]}`]
         }
       });
       await container.start();
@@ -371,8 +386,10 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
     const { serviceId } = req.params as { serviceId: string };
     const p = promoteSchema.parse(req.body);
     const service = ctx.db
-      .prepare("SELECT id, name, project_id FROM services WHERE id = ?")
-      .get(serviceId) as { id: string; name: string; project_id: string } | undefined;
+      .prepare("SELECT id, name, project_id, linked_database_id FROM services WHERE id = ?")
+      .get(serviceId) as
+      | { id: string; name: string; project_id: string; linked_database_id?: string | null }
+      | undefined;
     if (!service) throw new Error("Service not found");
 
     if (p.mode === "external") {
@@ -392,70 +409,84 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
       return { ok: true, mode: "external" };
     }
 
-    // mode === "managed": provision a fresh Postgres dedicated to this service.
-    const id = nanoid();
-    const port = await findFreePort(54320, 54420);
-    const username = "postgres";
-    const password = nanoid(16);
-    const databaseName = (p.databaseName ?? service.name).replace(/[^a-zA-Z0-9_]/g, "_") || "appdb";
-    const containerName = `survhub-db-${id.slice(0, 8)}`;
-    let containerId = "";
-    try {
-      await pullImage(ctx, "postgres:16");
-      const container = await ctx.docker.createContainer({
-        Image: "postgres:16",
-        name: containerName,
-        Env: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
-        ExposedPorts: { [`${port}/tcp`]: {} },
-        HostConfig: {
-          PortBindings: { [`${port}/tcp`]: [{ HostPort: String(port) }] },
-          RestartPolicy: { Name: "unless-stopped" },
-          Binds: [`survhub_postgres_promote_${id.slice(0, 8)}:/var/lib/postgresql/data`]
-        }
-      });
-      await container.start();
-      containerId = container.id;
-    } catch (error) {
-      throw new Error(
-        `Failed to provision managed Postgres: ${error instanceof Error ? error.message : String(error)}`
-      );
+    const wantsImport = p.importEmbeddedSqlite || p.autoImportEmbedded;
+    const embeddedMatch = wantsImport
+      ? (await listEmbeddedDatabases(ctx, { includeLinkedServices: true })).find(
+          (e) => e.service_id === serviceId
+        )
+      : undefined;
+
+    // mode === "managed": reuse an existing service DB if one was created by a
+    // previous promote attempt; otherwise provision a fresh Postgres.
+    let row =
+      (service.linked_database_id ? getDatabase(ctx, service.linked_database_id) : undefined) ??
+      (ctx.db
+        .prepare(
+          "SELECT * FROM databases WHERE project_id = ? AND engine = 'postgres' AND name = ? ORDER BY created_at DESC LIMIT 1"
+        )
+        .get(service.project_id, `${service.name}-db`) as DatabaseRow | undefined);
+    let containerName = row?.container_id || (row ? `survhub-db-${row.id.slice(0, 8)}` : "");
+    if (!row) {
+      const id = nanoid();
+      const port = await findFreePort(54320, 54420);
+      const username = "postgres";
+      const password = nanoid(16);
+      const databaseName = (p.databaseName ?? service.name).replace(/[^a-zA-Z0-9_]/g, "_") || "appdb";
+      containerName = `survhub-db-${id.slice(0, 8)}`;
+      let containerId = "";
+      try {
+        await pullImage(ctx, "postgres:16");
+        const container = await ctx.docker.createContainer({
+          Image: "postgres:16",
+          name: containerName,
+          Env: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
+          ExposedPorts: { [`${DATABASE_INTERNAL_PORT.postgres}/tcp`]: {} },
+          HostConfig: {
+            PortBindings: { [`${DATABASE_INTERNAL_PORT.postgres}/tcp`]: [{ HostPort: String(port) }] },
+            RestartPolicy: { Name: "unless-stopped" },
+            Binds: [`survhub_postgres_promote_${id.slice(0, 8)}:${DATABASE_DATA_PATH.postgres}`]
+          }
+        });
+        await container.start();
+        containerId = container.id;
+      } catch (error) {
+        throw new Error(
+          `Failed to provision managed Postgres: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      row = {
+        id,
+        project_id: service.project_id,
+        name: `${service.name}-db`,
+        engine: "postgres",
+        port,
+        container_id: containerId,
+        connection_string: "",
+        username,
+        password,
+        database_name: databaseName,
+        created_at: nowIso()
+      };
+      row.connection_string = buildConnectionString(row);
+      ctx.db
+        .prepare(
+          "INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, username, password, database_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .run(
+          row.id,
+          row.project_id,
+          row.name,
+          row.engine,
+          row.port,
+          row.container_id,
+          row.connection_string,
+          row.username,
+          row.password,
+          row.database_name,
+          row.created_at
+        );
     }
-
-    const row: DatabaseRow = {
-      id,
-      project_id: service.project_id,
-      name: `${service.name}-db`,
-      engine: "postgres",
-      port,
-      container_id: containerId,
-      connection_string: "",
-      username,
-      password,
-      database_name: databaseName,
-      created_at: nowIso()
-    };
-    row.connection_string = buildConnectionString(row);
-    ctx.db
-      .prepare(
-        "INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, username, password, database_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      )
-      .run(
-        row.id,
-        row.project_id,
-        row.name,
-        row.engine,
-        row.port,
-        row.container_id,
-        row.connection_string,
-        row.username,
-        row.password,
-        row.database_name,
-        row.created_at
-      );
-
-    ctx.db
-      .prepare("UPDATE services SET linked_database_id = ?, updated_at = ? WHERE id = ?")
-      .run(row.id, nowIso(), serviceId);
 
     // Postgres needs a moment after first start before it accepts connections.
     let importLog = "";
@@ -466,18 +497,19 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
       importError = error instanceof Error ? error.message : String(error);
     }
 
-    const wantsImport = p.importEmbeddedSqlite || p.autoImportEmbedded;
     if (!importError && wantsImport) {
       try {
-        const embedded = await listEmbeddedDatabases(ctx);
-        const match = embedded.find((e) => e.service_id === serviceId);
-        if (!match) {
+        if (!embeddedMatch) {
           // Strict mode surfaces the error; auto mode quietly skips.
           if (p.importEmbeddedSqlite) {
             importError = "No embedded SQLite file detected on the source service.";
           }
         } else {
-          const result = await importSqliteIntoPostgres(match.container_name, match.file_path, row);
+          const result = await importSqliteIntoPostgres(
+            embeddedMatch.container_name,
+            embeddedMatch.file_path,
+            row
+          );
           importLog = result.output;
         }
       } catch (error) {
@@ -492,6 +524,10 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
         importError = error instanceof Error ? error.message : String(error);
       }
     }
+
+    ctx.db
+      .prepare("UPDATE services SET linked_database_id = ?, updated_at = ? WHERE id = ?")
+      .run(row.id, nowIso(), serviceId);
 
     if (p.restart) {
       try {

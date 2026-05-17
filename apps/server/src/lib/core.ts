@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { nanoid } from "nanoid";
@@ -139,10 +140,18 @@ export async function runCommand(
     typeof timeoutOrOptions === "number" ? { timeoutMs: timeoutOrOptions } : timeoutOrOptions;
   const timeoutMs = opts.timeoutMs ?? 120000;
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, env, shell: true });
+    const child = spawn(command, { cwd, env, shell: true, detached: process.platform !== "win32" });
     let output = "";
     const timeout = setTimeout(() => {
-      child.kill();
+      try {
+        if (process.platform === "win32") {
+          child.kill("SIGTERM");
+        } else if (child.pid) {
+          process.kill(-child.pid, "SIGTERM");
+        }
+      } catch {
+        child.kill("SIGTERM");
+      }
       output += "\nCommand timeout reached.";
       opts.onChunk?.("\nCommand timeout reached.\n", "stderr");
     }, timeoutMs);
@@ -165,13 +174,20 @@ export async function runCommand(
 
 export async function findFreePort(start = 3000, end = 3999): Promise<number> {
   for (let port = start; port <= end; port++) {
-    const free = await new Promise<boolean>((resolve) => {
+    const freeOnLoopback = await new Promise<boolean>((resolve) => {
       const server = net.createServer();
       server.once("error", () => resolve(false));
       server.once("listening", () => server.close(() => resolve(true)));
       server.listen(port, "127.0.0.1");
     });
-    if (free) return port;
+    if (!freeOnLoopback) continue;
+    const freeOnAllInterfaces = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => server.close(() => resolve(true)));
+      server.listen(port, "0.0.0.0");
+    });
+    if (freeOnAllInterfaces) return port;
   }
   throw new Error(`No free port found in range ${start}–${end}`);
 }
@@ -181,7 +197,46 @@ export function detectBuildType(projectPath: string): BuildType {
   if (fs.existsSync(`${projectPath}/package.json`)) return "node";
   if (fs.existsSync(`${projectPath}/requirements.txt`) || fs.existsSync(`${projectPath}/pyproject.toml`))
     return "python";
+  if (fs.existsSync(path.join(projectPath, "project.godot"))) return "godot";
+  if (findStaticEntry(projectPath)) return "static";
   return "unknown";
+}
+
+export function findStaticEntry(projectPath: string): string | null {
+  const ignored = new Set([".git", "node_modules", ".venv", "venv", "__pycache__"]);
+  let bestDir: string | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    if (entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === "index.html")) {
+      const names = new Set(
+        entries.filter((entry) => entry.isFile()).map((entry) => entry.name.toLowerCase())
+      );
+      let score = 10 - depth;
+      if (names.has("manifest.json")) score += 4;
+      if ([...names].some((name) => name.endsWith(".wasm") || name.endsWith(".pck"))) score += 8;
+      const rel = path.relative(projectPath, dir).toLowerCase();
+      if (/(dist|build|public|web|client|site|static)/.test(rel)) score += 3;
+      if (score > bestScore) {
+        bestDir = dir;
+        bestScore = score;
+      }
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+      walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  walk(projectPath, 0);
+  return bestDir;
 }
 
 /**

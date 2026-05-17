@@ -6,6 +6,7 @@ import type { AppContext } from "../types.js";
 import { nowIso, serializeError } from "../lib/core.js";
 import { restartService, startService, stopService } from "../services/runtime.js";
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
+import { reconcileGenericAppProjects } from "../services/projects.js";
 
 const projectSchema = z.object({
   name: z.string().min(1),
@@ -25,9 +26,12 @@ const templateCreateSchema = z.object({
 });
 
 export function registerProjectRoutes(ctx: AppContext): void {
-  ctx.app.get("/projects", async () =>
-    ctx.db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all()
-  );
+  ctx.app.get("/projects", async () => {
+    reconcileGenericAppProjects(ctx);
+    return ctx.db.prepare("SELECT * FROM projects ORDER BY created_at DESC").all();
+  });
+
+  ctx.app.post("/projects/cleanup-empty", async () => reconcileGenericAppProjects(ctx));
 
   ctx.app.post("/projects", async (req) => {
     const p = projectSchema.parse(req.body);

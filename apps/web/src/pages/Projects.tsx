@@ -31,6 +31,7 @@ export function ProjectsPage() {
   } | null>(null);
 
   async function load(): Promise<void> {
+    await api("/projects/cleanup-empty", { method: "POST", silent: true }).catch(() => undefined);
     const [pRows, sRows] = await Promise.all([api<Project[]>("/projects"), api<Service[]>("/services")]);
     setProjects(pRows);
     setServices(sRows);
@@ -44,7 +45,7 @@ export function ProjectsPage() {
     const ok = await confirmDialog({
       title: `Delete project "${name}"?`,
       message:
-        "This will remove the project metadata. Services associated with it will remain active but become unassigned.",
+        "This will remove the project, its services, managed databases, and stored environment variables.",
       confirmLabel: "Delete Project",
       danger: true
     });

@@ -18,6 +18,7 @@ const putSettingSchema = z.object({
 });
 
 const githubPatSchema = z.object({ token: z.string().min(20) });
+const githubWebhookUrlSchema = z.object({ url: z.string().url() });
 const sshKeySchema = z.object({ path: z.string().min(1) });
 
 export function registerSettingsRoutes(ctx: AppContext): void {
@@ -52,7 +53,14 @@ export function registerSettingsRoutes(ctx: AppContext): void {
   // --- Convenience endpoints for Phase 3 UI --------------------------------
   ctx.app.get("/settings/github/status", async () => {
     const pat = getSecretSetting(ctx, "github_pat");
-    return { configured: Boolean(pat), tokenPrefix: pat ? pat.slice(0, 4) + "…" : null };
+    return {
+      configured: Boolean(pat),
+      tokenPrefix: pat ? pat.slice(0, 4) + "…" : null,
+      pollIntervalMs: ctx.config.gitPollIntervalMs,
+      webhookUrl: getSetting(ctx, "github_webhook_url"),
+      webhookSecretConfigured: Boolean(ctx.config.webhookSecret),
+      webhookInsecure: ctx.config.webhookInsecure
+    };
   });
 
   ctx.app.post("/settings/github/pat", async (req) => {
@@ -72,6 +80,17 @@ export function registerSettingsRoutes(ctx: AppContext): void {
 
   ctx.app.delete("/settings/github/pat", async () => {
     deleteSetting(ctx, "github_pat");
+    return { ok: true };
+  });
+
+  ctx.app.put("/settings/github/webhook-url", async (req) => {
+    const p = githubWebhookUrlSchema.parse(req.body);
+    setSetting(ctx, "github_webhook_url", p.url);
+    return { ok: true };
+  });
+
+  ctx.app.delete("/settings/github/webhook-url", async () => {
+    deleteSetting(ctx, "github_webhook_url");
     return { ok: true };
   });
 
@@ -117,6 +136,12 @@ export function registerSettingsRoutes(ctx: AppContext): void {
     const p = webhookEnsureSchema.parse(req.body);
     const fullName = parseRepoFullName(p.repoUrl);
     if (!fullName) throw new Error(`Not a GitHub repo URL: ${p.repoUrl}`);
-    return ensureRepoWebhook(ctx, fullName, p.webhookUrl);
+    if (!ctx.config.webhookInsecure && !ctx.config.webhookSecret) {
+      throw new Error(
+        "GitHub webhook secret is not configured. Set SURVHUB_WEBHOOK_SECRET, or use polling-only GitOps."
+      );
+    }
+    const secret = ctx.config.webhookInsecure ? undefined : ctx.config.webhookSecret || undefined;
+    return ensureRepoWebhook(ctx, fullName, p.webhookUrl, secret);
   });
 }
