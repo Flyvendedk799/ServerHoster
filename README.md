@@ -124,6 +124,9 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 - [Troubleshooting](docs/troubleshooting.md) — when things break
 - [Operations guide](docs/operations.md) — running LocalSURV in production
 - [QA matrix](docs/qa-matrix.md) — platform coverage
+- [Readiness checklist](docs/readiness-checklist.md) — authoritative source for "is this build shippable?"
+- [100% readiness sequence plan](docs/100-percent-readiness-sequence-plan.md) — the multi-wave hardening roadmap
+- [Stabilization window](docs/stabilization-window.md) — the gating rules for promoting a build to stable
 
 ---
 

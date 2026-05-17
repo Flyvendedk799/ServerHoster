@@ -126,6 +126,36 @@ test("webhook: ignores deleted branch payloads", async () => {
   }
 });
 
+test("webhook: rejects replayed delivery ids", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    const body = JSON.stringify(fakePayload);
+    const headers = {
+      "content-type": "application/json",
+      "x-hub-signature-256": sign(SECRET, body),
+      "x-github-delivery": "delivery-id-replay-test"
+    };
+    const first = await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      headers,
+      payload: body
+    });
+    assert.equal(first.statusCode, 200);
+    const second = await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      headers,
+      payload: body
+    });
+    assert.equal(second.statusCode, 409);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
 test("webhook: honors per-service GitHub auto-update toggle", async () => {
   const ctx = await buildApp();
   const projectId = nanoid();
@@ -187,6 +217,66 @@ test("webhook: honors per-service GitHub auto-update toggle", async () => {
     const json = resp.json() as { matched: number; skippedAutoPull: number };
     assert.equal(json.matched, 0);
     assert.equal(json.skippedAutoPull, 1);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("webhook: rejects payloads with stale timestamp header", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    ctx.config.webhookMaxSkewSeconds = 60;
+    const body = JSON.stringify(fakePayload);
+    const ancient = Math.floor(Date.now() / 1000) - 60 * 60; // 1h ago
+    const resp = await ctx.app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": sign(SECRET, body),
+        "x-hub-timestamp": String(ancient),
+        "x-github-delivery": "delivery-id-stale-test"
+      },
+      payload: body
+    });
+    assert.equal(resp.statusCode, 401);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("admin reset: 503 when SURVHUB_ADMIN_RESET_TOKEN is unset", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.adminResetToken = "";
+    const resp = await ctx.app.inject({
+      method: "POST",
+      url: "/admin/reset-admin",
+      headers: { "content-type": "application/json" },
+      payload: "{}"
+    });
+    assert.equal(resp.statusCode, 503);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("admin reset: 401 when token mismatches", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.adminResetToken = "the-real-token";
+    const resp = await ctx.app.inject({
+      method: "POST",
+      url: "/admin/reset-admin",
+      headers: {
+        "content-type": "application/json",
+        "x-admin-reset-token": "the-wrong-token"
+      },
+      payload: "{}"
+    });
+    assert.equal(resp.statusCode, 401);
   } finally {
     await gracefulShutdown(ctx);
   }

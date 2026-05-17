@@ -151,3 +151,79 @@ export function getServiceSparkline(
     .all(serviceId, cutoff) as Array<{ cpu_percent: number; memory_mb: number; timestamp: string }>;
   return rows.map((r) => ({ cpu: r.cpu_percent, memoryMb: r.memory_mb, timestamp: r.timestamp }));
 }
+
+/**
+ * Sequence 4 — service-level KPIs.
+ *
+ * Counters live in-process (no separate metrics backend); the Prometheus
+ * scrape endpoint reads them via the snapshot helper below. We keep a
+ * bounded histogram of the last 256 deploy durations so we can render a
+ * p50/p95 in the dashboard without a time-series DB.
+ *
+ * `failureStage` is the canonical state from `deployStateMachine`
+ * ("queued" | "cloning" | "building" | "starting" | "unknown"); we keep one
+ * counter per stage so operators can see at a glance whether failures are
+ * concentrated in clone vs. build.
+ */
+type DeployKpiState = {
+  totalDeployments: number;
+  failedDeployments: number;
+  failureByStage: Record<string, number>;
+  durationHistory: Array<{ serviceId: string; durationMs: number; ts: string }>;
+};
+
+const KPI_STATE: DeployKpiState = {
+  totalDeployments: 0,
+  failedDeployments: 0,
+  failureByStage: {},
+  durationHistory: []
+};
+const KPI_HISTORY_LIMIT = 256;
+
+export function recordDeployDuration(_ctx: AppContext, serviceId: string, durationMs: number): void {
+  KPI_STATE.totalDeployments += 1;
+  KPI_STATE.durationHistory.push({ serviceId, durationMs, ts: nowIso() });
+  if (KPI_STATE.durationHistory.length > KPI_HISTORY_LIMIT) {
+    KPI_STATE.durationHistory.splice(0, KPI_STATE.durationHistory.length - KPI_HISTORY_LIMIT);
+  }
+}
+
+export function recordDeployFailure(_ctx: AppContext, _serviceId: string, stage: string): void {
+  KPI_STATE.totalDeployments += 1;
+  KPI_STATE.failedDeployments += 1;
+  KPI_STATE.failureByStage[stage] = (KPI_STATE.failureByStage[stage] ?? 0) + 1;
+}
+
+/** Snapshot of the in-process KPI counters for /metrics/prometheus and /metrics/kpis. */
+export function snapshotDeployKpis(): {
+  totalDeployments: number;
+  failedDeployments: number;
+  failureByStage: Record<string, number>;
+  durationP50Ms: number | null;
+  durationP95Ms: number | null;
+} {
+  const sorted = KPI_STATE.durationHistory.map((h) => h.durationMs).sort((a, b) => a - b);
+  const pct = (p: number): number | null => {
+    if (sorted.length === 0) return null;
+    const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return sorted[idx];
+  };
+  return {
+    totalDeployments: KPI_STATE.totalDeployments,
+    failedDeployments: KPI_STATE.failedDeployments,
+    failureByStage: { ...KPI_STATE.failureByStage },
+    durationP50Ms: pct(50),
+    durationP95Ms: pct(95)
+  };
+}
+
+/**
+ * Test-only reset hook — keeps unit tests independent without exposing
+ * mutable state through the public API.
+ */
+export function __resetDeployKpisForTest(): void {
+  KPI_STATE.totalDeployments = 0;
+  KPI_STATE.failedDeployments = 0;
+  KPI_STATE.failureByStage = {};
+  KPI_STATE.durationHistory.length = 0;
+}
