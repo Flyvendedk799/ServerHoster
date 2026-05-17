@@ -4,18 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import {
-  Bot,
-  Copy,
-  Download,
-  Maximize2,
-  Minimize2,
-  Plug,
-  Search,
-  Terminal,
-  Trash2,
-  X
-} from "lucide-react";
+import { Bot, Copy, Download, Maximize2, Minimize2, Plug, Search, Terminal, Trash2, X } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
@@ -170,12 +159,21 @@ export function TerminalDock() {
   const [search, setSearch] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
 
-  const activeTab = useMemo(() => tabs.find((tab) => tab.session.id === activeId) ?? tabs[0], [activeId, tabs]);
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.session.id === activeId) ?? tabs[0],
+    [activeId, tabs]
+  );
 
   useEffect(() => {
     const ws = connectLogs((payload) => {
       if (typeof payload !== "object" || payload === null) return;
-      const event = payload as { type?: string; sessionId?: string; data?: string; error?: string; reason?: string };
+      const event = payload as {
+        type?: string;
+        sessionId?: string;
+        data?: string;
+        error?: string;
+        reason?: string;
+      };
       if (!event.type?.startsWith("terminal_") || !event.sessionId) return;
       if (event.type === "terminal_output" && typeof event.data === "string") {
         setTabs((prev) =>
@@ -188,7 +186,11 @@ export function TerminalDock() {
         setTabs((prev) =>
           prev.map((tab) =>
             tab.session.id === event.sessionId
-              ? { ...tab, status: "ended", buffer: `${tab.buffer}\r\n[session ended${event.reason ? `: ${event.reason}` : ""}]\r\n` }
+              ? {
+                  ...tab,
+                  status: "ended",
+                  buffer: `${tab.buffer}\r\n[session ended${event.reason ? `: ${event.reason}` : ""}]\r\n`
+                }
               : tab
           )
         );
@@ -198,7 +200,11 @@ export function TerminalDock() {
         setTabs((prev) =>
           prev.map((tab) =>
             tab.session.id === event.sessionId
-              ? { ...tab, status: "error", buffer: `${tab.buffer}\r\n[terminal error] ${event.error ?? "unknown"}\r\n` }
+              ? {
+                  ...tab,
+                  status: "error",
+                  buffer: `${tab.buffer}\r\n[terminal error] ${event.error ?? "unknown"}\r\n`
+                }
               : tab
           )
         );
@@ -289,10 +295,13 @@ export function TerminalDock() {
   ): Promise<void> {
     try {
       const profile = await ensureProfile(service, provider);
-      const session = await api<TerminalSession>(`/services/${service.id}/agent-profiles/${profile.id}/${action}`, {
-        method: "POST",
-        body: JSON.stringify(action === "run-session" ? { allowMutations } : {})
-      });
+      const session = await api<TerminalSession>(
+        `/services/${service.id}/agent-profiles/${profile.id}/${action}`,
+        {
+          method: "POST",
+          body: JSON.stringify(action === "run-session" ? { allowMutations } : {})
+        }
+      );
       setTabs((prev) => [
         ...prev,
         {
@@ -375,7 +384,11 @@ export function TerminalDock() {
   return (
     <section className={`terminal-dock ${maximized ? "maximized" : ""}`} aria-label="Service console">
       <div className="terminal-dock-tabs">
-        <button className="terminal-dock-grip" onClick={() => setMaximized(!maximized)} aria-label="Resize console">
+        <button
+          className="terminal-dock-grip"
+          onClick={() => setMaximized(!maximized)}
+          aria-label="Resize console"
+        >
           {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
         </button>
         {tabs.map((tab) => (
@@ -407,7 +420,11 @@ export function TerminalDock() {
             <Download size={14} />
           </button>
           {activeTab && (
-            <button className="icon-button danger" onClick={() => killTab(activeTab.session.id)} data-tooltip="Kill session">
+            <button
+              className="icon-button danger"
+              onClick={() => killTab(activeTab.session.id)}
+              data-tooltip="Kill session"
+            >
               <Trash2 size={14} />
             </button>
           )}
@@ -489,7 +506,9 @@ export function TerminalDock() {
                     <div className="agent-secret-row">
                       <input
                         value={secretDrafts[provider.id] ?? ""}
-                        onChange={(event) => setSecretDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
+                        onChange={(event) =>
+                          setSecretDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))
+                        }
                         placeholder={profile?.managedSecretPreview ?? provider.managedSecretKey}
                         type="password"
                       />
@@ -498,13 +517,22 @@ export function TerminalDock() {
                       </button>
                     </div>
                     <div className="agent-actions">
-                      <button className="small" onClick={() => startAgentSession(agentService, provider, "install-session")}>
+                      <button
+                        className="small"
+                        onClick={() => startAgentSession(agentService, provider, "install-session")}
+                      >
                         Install
                       </button>
-                      <button className="small" onClick={() => startAgentSession(agentService, provider, "auth-session")}>
+                      <button
+                        className="small"
+                        onClick={() => startAgentSession(agentService, provider, "auth-session")}
+                      >
                         Auth
                       </button>
-                      <button className="small primary" onClick={() => startAgentSession(agentService, provider, "run-session")}>
+                      <button
+                        className="small primary"
+                        onClick={() => startAgentSession(agentService, provider, "run-session")}
+                      >
                         Run
                       </button>
                     </div>

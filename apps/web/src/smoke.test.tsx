@@ -42,7 +42,8 @@ globalThis.localStorage = {
   }
 } as Storage;
 
-HTMLCanvasElement.prototype.getContext = (() => ({})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext =
+  (() => ({})) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 
 let App: ComponentType;
 

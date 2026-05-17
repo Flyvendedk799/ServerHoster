@@ -200,7 +200,10 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
                 />
                 <div className="toggle-info">
                   <span className="toggle-title">GitHub Auto Update</span>
-                  <span className="toggle-desc">Poll for new commits on {form.branch}; add a webhook from service settings for instant pushes.</span>
+                  <span className="toggle-desc">
+                    Poll for new commits on {form.branch}; add a webhook from service settings for instant
+                    pushes.
+                  </span>
                 </div>
               </label>
             </div>

@@ -4,7 +4,12 @@ import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { getService, insertLog, serializeError } from "../lib/core.js";
 import { listServiceEnvRequirements } from "../services/envScan.js";
-import { getContainerLogs, getContainerStatus, getDatabase, type DatabaseRow } from "../services/databases.js";
+import {
+  getContainerLogs,
+  getContainerStatus,
+  getDatabase,
+  type DatabaseRow
+} from "../services/databases.js";
 import { restartService, startService, stopService } from "../services/runtime.js";
 import { validateMcpSessionToken } from "../services/agents.js";
 import { writeAuditLog } from "../services/audit.js";
@@ -41,8 +46,14 @@ function assertMutationAllowed(auth: McpAuth, tool: string): void {
 
 function recentLogs(ctx: AppContext, serviceId: string, limit: number) {
   return ctx.db
-    .prepare("SELECT level, message, timestamp FROM logs WHERE service_id = ? ORDER BY timestamp DESC LIMIT ?")
-    .all(serviceId, Math.max(1, Math.min(500, limit))) as Array<{ level: string; message: string; timestamp: string }>;
+    .prepare(
+      "SELECT level, message, timestamp FROM logs WHERE service_id = ? ORDER BY timestamp DESC LIMIT ?"
+    )
+    .all(serviceId, Math.max(1, Math.min(500, limit))) as Array<{
+    level: string;
+    message: string;
+    timestamp: string;
+  }>;
 }
 
 function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
@@ -55,14 +66,17 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     "service_summary",
     {
       title: "Service summary",
-      description: "Read the selected ServerHoster service status, command, ports, URLs, and runtime metadata.",
+      description:
+        "Read the selected ServerHoster service status, command, ports, URLs, and runtime metadata.",
       inputSchema: {}
     },
     async () => {
       try {
         const service = getService(ctx, auth.serviceId);
         const proxy = ctx.db
-          .prepare("SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC")
+          .prepare(
+            "SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC"
+          )
           .all(auth.serviceId);
         auditTool(ctx, auth, "service_summary", 200);
         return text({ service, proxy });
@@ -77,7 +91,8 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     "recent_logs",
     {
       title: "Recent service logs",
-      description: "Read recent persisted service stdout/stderr logs. Terminal keystrokes and agent transcripts are not included.",
+      description:
+        "Read recent persisted service stdout/stderr logs. Terminal keystrokes and agent transcripts are not included.",
       inputSchema: { limit: z.number().int().min(1).max(500).default(100) }
     },
     async ({ limit }) => {
@@ -102,7 +117,11 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
         .prepare(
           "SELECT level, message, timestamp FROM logs WHERE service_id = ? AND LOWER(message) LIKE ? ORDER BY timestamp DESC LIMIT ?"
         )
-        .all(auth.serviceId, `%${String(query).toLowerCase()}%`, Math.max(1, Math.min(200, Number(limit ?? 50))));
+        .all(
+          auth.serviceId,
+          `%${String(query).toLowerCase()}%`,
+          Math.max(1, Math.min(200, Number(limit ?? 50)))
+        );
       auditTool(ctx, auth, "search_logs", 200, `query=${query}`);
       return text(rows);
     }
@@ -118,7 +137,12 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     async () => {
       const rows = await listServiceEnvRequirements(ctx);
       auditTool(ctx, auth, "env_requirements", 200);
-      return text(rows.find((row) => row.service_id === auth.serviceId) ?? { service_id: auth.serviceId, requirements: [] });
+      return text(
+        rows.find((row) => row.service_id === auth.serviceId) ?? {
+          service_id: auth.serviceId,
+          requirements: []
+        }
+      );
     }
   );
 
@@ -148,9 +172,14 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
       inputSchema: {}
     },
     async () => {
-      const service = getService(ctx, auth.serviceId) as { project_id?: string; linked_database_id?: string | null };
+      const service = getService(ctx, auth.serviceId) as {
+        project_id?: string;
+        linked_database_id?: string | null;
+      };
       const rows = ctx.db
-        .prepare("SELECT id, project_id, name, engine, port, created_at FROM databases WHERE project_id = ? ORDER BY created_at DESC")
+        .prepare(
+          "SELECT id, project_id, name, engine, port, created_at FROM databases WHERE project_id = ? ORDER BY created_at DESC"
+        )
         .all(service.project_id ?? "") as DatabaseRow[];
       const enriched = await Promise.all(
         rows.map(async (row) => ({
@@ -177,7 +206,8 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     async ({ databaseId, tail }) => {
       const service = getService(ctx, auth.serviceId) as { project_id?: string };
       const db = getDatabase(ctx, String(databaseId));
-      if (!db || db.project_id !== service.project_id) throw new Error("Database not found in this service project");
+      if (!db || db.project_id !== service.project_id)
+        throw new Error("Database not found in this service project");
       const logs = await getContainerLogs(ctx, db, Number(tail ?? 120));
       auditTool(ctx, auth, "database_logs", 200, `database=${databaseId}`);
       return text(logs.slice(-8000));
@@ -233,7 +263,8 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     "add_log_marker",
     {
       title: "Add log marker",
-      description: "Add an informational marker to the selected service logs. Requires the agent run to allow service actions.",
+      description:
+        "Add an informational marker to the selected service logs. Requires the agent run to allow service actions.",
       inputSchema: { message: z.string().min(1).max(300) }
     },
     async ({ message }) => {

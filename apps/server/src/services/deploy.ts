@@ -79,7 +79,9 @@ function staticServeCommand(): string {
 }
 
 function hasCommand(command: string): boolean {
-  return process.env.PATH?.split(path.delimiter).some((dir) => fs.existsSync(path.join(dir, command))) ?? false;
+  return (
+    process.env.PATH?.split(path.delimiter).some((dir) => fs.existsSync(path.join(dir, command))) ?? false
+  );
 }
 
 function godotCommand(): string {
@@ -90,12 +92,24 @@ function godotCommand(): string {
 
 function godotTemplatesDir(templateVersion: string): string {
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", "Godot", "export_templates", templateVersion);
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      "Godot",
+      "export_templates",
+      templateVersion
+    );
   }
   if (process.platform === "win32") {
     return path.join(process.env.APPDATA ?? os.homedir(), "Godot", "export_templates", templateVersion);
   }
-  return path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"), "godot", "export_templates", templateVersion);
+  return path.join(
+    process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share"),
+    "godot",
+    "export_templates",
+    templateVersion
+  );
 }
 
 async function ensureGodotWebExportTemplates(
@@ -153,14 +167,12 @@ function parseGodotWebExportPath(projectPath: string): string {
   return path.join(projectPath, "build", "web", "index.html");
 }
 
-function readPackageJson(packagePath: string):
-  | {
-      name?: string;
-      scripts?: Record<string, string>;
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    }
-  | null {
+function readPackageJson(packagePath: string): {
+  name?: string;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+} | null {
   try {
     return JSON.parse(fs.readFileSync(packagePath, "utf8")) as {
       name?: string;
@@ -205,12 +217,10 @@ export function detectNodeLaunchTarget(
 ): NodeLaunchTarget {
   const normalizedServiceName = normalizeName(serviceName);
   const packageDirs = findPackageDirs(projectPath);
-  let best:
-    | {
-        score: number;
-        target: NodeLaunchTarget;
-      }
-    | null = null;
+  let best: {
+    score: number;
+    target: NodeLaunchTarget;
+  } | null = null;
 
   for (const dir of packageDirs) {
     const pkg = readPackageJson(path.join(dir, "package.json"));
@@ -227,7 +237,9 @@ export function detectNodeLaunchTarget(
 
     let score = 0;
     let kind: NodeLaunchKind = "node";
-    let command = hasDev ? packageRunCommand(packageManager, "dev") : packageRunCommand(packageManager, "start");
+    let command = hasDev
+      ? packageRunCommand(packageManager, "dev")
+      : packageRunCommand(packageManager, "start");
     let buildCommand = hasBuild ? packageRunCommand(packageManager, "build") : undefined;
     let skipBuild = false;
     let reason = rel === "." ? "root package" : `workspace package ${rel}`;
@@ -252,7 +264,9 @@ export function detectNodeLaunchTarget(
     } else if (hasStart || hasDev) {
       score = rel === "." ? 30 : 45;
       kind = "node";
-      command = hasStart ? packageRunCommand(packageManager, "start") : packageRunCommand(packageManager, "dev");
+      command = hasStart
+        ? packageRunCommand(packageManager, "start")
+        : packageRunCommand(packageManager, "dev");
     }
 
     if (score === 0) continue;
@@ -333,7 +347,8 @@ export async function runBuildPipeline(
     const buildCwd = nodeTarget.workingDir || projectPath;
     buildLog += `Detected package manager: ${packageManager}\n`;
     buildLog += `Selected launch target: ${path.relative(projectPath, nodeTarget.workingDir) || "."} (${nodeTarget.reason})\n`;
-    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `Detected package manager: ${packageManager}\n`);
+    if (deploymentId)
+      emitBuildLog(ctx, serviceId, deploymentId, `Detected package manager: ${packageManager}\n`);
     if (deploymentId)
       emitBuildLog(
         ctx,
@@ -507,7 +522,9 @@ export async function deployFromGit(
     if (status === "success") {
       if (buildType === "godot" || buildType === "static") {
         ctx.db
-          .prepare("UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
+          .prepare(
+            "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+          )
           .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
       }
       transition(ctx, deploymentId, "starting", { gitSha: commitHash });
@@ -680,7 +697,8 @@ export async function deployFromLocalPath(
     const nodeTarget =
       buildType === "node" ? detectNodeLaunchTarget(localPath, service?.name ?? "") : undefined;
     const inferred = inferServiceRuntimeDefaults(buildType, nodeTarget?.workingDir ?? localPath);
-    const command = options.command !== undefined ? options.command : nodeTarget?.command ?? inferred.command;
+    const command =
+      options.command !== undefined ? options.command : (nodeTarget?.command ?? inferred.command);
     ctx.db
       .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
       .run(inferred.type, command, nodeTarget?.workingDir ?? localPath, nowIso(), serviceId);
@@ -692,7 +710,9 @@ export async function deployFromLocalPath(
     artifactPath = result.artifactPath;
     if (status === "success" && (buildType === "godot" || buildType === "static")) {
       ctx.db
-        .prepare("UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
+        .prepare(
+          "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+        )
         .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
     }
   } catch (error) {

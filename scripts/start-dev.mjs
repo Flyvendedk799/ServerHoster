@@ -23,7 +23,7 @@ function startProcess(name, args) {
     cwd: rootDir,
     env: process.env,
     stdio: ["inherit", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+    detached: process.platform !== "win32"
   });
 
   children.push(child);

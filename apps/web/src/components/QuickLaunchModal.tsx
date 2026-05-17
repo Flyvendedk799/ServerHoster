@@ -113,7 +113,10 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
     try {
       const launchProjectId = projectId;
       if (!launchProjectId) {
-        setBuildLog((prev) => [...prev, "No project selected. LocalSURV will create or reuse an app project."]);
+        setBuildLog((prev) => [
+          ...prev,
+          "No project selected. LocalSURV will create or reuse an app project."
+        ]);
       }
 
       const result = await api<any>(

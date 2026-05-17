@@ -73,15 +73,18 @@ export function resolveServiceProjectId(
   opts: { gitUrl?: string } = {}
 ): string {
   if (projectId?.trim()) {
-    const project = ctx.db
-      .prepare("SELECT id, name FROM projects WHERE id = ?")
-      .get(projectId) as { id: string; name: string } | undefined;
+    const project = ctx.db.prepare("SELECT id, name FROM projects WHERE id = ?").get(projectId) as
+      | { id: string; name: string }
+      | undefined;
     if (project && !GENERIC_PROJECT_NAMES.has(project.name.trim().toLowerCase())) return project.id;
   }
   return ensureAppProject(ctx, serviceName, { gitUrl: opts.gitUrl }).id;
 }
 
-export function reconcileGenericAppProjects(ctx: AppContext): { movedServices: number; removedProjects: number } {
+export function reconcileGenericAppProjects(ctx: AppContext): {
+  movedServices: number;
+  removedProjects: number;
+} {
   const services = ctx.db
     .prepare(
       `SELECT s.id, s.name, s.project_id, s.github_repo_url, p.name AS project_name
@@ -102,9 +105,13 @@ export function reconcileGenericAppProjects(ctx: AppContext): { movedServices: n
     if (service.project_id && !GENERIC_PROJECT_NAMES.has(currentName)) continue;
     const project = ensureAppProject(ctx, service.name, { gitUrl: service.github_repo_url ?? undefined });
     if (service.project_id !== project.id) {
-      ctx.db.prepare("UPDATE services SET project_id = ?, updated_at = ? WHERE id = ?").run(project.id, nowIso(), service.id);
       ctx.db
-        .prepare("UPDATE databases SET project_id = ? WHERE id IN (SELECT linked_database_id FROM services WHERE id = ?)")
+        .prepare("UPDATE services SET project_id = ?, updated_at = ? WHERE id = ?")
+        .run(project.id, nowIso(), service.id);
+      ctx.db
+        .prepare(
+          "UPDATE databases SET project_id = ? WHERE id IN (SELECT linked_database_id FROM services WHERE id = ?)"
+        )
         .run(project.id, service.id);
       movedServices++;
     }

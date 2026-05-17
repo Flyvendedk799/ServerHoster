@@ -131,22 +131,22 @@ function reasonForKey(content: string, key: string): EnvRequirement["reason"] | 
     "i"
   ).test(content);
   if (directRequired) {
-    return /production/i.test(content.slice(Math.max(0, content.indexOf(key) - 300), content.indexOf(key) + 500))
+    return /production/i.test(
+      content.slice(Math.max(0, content.indexOf(key) - 300), content.indexOf(key) + 500)
+    )
       ? "production-config"
       : "required-check";
   }
-  if (
-    /^R2_/.test(key) ||
-    /^S3_/.test(key) ||
-    /^AWS_/.test(key) ||
-    key === "OPENAI_API_KEY"
-  )
+  if (/^R2_/.test(key) || /^S3_/.test(key) || /^AWS_/.test(key) || key === "OPENAI_API_KEY")
     return "integration-secret";
   if (DEFAULT_INFRA_KEYS.has(key)) return "infrastructure-url";
   return null;
 }
 
-function effectiveEnv(ctx: AppContext, service: ServiceRow): Map<string, { value: string; providedBy: EnvRequirement["provided_by"] }> {
+function effectiveEnv(
+  ctx: AppContext,
+  service: ServiceRow
+): Map<string, { value: string; providedBy: EnvRequirement["provided_by"] }> {
   const env = new Map<string, { value: string; providedBy: EnvRequirement["provided_by"] }>();
   if (service.project_id) {
     const rows = ctx.db
@@ -242,7 +242,9 @@ export function scanServiceEnvRequirements(ctx: AppContext, serviceId: string): 
   });
 }
 
-export function listServiceEnvRequirements(ctx: AppContext): Array<{ service_id: string; requirements: EnvRequirement[] }> {
+export function listServiceEnvRequirements(
+  ctx: AppContext
+): Array<{ service_id: string; requirements: EnvRequirement[] }> {
   const services = ctx.db.prepare("SELECT id FROM services").all() as Array<{ id: string }>;
   return services.map((service) => ({
     service_id: service.id,

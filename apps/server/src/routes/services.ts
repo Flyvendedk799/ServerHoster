@@ -678,7 +678,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
     if (p.autoRestart !== undefined)
       ctx.db.prepare("UPDATE services SET auto_restart = ? WHERE id = ?").run(p.autoRestart ? 1 : 0, id);
     if (p.stopWithHoster !== undefined)
-      ctx.db.prepare("UPDATE services SET stop_with_hoster = ? WHERE id = ?").run(p.stopWithHoster ? 1 : 0, id);
+      ctx.db
+        .prepare("UPDATE services SET stop_with_hoster = ? WHERE id = ?")
+        .run(p.stopWithHoster ? 1 : 0, id);
     if (p.dependsOn !== undefined) {
       ctx.db.prepare("UPDATE services SET depends_on = ? WHERE id = ?").run(JSON.stringify(p.dependsOn), id);
     }
@@ -823,7 +825,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
     } | null;
     const services = parsed?.services ?? {};
     const stackName =
-      path.basename(p.workingDir || (p.composeFilePath ? path.dirname(p.composeFilePath) : "")) || "Compose Stack";
+      path.basename(p.workingDir || (p.composeFilePath ? path.dirname(p.composeFilePath) : "")) ||
+      "Compose Stack";
     const projectId = resolveServiceProjectId(ctx, p.projectId, stackName);
 
     // Map compose service name → SURVHub service id (for both existing and new)

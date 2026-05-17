@@ -216,7 +216,9 @@ export function findStaticEntry(projectPath: string): string | null {
     }
 
     if (entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === "index.html")) {
-      const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name.toLowerCase()));
+      const names = new Set(
+        entries.filter((entry) => entry.isFile()).map((entry) => entry.name.toLowerCase())
+      );
       let score = 10 - depth;
       if (names.has("manifest.json")) score += 4;
       if ([...names].some((name) => name.endsWith(".wasm") || name.endsWith(".pck"))) score += 8;

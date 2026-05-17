@@ -48,13 +48,11 @@ export const AGENT_PROVIDERS: AgentProvider[] = [
         : [
             "echo 'Installing Claude Code with the official native installer...'",
             "curl -fsSL https://claude.ai/install.sh | bash",
-            "export PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"",
+            'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"',
             "claude --version"
           ].join(" && "),
     authCommand: (mode) =>
-      mode === "managed"
-        ? "claude auth status || claude auth login --console"
-        : "claude auth login",
+      mode === "managed" ? "claude auth status || claude auth login --console" : "claude auth login",
     runCommand: (mcpUrl, token) =>
       process.platform === "win32"
         ? [
@@ -77,9 +75,11 @@ export const AGENT_PROVIDERS: AgentProvider[] = [
     managedSecretKey: "GEMINI_API_KEY",
     docsUrl: "https://google-gemini.github.io/gemini-cli/docs/get-started/",
     installCommand: () =>
-      ["echo 'Installing Gemini CLI into the isolated npm prefix...'", "npm install -g @google/gemini-cli", "gemini --version"].join(
-        " && "
-      ),
+      [
+        "echo 'Installing Gemini CLI into the isolated npm prefix...'",
+        "npm install -g @google/gemini-cli",
+        "gemini --version"
+      ].join(" && "),
     authCommand: (mode) =>
       mode === "managed"
         ? "gemini"
@@ -190,7 +190,9 @@ function profileSummary(ctx: AppContext, row: AgentProfileRow) {
     version: row.version ?? null,
     managedSecretKey: provider.managedSecretKey,
     hasManagedSecret: Boolean(managedSecret),
-    managedSecretPreview: managedSecret ? maskSecret(decryptSecret(managedSecret.value, ctx.config.secretKey)) : null,
+    managedSecretPreview: managedSecret
+      ? maskSecret(decryptSecret(managedSecret.value, ctx.config.secretKey))
+      : null,
     docsUrl: provider.docsUrl,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -233,7 +235,17 @@ export function createAgentProfile(
         id, service_id, provider, name, auth_mode, auth_status, isolated_home, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, serviceId, provider.id, name, authMode, authMode === "managed" ? "managed-secret-required" : "unknown", isolatedHome, now, now);
+    .run(
+      id,
+      serviceId,
+      provider.id,
+      name,
+      authMode,
+      authMode === "managed" ? "managed-secret-required" : "unknown",
+      isolatedHome,
+      now,
+      now
+    );
   const row = ctx.db.prepare("SELECT * FROM agent_profiles WHERE id = ?").get(id) as AgentProfileRow;
   return profileSummary(ctx, row);
 }
@@ -254,7 +266,9 @@ export function updateAgentProfile(
 ) {
   getProfile(ctx, serviceId, profileId);
   if (fields.name !== undefined) {
-    ctx.db.prepare("UPDATE agent_profiles SET name = ?, updated_at = ? WHERE id = ?").run(fields.name, nowIso(), profileId);
+    ctx.db
+      .prepare("UPDATE agent_profiles SET name = ?, updated_at = ? WHERE id = ?")
+      .run(fields.name, nowIso(), profileId);
   }
   if (fields.authMode !== undefined) {
     ctx.db
@@ -300,12 +314,25 @@ export function deleteAgentSecret(ctx: AppContext, serviceId: string, profileId:
   return { ok: true };
 }
 
-function sessionHome(ctx: AppContext, serviceId: string, provider: string, profileId: string, target: TerminalTarget) {
+function sessionHome(
+  ctx: AppContext,
+  serviceId: string,
+  provider: string,
+  profileId: string,
+  target: TerminalTarget
+) {
   if (target === "host") {
     const hostHome = agentHomeForProfile(ctx, serviceId, provider, profileId);
     return { hostHome, runtimeHome: hostHome };
   }
-  const hostHome = path.join(ctx.config.agentHomeDir, "services", serviceId, "docker-home", provider, profileId);
+  const hostHome = path.join(
+    ctx.config.agentHomeDir,
+    "services",
+    serviceId,
+    "docker-home",
+    provider,
+    profileId
+  );
   const runtimeHome = `/home/survhub-agent/${provider}/${profileId}`;
   fs.mkdirSync(hostHome, { recursive: true, mode: 0o700 });
   return { hostHome, runtimeHome };
@@ -351,7 +378,16 @@ export function createMcpSessionToken(
         id, service_id, terminal_session_id, token_hash, allow_mutations, tool_policy, expires_at, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, serviceId, terminalSessionId, tokenHash(token), allowMutations ? 1 : 0, JSON.stringify(policy), expiresAt, now);
+    .run(
+      id,
+      serviceId,
+      terminalSessionId,
+      tokenHash(token),
+      allowMutations ? 1 : 0,
+      JSON.stringify(policy),
+      expiresAt,
+      now
+    );
   return { id, token, expiresAt, policy };
 }
 

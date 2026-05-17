@@ -172,7 +172,9 @@ export function registerWebhookRoutes(ctx: AppContext): void {
       // So we just select all services that have a github_repo_url and github_branch,
       // and filter them in memory, since the list won't typically be massive.
       const allGithubServices = ctx.db
-        .prepare("SELECT id, github_repo_url, github_branch, github_auto_pull FROM services WHERE github_repo_url IS NOT NULL")
+        .prepare(
+          "SELECT id, github_repo_url, github_branch, github_auto_pull FROM services WHERE github_repo_url IS NOT NULL"
+        )
         .all() as Array<{
         id: string;
         github_repo_url: string;

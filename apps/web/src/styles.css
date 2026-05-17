@@ -1980,7 +1980,12 @@ label {
   border-radius: 6px;
   color: var(--text-muted);
   background: rgba(15, 23, 42, 0.8);
-  font: 0.72rem SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace;
+  font:
+    0.72rem SFMono-Regular,
+    Consolas,
+    Liberation Mono,
+    Menlo,
+    monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

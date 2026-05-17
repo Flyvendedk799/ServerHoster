@@ -78,10 +78,13 @@ test("ensureRepoWebhook: refreshes an existing hook with the current secret", as
       const url = String(input);
       calls.push({ url, init });
       if (url.endsWith("/repos/acme/widget/hooks?per_page=100")) {
-        return new Response(JSON.stringify([{ id: 42, config: { url: "https://host.example/webhooks/github" } }]), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        });
+        return new Response(
+          JSON.stringify([{ id: 42, config: { url: "https://host.example/webhooks/github" } }]),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
       }
       if (url.endsWith("/repos/acme/widget/hooks/42") && init?.method === "PATCH") {
         return new Response(JSON.stringify({ id: 42 }), {

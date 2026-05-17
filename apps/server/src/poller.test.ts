@@ -47,6 +47,29 @@ function initRepo(dir: string): string {
   return commitRepo(dir, "init");
 }
 
+function isWindowsCleanupRace(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EBUSY" || code === "EPERM" || code === "ENOTEMPTY";
+}
+
+async function rmTreeWithRetry(target: string): Promise<void> {
+  const attempts = process.platform === "win32" ? 8 : 2;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === attempts || !isWindowsCleanupRace(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+    }
+  }
+}
+
 test("git poller deploys when a service has no commit baseline", { skip: !hasGit() }, async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-poller-repo-"));
   const firstHash = initRepo(repo);
@@ -97,7 +120,9 @@ test("git poller deploys when a service has no commit baseline", { skip: !hasGit
     await pollGitUpdatesOnce(ctx);
 
     const deployment = ctx.db
-      .prepare("SELECT commit_hash, trigger_source FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT 1")
+      .prepare(
+        "SELECT commit_hash, trigger_source FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT 1"
+      )
       .get(serviceId) as { commit_hash?: string; trigger_source?: string } | undefined;
     assert.equal(deployment?.commit_hash, firstHash);
     assert.equal(deployment?.trigger_source, "gitops-poller");
@@ -108,7 +133,7 @@ test("git poller deploys when a service has no commit baseline", { skip: !hasGit
     assert.equal(after.updateAvailable, false);
   } finally {
     await gracefulShutdown(ctx);
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(path.join(ctx.config.projectsDir, serviceId), { recursive: true, force: true });
+    await rmTreeWithRetry(repo);
+    await rmTreeWithRetry(path.join(ctx.config.projectsDir, serviceId));
   }
 });

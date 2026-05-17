@@ -206,7 +206,10 @@ async function hasLiveProcessGroup(processGroupPid: number | undefined): Promise
   }
 }
 
-function terminateRuntimeProcess(runtime: { process: { kill(signal?: NodeJS.Signals): boolean }; processGroupPid?: number }): void {
+function terminateRuntimeProcess(runtime: {
+  process: { kill(signal?: NodeJS.Signals): boolean };
+  processGroupPid?: number;
+}): void {
   if (process.platform !== "win32" && runtime.processGroupPid) {
     try {
       process.kill(-runtime.processGroupPid, "SIGTERM");
@@ -315,7 +318,12 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
           ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
           const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
           updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
-          insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
+          insertLog(
+            ctx,
+            serviceId,
+            "warn",
+            `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`
+          );
           const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
           createNotification(ctx, {
             kind: "service_crash",
@@ -576,7 +584,9 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
 
   const adopted = await listLiveAdoptableContainers(ctx);
 
-  const rows = ctx.db.prepare("SELECT id, status, start_mode, stop_with_hoster FROM services").all() as Array<{
+  const rows = ctx.db
+    .prepare("SELECT id, status, start_mode, stop_with_hoster FROM services")
+    .all() as Array<{
     id: string;
     status: string;
     start_mode?: string;

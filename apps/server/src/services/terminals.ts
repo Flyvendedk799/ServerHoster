@@ -42,7 +42,8 @@ type CapabilityCheck = {
 };
 
 function terminalEnabled(ctx: AppContext): void {
-  if (!ctx.config.terminalsEnabled) throw new Error("Per-service terminals are disabled by SURVHUB_TERMINALS_ENABLED=0");
+  if (!ctx.config.terminalsEnabled)
+    throw new Error("Per-service terminals are disabled by SURVHUB_TERMINALS_ENABLED=0");
 }
 
 function hostShellForInteractive(): ShellSpec {
@@ -87,7 +88,11 @@ function serviceCwd(service: Record<string, unknown>, override?: string): string
   return cwd;
 }
 
-function prepareHostEnv(ctx: AppContext, serviceId: string, extra?: Record<string, string>): NodeJS.ProcessEnv {
+function prepareHostEnv(
+  ctx: AppContext,
+  serviceId: string,
+  extra?: Record<string, string>
+): NodeJS.ProcessEnv {
   const serviceEnv = getServiceEnvWithLinks(ctx, serviceId);
   return {
     ...process.env,
@@ -211,15 +216,24 @@ export async function detectDockerShell(serviceId: string): Promise<string | nul
   return null;
 }
 
-async function checkDockerCommands(serviceId: string, shell: string, commands: string[]): Promise<CapabilityCheck> {
+async function checkDockerCommands(
+  serviceId: string,
+  shell: string,
+  commands: string[]
+): Promise<CapabilityCheck> {
   const missing: string[] = [];
-  const script = commands.map((command) => `command -v ${command} >/dev/null 2>&1 || echo ${command}`).join("; ");
+  const script = commands
+    .map((command) => `command -v ${command} >/dev/null 2>&1 || echo ${command}`)
+    .join("; ");
   try {
     const { stdout } = await exec("docker", ["exec", `survhub-${serviceId}`, shell, "-lc", script], {
       timeout: 3500,
       maxBuffer: 1024 * 64
     });
-    for (const line of stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+    for (const line of stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)) {
       if (commands.includes(line)) missing.push(line);
     }
   } catch {
@@ -302,7 +316,9 @@ export async function getTerminalCapabilities(ctx: AppContext, serviceId: string
     persistentAgentHome,
     remediation: [
       ...(commands.ok ? [] : [`Install missing container tools: ${commands.missing.join(", ")}`]),
-      ...(persistentAgentHome ? [] : ["Restart/recreate the service so ServerHoster can mount a persistent agent home."])
+      ...(persistentAgentHome
+        ? []
+        : ["Restart/recreate the service so ServerHoster can mount a persistent agent home."])
     ]
   };
 }
@@ -315,7 +331,8 @@ export async function createTerminalSession(ctx: AppContext, options: TerminalCr
 
   const service = getService(ctx, options.serviceId);
   const target = options.target ?? (service.type === "docker" ? "docker" : "host");
-  if (target === "docker" && service.type !== "docker") throw new Error("Docker terminal target requires a Docker service");
+  if (target === "docker" && service.type !== "docker")
+    throw new Error("Docker terminal target requires a Docker service");
 
   const { rows, cols } = normalizeRowsCols(options.rows, options.cols);
   const id = nanoid();
@@ -340,7 +357,14 @@ export async function createTerminalSession(ctx: AppContext, options: TerminalCr
     if (!detected) throw new Error("Docker container has no supported shell (bash, sh, ash)");
     shell = dockerShellForCommand(detected, options.command);
     ptyCommand = "docker";
-    ptyArgs = ["exec", "-it", ...dockerEnvArgs(options.env), `survhub-${options.serviceId}`, shell.command, ...shell.args];
+    ptyArgs = [
+      "exec",
+      "-it",
+      ...dockerEnvArgs(options.env),
+      `survhub-${options.serviceId}`,
+      shell.command,
+      ...shell.args
+    ];
   }
 
   ctx.db
@@ -404,7 +428,10 @@ export async function createTerminalSession(ctx: AppContext, options: TerminalCr
     });
   });
 
-  const row = ctx.db.prepare("SELECT * FROM terminal_sessions WHERE id = ?").get(id) as Record<string, unknown>;
+  const row = ctx.db.prepare("SELECT * FROM terminal_sessions WHERE id = ?").get(id) as Record<
+    string,
+    unknown
+  >;
   return { ...rowToSummary(row), attached: true };
 }
 
@@ -503,7 +530,11 @@ export function handleTerminalWebSocketMessage(
   return true;
 }
 
-export function cleanupTerminalSocket(ctx: AppContext, ws: WebSocket, attachedTerminalIds: Set<string>): void {
+export function cleanupTerminalSocket(
+  ctx: AppContext,
+  ws: WebSocket,
+  attachedTerminalIds: Set<string>
+): void {
   for (const sessionId of attachedTerminalIds) detachTerminal(ctx, sessionId, ws);
   attachedTerminalIds.clear();
 }
@@ -515,7 +546,12 @@ export function stopAllTerminalSessions(ctx: AppContext): void {
   ctx.terminalSubscribers.clear();
 }
 
-export function agentHomeForProfile(ctx: AppContext, serviceId: string, provider: string, profileId: string): string {
+export function agentHomeForProfile(
+  ctx: AppContext,
+  serviceId: string,
+  provider: string,
+  profileId: string
+): string {
   const safeProvider = provider.replace(/[^a-z0-9_-]/gi, "_");
   const home = path.join(ctx.config.agentHomeDir, "services", serviceId, safeProvider, profileId);
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -561,9 +597,5 @@ export function defaultMcpBaseUrl(ctx: AppContext, target: TerminalTarget): stri
 
 export function diagnosticsHeader(title: string, lines: string[] = []): string {
   const prefix = os.EOL;
-  return [
-    `${prefix}# ${title}`,
-    ...lines.map((line) => `# ${line}`),
-    ""
-  ].join(os.EOL);
+  return [`${prefix}# ${title}`, ...lines.map((line) => `# ${line}`), ""].join(os.EOL);
 }

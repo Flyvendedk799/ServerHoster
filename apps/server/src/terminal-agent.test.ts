@@ -27,7 +27,24 @@ function insertProcessService(ctx: Awaited<ReturnType<typeof buildApp>>, working
         auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, "proj-test", "terminal-test", "process", "node server.js", workingDir, "", "", 0, "stopped", 1, 0, 5, "manual", now, now);
+    .run(
+      id,
+      "proj-test",
+      "terminal-test",
+      "process",
+      "node server.js",
+      workingDir,
+      "",
+      "",
+      0,
+      "stopped",
+      1,
+      0,
+      5,
+      "manual",
+      now,
+      now
+    );
   return id;
 }
 

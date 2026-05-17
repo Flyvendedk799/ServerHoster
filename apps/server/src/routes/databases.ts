@@ -411,7 +411,9 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
 
     const wantsImport = p.importEmbeddedSqlite || p.autoImportEmbedded;
     const embeddedMatch = wantsImport
-      ? (await listEmbeddedDatabases(ctx, { includeLinkedServices: true })).find((e) => e.service_id === serviceId)
+      ? (await listEmbeddedDatabases(ctx, { includeLinkedServices: true })).find(
+          (e) => e.service_id === serviceId
+        )
       : undefined;
 
     // mode === "managed": reuse an existing service DB if one was created by a
@@ -503,7 +505,11 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
             importError = "No embedded SQLite file detected on the source service.";
           }
         } else {
-          const result = await importSqliteIntoPostgres(embeddedMatch.container_name, embeddedMatch.file_path, row);
+          const result = await importSqliteIntoPostgres(
+            embeddedMatch.container_name,
+            embeddedMatch.file_path,
+            row
+          );
           importLog = result.output;
         }
       } catch (error) {

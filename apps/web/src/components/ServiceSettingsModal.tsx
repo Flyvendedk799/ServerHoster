@@ -77,9 +77,7 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
   const [otherServices, setOtherServices] = useState<AllService[]>([]);
   const [githubStatus, setGithubStatus] = useState<GithubStatus | null>(null);
   const [syncStatus, setSyncStatus] = useState<GithubSyncStatus | null>(null);
-  const [webhookUrl, setWebhookUrl] = useState(
-    `${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`
-  );
+  const [webhookUrl, setWebhookUrl] = useState(`${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
   const webhookLooksLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(webhookUrl);
 
   useEffect(() => {
@@ -310,8 +308,8 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
             <span>Stop this service when ServerHoster stops</span>
           </label>
           <p className="hint">
-            Leave this on for local dev apps. Turn it off for durable background services that should survive the
-            control panel.
+            Leave this on for local dev apps. Turn it off for durable background services that should survive
+            the control panel.
           </p>
 
           {service.github_repo_url && (
@@ -348,13 +346,19 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
                   <label>Webhook URL</label>
                   <input value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
                   {webhookLooksLocal && (
-                    <span className="hint">GitHub cannot reach localhost. Use a public HTTPS URL for live webhooks.</span>
+                    <span className="hint">
+                      GitHub cannot reach localhost. Use a public HTTPS URL for live webhooks.
+                    </span>
                   )}
                 </div>
               </div>
 
               <div className="row wrap" style={{ gap: "0.5rem", marginTop: "0.75rem" }}>
-                <button className="ghost small" onClick={() => void loadGithubSyncStatus(false)} disabled={syncBusy}>
+                <button
+                  className="ghost small"
+                  onClick={() => void loadGithubSyncStatus(false)}
+                  disabled={syncBusy}
+                >
                   {syncBusy ? "Checking..." : "Check Remote"}
                 </button>
                 <button className="ghost small" onClick={redeployLatest} disabled={gitBusy !== null}>
@@ -367,7 +371,9 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
                 >
                   {gitBusy === "webhook" ? "Registering..." : "Register Webhook"}
                 </button>
-                {!githubStatus?.configured && <span className="hint">GitHub PAT required for webhook registration.</span>}
+                {!githubStatus?.configured && (
+                  <span className="hint">GitHub PAT required for webhook registration.</span>
+                )}
                 {githubStatus && !githubStatus.webhookInsecure && !githubStatus.webhookSecretConfigured && (
                   <span className="hint">SURVHUB_WEBHOOK_SECRET required for signed webhooks.</span>
                 )}
