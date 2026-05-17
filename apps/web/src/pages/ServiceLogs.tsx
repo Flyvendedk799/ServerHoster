@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Download, Eraser, Search, Terminal } from "lucide-react";
+import { Bot, Download, Eraser, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
+import { openServiceTerminal } from "../components/TerminalDock";
 
 type LogRow = {
   id?: string;
@@ -119,6 +120,16 @@ export function ServiceLogsPage() {
         <Link to="/services" className="button ghost small">
           Back to Services
         </Link>
+        {service && (
+          <>
+            <button className="ghost small" onClick={() => openServiceTerminal(service, "shell")}>
+              <Terminal size={15} /> Console
+            </button>
+            <button className="ghost small" onClick={() => openServiceTerminal(service, "agents")}>
+              <Bot size={15} /> Agents
+            </button>
+          </>
+        )}
       </div>
 
       <div className="card terminal-card">

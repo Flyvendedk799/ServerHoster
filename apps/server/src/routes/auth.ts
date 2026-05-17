@@ -47,6 +47,8 @@ const API_PREFIXES = [
   "/webhooks",
   "/migrations",
   "/backup",
+  "/agents",
+  "/mcp",
   "/ws",
   "/onboarding",
   "/service-templates",
@@ -87,6 +89,9 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // Webhooks authenticate via HMAC signature (verified inside the route),
     // not via Bearer token. Skipping the auth gate here is intentional.
     if (path.startsWith("/webhooks/")) return;
+    // MCP sessions use short-lived per-agent bearer tokens, validated inside
+    // the MCP route instead of dashboard session tokens.
+    if (path.startsWith("/mcp/")) return;
     // ACME HTTP-01 challenges must be reachable from Let's Encrypt without auth.
     if (path.startsWith("/.well-known/acme-challenge/")) return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API

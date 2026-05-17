@@ -2,15 +2,18 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
+import { parseRepoFullName } from "../services/github.js";
 
 const githubPushPayloadSchema = z
   .object({
     ref: z.string(),
+    deleted: z.boolean().optional(),
     repository: z
       .object({
         clone_url: z.string().optional(),
         html_url: z.string().optional(),
-        url: z.string().optional()
+        url: z.string().optional(),
+        full_name: z.string().optional()
       })
       .passthrough()
   })
@@ -57,7 +60,10 @@ export function registerWebhookRoutes(ctx: AppContext): void {
         return reply.code(400).send({ error: "Invalid GitHub payload" });
       }
 
-      const { ref, repository } = parseResult.data;
+      const { ref, repository, deleted } = parseResult.data;
+      if (deleted) {
+        return { ok: true, message: "Branch deletion ignored", matched: 0, skippedDeleted: true };
+      }
 
       // ref is typically "refs/heads/main" or "refs/heads/branch-name"
       const branchParts = ref.split("/");
@@ -67,8 +73,9 @@ export function registerWebhookRoutes(ctx: AppContext): void {
       const urlsToMatch = [repository.clone_url, repository.html_url, repository.url].filter(
         Boolean
       ) as string[];
+      const repoFullName = repository.full_name?.toLowerCase() ?? null;
 
-      if (urlsToMatch.length === 0 || !pushedBranch) {
+      if ((urlsToMatch.length === 0 && !repoFullName) || !pushedBranch) {
         return reply.code(400).send({ error: "Missing repository URLs or branch in payload" });
       }
 
@@ -77,25 +84,34 @@ export function registerWebhookRoutes(ctx: AppContext): void {
       // So we just select all services that have a github_repo_url and github_branch,
       // and filter them in memory, since the list won't typically be massive.
       const allGithubServices = ctx.db
-        .prepare("SELECT id, github_repo_url, github_branch FROM services WHERE github_repo_url IS NOT NULL")
+        .prepare("SELECT id, github_repo_url, github_branch, github_auto_pull FROM services WHERE github_repo_url IS NOT NULL")
         .all() as Array<{
         id: string;
         github_repo_url: string;
         github_branch: string | null;
+        github_auto_pull: number | null;
       }>;
 
+      let skippedAutoPull = 0;
       const matchedServices = allGithubServices.filter((s) => {
         // Normalize URLs: remove trailing .git
         const serviceUrlNorm = s.github_repo_url.replace(/\.git$/, "").toLowerCase();
+        const serviceFullName = parseRepoFullName(s.github_repo_url)?.toLowerCase() ?? null;
         const matchUrl = urlsToMatch.some(
           (url) => url.replace(/\.git$/, "").toLowerCase() === serviceUrlNorm
         );
+        const matchFullName = Boolean(repoFullName && serviceFullName === repoFullName);
         const matchBranch = (s.github_branch || "main") === pushedBranch;
-        return matchUrl && matchBranch;
+        const matches = (matchUrl || matchFullName) && matchBranch;
+        if (matches && s.github_auto_pull === 0) {
+          skippedAutoPull += 1;
+          return false;
+        }
+        return matches;
       });
 
       if (matchedServices.length === 0) {
-        return { ok: true, message: "No matching services found to deploy", matched: 0 };
+        return { ok: true, message: "No matching services found to deploy", matched: 0, skippedAutoPull };
       }
 
       // Trigger deployments asynchronously so we can return 200 OK immediately to GitHub
@@ -118,7 +134,7 @@ export function registerWebhookRoutes(ctx: AppContext): void {
         })
       );
 
-      return { ok: true, message: "Deployments triggered", matched: matchedServices.length };
+      return { ok: true, message: "Deployments triggered", matched: matchedServices.length, skippedAutoPull };
     }
   );
 }

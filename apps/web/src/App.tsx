@@ -34,6 +34,7 @@ import { OnboardingPage } from "./pages/Onboarding";
 import { api, clearAuthToken } from "./lib/api";
 import { connectLogs } from "./lib/ws";
 import { CommandPalette } from "./components/CommandPalette";
+import { TerminalDock } from "./components/TerminalDock";
 
 function NotificationBadge() {
   const [count, setCount] = useState(0);
@@ -158,6 +159,16 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("survhub_sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
+
+  useEffect(() => {
+    const onAuthExpired = () => {
+      if (location.pathname !== "/login" && location.pathname !== "/onboarding") {
+        navigate("/login", { replace: true });
+      }
+    };
+    window.addEventListener("survhub:auth-expired", onAuthExpired);
+    return () => window.removeEventListener("survhub:auth-expired", onAuthExpired);
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     async function checkStatus() {
@@ -476,6 +487,7 @@ export function App() {
           </motion.div>
         </AnimatePresence>
       </main>
+      <TerminalDock />
     </div>
   );
 }

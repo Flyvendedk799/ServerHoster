@@ -48,7 +48,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [command, setCommand] = useState("");
   const [scan, setScan] = useState<LocalProjectScan | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
+  const [projectId, setProjectId] = useState("");
   const [loading, setLoading] = useState(false);
   const [buildLog, setBuildLog] = useState<string[]>([]);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
@@ -62,12 +62,6 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [buildLog]);
-
-  useEffect(() => {
-    if (!projectId && projects[0]?.id) {
-      setProjectId(projects[0].id);
-    }
-  }, [projectId, projects]);
 
   function handleRepoUrlChange(value: string) {
     const previousInferred = inferNameFromRepoUrl(repoUrl);
@@ -117,16 +111,9 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
     setStep(2);
 
     try {
-      let launchProjectId = projectId;
+      const launchProjectId = projectId;
       if (!launchProjectId) {
-        setBuildLog((prev) => [...prev, "No project selected. Creating Default Project..."]);
-        const project = await api<Project>("/projects", {
-          method: "POST",
-          body: JSON.stringify({ name: "Default Project" })
-        });
-        launchProjectId = project.id;
-        setProjectId(project.id);
-        setBuildLog((prev) => [...prev, "Default Project ready."]);
+        setBuildLog((prev) => [...prev, "No project selected. LocalSURV will create or reuse an app project."]);
       }
 
       const result = await api<any>(
@@ -138,6 +125,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
             name: name.trim(),
             localPath: source === "local" ? localPath.trim() : undefined,
             repoUrl: source === "github" ? repoUrl.trim() : undefined,
+            autoPull: source === "github" ? true : undefined,
             command: source === "local" ? command.trim() : undefined,
             port: port ? Number(port) : undefined,
             startAfterDeploy: true,
@@ -369,9 +357,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                 <div className="form-group">
                   <label>Project</label>
                   <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-                    {!projectId && projects.length === 0 && (
-                      <option value="">Default Project will be created</option>
-                    )}
+                    <option value="">Auto: create or reuse app project</option>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}

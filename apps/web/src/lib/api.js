@@ -1,11 +1,18 @@
 import { toast } from "./toast";
 const BASE_URL = import.meta.env.VITE_SURVHUB_API_URL ?? "http://localhost:8787";
 const TOKEN_KEY = "survhub_token";
+const AUTH_EXPIRED_EVENT = "survhub:auth-expired";
 export function setAuthToken(token) {
   localStorage.setItem(TOKEN_KEY, token);
 }
 export function clearAuthToken() {
   localStorage.removeItem(TOKEN_KEY);
+}
+function expireAuthToken() {
+  if (getAuthToken()) {
+    clearAuthToken();
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
 }
 function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY) ?? "";
@@ -39,6 +46,9 @@ export async function api(path, init) {
       message = parsed.error ?? parsed.message ?? message;
     } catch {
       /* non-JSON body, keep raw text */
+    }
+    if (response.status === 401) {
+      expireAuthToken();
     }
     if (!silent) toast.error(`${response.status} ${path}: ${message}`);
     throw new Error(message);

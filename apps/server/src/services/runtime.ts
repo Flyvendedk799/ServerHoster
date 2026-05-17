@@ -1,5 +1,7 @@
 import fs from "node:fs";
-import { spawn } from "node:child_process";
+import path from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import {
   broadcast,
   nowIso,
@@ -11,7 +13,11 @@ import {
 } from "../lib/core.js";
 import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
+
+const exec = promisify(execFile);
 import { buildConnectionString, getDatabase } from "./databases.js";
+
+type DockerRestartPolicy = "no" | "unless-stopped";
 
 /**
  * Merge project env, service env, and auto-injected DATABASE_URL.
@@ -19,7 +25,7 @@ import { buildConnectionString, getDatabase } from "./databases.js";
  * Service-level values always win so users can override project defaults
  * and the DATABASE_URL auto-injection.
  */
-function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
+export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
   const service = ctx.db
     .prepare("SELECT project_id, linked_database_id, type FROM services WHERE id = ?")
     .get(serviceId) as { project_id?: string; linked_database_id?: string; type?: string } | undefined;
@@ -71,6 +77,28 @@ async function getContainerPort(ctx: AppContext, image: string, hostPort: number
   return hostPort;
 }
 
+function desiredDockerRestartPolicy(stopWithHoster: unknown): DockerRestartPolicy {
+  return Number(stopWithHoster ?? 1) ? "no" : "unless-stopped";
+}
+
+async function ensureDockerRestartPolicy(
+  ctx: AppContext,
+  serviceId: string,
+  container: { inspect: () => Promise<any>; update: (opts: any) => Promise<unknown> },
+  restartPolicyName: DockerRestartPolicy,
+  info?: any
+): Promise<void> {
+  const containerInfo = info ?? (await container.inspect());
+  const currentPolicy = containerInfo.HostConfig?.RestartPolicy?.Name ?? "no";
+  if (currentPolicy === restartPolicyName) return;
+  try {
+    await container.update({ RestartPolicy: { Name: restartPolicyName } } as any);
+    insertLog(ctx, serviceId, "info", `Updated Docker restart policy to ${restartPolicyName}.`);
+  } catch (error) {
+    insertLog(ctx, serviceId, "warn", `Could not update Docker restart policy: ${serializeError(error)}`);
+  }
+}
+
 async function getOrCreateContainer(
   ctx: AppContext,
   serviceId: string,
@@ -78,17 +106,25 @@ async function getOrCreateContainer(
   command: string,
   hostPort: number,
   containerPort: number,
-  envList: string[]
+  envList: string[],
+  restartPolicyName: DockerRestartPolicy
 ) {
   const containerName = `survhub-${serviceId}`;
   const exposedPort = containerPort ? `${containerPort}/tcp` : undefined;
+  const agentHomeHostPath = path.join(ctx.config.agentHomeDir, "services", serviceId, "docker-home");
+  fs.mkdirSync(agentHomeHostPath, { recursive: true });
+  const agentHomeBind = `${agentHomeHostPath}:/home/survhub-agent`;
+  const extraHosts = process.platform === "linux" ? ["host.docker.internal:host-gateway"] : undefined;
   try {
     const existing = ctx.docker.getContainer(containerName);
     const info = await existing.inspect();
     const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
     const mappedToRequestedPort =
       !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
-    if (mappedToRequestedPort) return existing;
+    if (mappedToRequestedPort) {
+      await ensureDockerRestartPolicy(ctx, serviceId, existing, restartPolicyName, info);
+      return existing;
+    }
     try {
       await existing.stop({ t: 10 });
     } catch {}
@@ -109,9 +145,12 @@ async function getOrCreateContainer(
     Cmd: command ? command.split(/\s+/) : undefined,
     Env: envList,
     ExposedPorts: exposedPort ? { [exposedPort]: {} } : undefined,
+    Healthcheck: exposedPort ? undefined : { Test: ["NONE"] },
     HostConfig: {
       PortBindings: exposedPort && hostPort ? { [exposedPort]: [{ HostPort: String(hostPort) }] } : undefined,
-      RestartPolicy: { Name: "unless-stopped" }
+      RestartPolicy: { Name: restartPolicyName },
+      Binds: [agentHomeBind],
+      ExtraHosts: extraHosts
     }
   });
 }
@@ -154,6 +193,49 @@ export async function withLock<T>(ctx: AppContext, serviceId: string, task: () =
   return task().finally(() => ctx.actionLocks.delete(serviceId));
 }
 
+async function hasLiveProcessGroup(processGroupPid: number | undefined): Promise<boolean> {
+  if (!processGroupPid || process.platform === "win32") return false;
+  try {
+    const { stdout } = await exec("ps", ["-axo", "pgid="], { timeout: 1500, maxBuffer: 1024 * 1024 });
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => Number(line.trim()))
+      .some((pgid) => pgid === processGroupPid);
+  } catch {
+    return false;
+  }
+}
+
+function terminateRuntimeProcess(runtime: { process: { kill(signal?: NodeJS.Signals): boolean }; processGroupPid?: number }): void {
+  if (process.platform !== "win32" && runtime.processGroupPid) {
+    try {
+      process.kill(-runtime.processGroupPid, "SIGTERM");
+      setTimeout(() => {
+        try {
+          process.kill(-runtime.processGroupPid!, "SIGKILL");
+        } catch {
+          /* process group already exited */
+        }
+      }, 5000);
+      return;
+    } catch {
+      /* fall back to the direct child below */
+    }
+  }
+  try {
+    runtime.process.kill("SIGTERM");
+    setTimeout(() => {
+      try {
+        runtime.process.kill("SIGKILL");
+      } catch {
+        /* process already exited */
+      }
+    }, 5000);
+  } catch {
+    /* process already exited */
+  }
+}
+
 async function startProcessService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
   if (ctx.runtimeProcesses.has(serviceId)) return;
@@ -174,9 +256,10 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   const child = spawn(command, {
     cwd,
     env: { ...process.env, ...portEnv, ...serviceEnvFromLinks },
-    shell: true
+    shell: true,
+    detached: process.platform !== "win32"
   });
-  ctx.runtimeProcesses.set(serviceId, { process: child, serviceId });
+  ctx.runtimeProcesses.set(serviceId, { process: child, serviceId, processGroupPid: child.pid });
   ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Started command: ${command}`);
@@ -202,50 +285,71 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   child.stdout.on("data", (d) => insertLog(ctx, serviceId, "info", d.toString()));
   child.stderr.on("data", (d) => insertLog(ctx, serviceId, "error", d.toString()));
   child.on("exit", (code) => {
-    ctx.runtimeProcesses.delete(serviceId);
+    const runtime = ctx.runtimeProcesses.get(serviceId);
     const cfg = ctx.db
       .prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?")
       .get(serviceId) as { auto_restart: number; restart_count: number; max_restarts: number } | undefined;
     if (!cfg) return;
     if (ctx.manuallyStopped.has(serviceId)) {
+      ctx.runtimeProcesses.delete(serviceId);
       ctx.manuallyStopped.delete(serviceId);
       updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
       return;
     }
-    if (cfg.auto_restart && cfg.restart_count < cfg.max_restarts) {
-      const nextCount = cfg.restart_count + 1;
-      ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
-      const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
-      updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
-      insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
-      const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
-      createNotification(ctx, {
-        kind: "service_crash",
-        severity: "warning",
-        title: `Service crashed: ${serviceName}`,
-        body: `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
-        serviceId
+    setTimeout(() => {
+      void (async () => {
+        const childRuntime = runtime ?? ctx.runtimeProcesses.get(serviceId);
+        if ((code ?? 0) === 0 && (await hasLiveProcessGroup(childRuntime?.processGroupPid))) {
+          updateServiceStatus(ctx, serviceId, "running", 0);
+          insertLog(
+            ctx,
+            serviceId,
+            "info",
+            "Launcher exited cleanly; adopted the remaining child process group as the running service."
+          );
+          return;
+        }
+        ctx.runtimeProcesses.delete(serviceId);
+        if (cfg.auto_restart && cfg.restart_count < cfg.max_restarts) {
+          const nextCount = cfg.restart_count + 1;
+          ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
+          const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
+          updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
+          insertLog(ctx, serviceId, "warn", `Service crashed. Restart attempt ${nextCount} in ${backoffMs}ms.`);
+          const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
+          createNotification(ctx, {
+            kind: "service_crash",
+            severity: "warning",
+            title: `Service crashed: ${serviceName}`,
+            body: `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
+            serviceId
+          });
+          setTimeout(() => {
+            void withLock(ctx, serviceId, () => startProcessService(ctx, serviceId)).catch((error) => {
+              insertLog(ctx, serviceId, "error", `Restart failed: ${serializeError(error)}`);
+              updateServiceStatus(ctx, serviceId, "crashed");
+            });
+          }, backoffMs);
+          return;
+        }
+        updateServiceStatus(ctx, serviceId, "stopped", code ?? 1);
+        insertLog(ctx, serviceId, "warn", "Service stopped.");
+        if ((code ?? 0) !== 0) {
+          const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
+          createNotification(ctx, {
+            kind: "service_crash",
+            severity: "error",
+            title: `Service stopped abnormally: ${serviceName}`,
+            body: `Exit code ${code}. Auto-restart exhausted or disabled.`,
+            serviceId
+          });
+        }
+      })().catch((error) => {
+        insertLog(ctx, serviceId, "error", `Exit handling failed: ${serializeError(error)}`);
+        ctx.runtimeProcesses.delete(serviceId);
+        updateServiceStatus(ctx, serviceId, "crashed", code ?? 1);
       });
-      setTimeout(() => {
-        void withLock(ctx, serviceId, () => startProcessService(ctx, serviceId)).catch((error) => {
-          insertLog(ctx, serviceId, "error", `Restart failed: ${serializeError(error)}`);
-          updateServiceStatus(ctx, serviceId, "crashed");
-        });
-      }, backoffMs);
-      return;
-    }
-    updateServiceStatus(ctx, serviceId, "stopped", code ?? 1);
-    insertLog(ctx, serviceId, "warn", "Service stopped.");
-    if ((code ?? 0) !== 0) {
-      const serviceName = String(getService(ctx, serviceId).name ?? serviceId);
-      createNotification(ctx, {
-        kind: "service_crash",
-        severity: "error",
-        title: `Service stopped abnormally: ${serviceName}`,
-        body: `Exit code ${code}. Auto-restart exhausted or disabled.`,
-        serviceId
-      });
-    }
+    }, 500);
   });
 }
 
@@ -261,6 +365,7 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   const command = String(service.command || "").trim();
   const port = Number(service.port || 0);
   const dockerServiceEnv = getServiceEnvWithLinks(ctx, serviceId);
+  const restartPolicyName = desiredDockerRestartPolicy(service.stop_with_hoster);
 
   updateServiceStatus(ctx, serviceId, "starting");
   insertLog(ctx, serviceId, "info", `Starting Docker service with image ${image}`);
@@ -282,7 +387,16 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
     insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
   }
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
-  const container = await getOrCreateContainer(ctx, serviceId, image, command, port, containerPort, envList);
+  const container = await getOrCreateContainer(
+    ctx,
+    serviceId,
+    image,
+    command,
+    port,
+    containerPort,
+    envList,
+    restartPolicyName
+  );
   try {
     await container.start();
   } catch (error) {
@@ -343,8 +457,7 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
   } else {
     const runtime = ctx.runtimeProcesses.get(serviceId);
     if (runtime) {
-      runtime.process.kill("SIGTERM");
-      setTimeout(() => runtime.process.kill("SIGKILL"), 5000);
+      terminateRuntimeProcess(runtime);
       ctx.runtimeProcesses.delete(serviceId);
     }
   }
@@ -463,13 +576,24 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
 
   const adopted = await listLiveAdoptableContainers(ctx);
 
-  const rows = ctx.db.prepare("SELECT id, status, start_mode FROM services").all() as Array<{
+  const rows = ctx.db.prepare("SELECT id, status, start_mode, stop_with_hoster FROM services").all() as Array<{
     id: string;
     status: string;
     start_mode?: string;
+    stop_with_hoster?: number;
   }>;
   for (const row of rows) {
     if (adopted.has(row.id)) {
+      try {
+        await ensureDockerRestartPolicy(
+          ctx,
+          row.id,
+          ctx.docker.getContainer(`survhub-${row.id}`),
+          desiredDockerRestartPolicy(row.stop_with_hoster)
+        );
+      } catch (error) {
+        insertLog(ctx, row.id, "warn", `Could not reconcile Docker restart policy: ${serializeError(error)}`);
+      }
       // Container is alive in Docker — treat the service as running and
       // skip auto-start so we don't recreate an already-healthy container.
       if (row.status !== "running") {
@@ -573,8 +697,22 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
     /* ignore */
   }
 
+  const rows = ctx.db
+    .prepare(
+      "SELECT id FROM services WHERE status IN ('running', 'starting') AND COALESCE(stop_with_hoster, 1) != 0"
+    )
+    .all() as Array<{ id: string }>;
+  for (const row of rows) {
+    try {
+      insertLog(ctx, row.id, "warn", "ServerHoster is shutting down; stopping managed service.");
+      await stopService(ctx, row.id);
+    } catch (error) {
+      insertLog(ctx, row.id, "error", `Shutdown stop failed: ${serializeError(error)}`);
+    }
+  }
+
   for (const [serviceId, runtime] of ctx.runtimeProcesses.entries()) {
-    runtime.process.kill("SIGTERM");
+    terminateRuntimeProcess(runtime);
     insertLog(ctx, serviceId, "warn", "Service received shutdown signal.");
   }
   for (const task of ctx.shutdownTasks) {

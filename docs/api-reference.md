@@ -59,6 +59,7 @@ Errors are returned as `{ "error": "message" }` with the appropriate HTTP status
 | `POST`   | `/services/:id/start`          |                                                                                                                                       | Start (with dependency resolution)                                                      |
 | `POST`   | `/services/:id/stop`           |                                                                                                                                       | Stop; warns dependents via service log                                                  |
 | `POST`   | `/services/:id/restart`        |                                                                                                                                       | Restart                                                                                 |
+| `GET`    | `/services/:id/github-sync-status` |                                                                                                                                    | Compare tracked GitHub branch HEAD against the latest local deployment hash             |
 | `POST`   | `/services/:id/redeploy`       |                                                                                                                                       | Redeploy current branch HEAD from `github_repo_url`                                     |
 | `GET`    | `/services/:id/env`            |                                                                                                                                       | Service env vars (secrets masked)                                                       |
 | `POST`   | `/services/:id/env`            | `{ key, value, isSecret? }`                                                                                                           | Add env var                                                                             |
@@ -113,9 +114,11 @@ Host-based routing: any incoming request whose `Host` header matches a `proxy_ro
 | `GET`    | `/settings`               |                           | Masked list of all settings                                             |
 | `PUT`    | `/settings`               | `{ key, value }`          | Write (auto-encrypted if in secret whitelist)                           |
 | `DELETE` | `/settings/:key`          |                           | Remove                                                                  |
-| `GET`    | `/settings/github/status` |                           | `{ configured, tokenPrefix }`                                           |
+| `GET`    | `/settings/github/status` |                           | PAT/webhook status, poll interval, saved webhook URL                    |
 | `POST`   | `/settings/github/pat`    | `{ token }`               | Validates against `/user`, then stores encrypted                        |
 | `DELETE` | `/settings/github/pat`    |                           | Remove                                                                  |
+| `PUT`    | `/settings/github/webhook-url` | `{ url }`            | Save the public GitHub webhook payload URL                              |
+| `DELETE` | `/settings/github/webhook-url` |                      | Remove the saved GitHub webhook payload URL                             |
 | `GET`    | `/settings/ssh`           |                           | Configured key path + public key (reads `.pub` or runs `ssh-keygen -y`) |
 | `PUT`    | `/settings/ssh`           | `{ path }`                | Save SSH key path                                                       |
 | `GET`    | `/github/repos`           |                           | Paginated list of the user's GitHub repos via the stored PAT            |

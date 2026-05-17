@@ -25,3 +25,24 @@ test("detectBuildType unknown when no markers", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("detectBuildType detects Godot projects", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-detect-godot-"));
+  try {
+    fs.writeFileSync(path.join(root, "project.godot"), "[application]\n");
+    assert.equal(detectBuildType(root), "godot");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detectBuildType detects nested static web apps", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-detect-static-"));
+  try {
+    fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(root, "dist", "index.html"), "<!doctype html>");
+    assert.equal(detectBuildType(root), "static");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

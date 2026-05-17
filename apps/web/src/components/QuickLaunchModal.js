@@ -1,4 +1,4 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { jsx, jsxs } from "react/jsx-runtime";
 import { useState, useEffect, useRef } from "react";
 import {
   FolderOpen,
@@ -14,7 +14,7 @@ import {
 import { api } from "../lib/api";
 import { inferNameFromRepoUrl } from "../lib/repo";
 import { toast } from "../lib/toast";
-export function QuickLaunchModal({ projects, onClose, onLaunched }) {
+function QuickLaunchModal({ projects, onClose, onLaunched }) {
   const [step, setStep] = useState(1);
   const [source, setSource] = useState("local");
   const [exposure, setExposure] = useState("local");
@@ -25,24 +25,15 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
   const [command, setCommand] = useState("");
   const [scan, setScan] = useState(null);
   const [scanning, setScanning] = useState(false);
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
+  const [projectId, setProjectId] = useState("");
   const [loading, setLoading] = useState(false);
   const [buildLog, setBuildLog] = useState([]);
   const [tunnelUrl, setTunnelUrl] = useState(null);
   const logRef = useRef(null);
-  const canLaunch =
-    Boolean(name.trim()) &&
-    (source === "github"
-      ? Boolean(repoUrl.trim())
-      : Boolean(localPath.trim()) && (Boolean(command.trim()) || scan?.buildType === "docker"));
+  const canLaunch = Boolean(name.trim()) && (source === "github" ? Boolean(repoUrl.trim()) : Boolean(localPath.trim()) && (Boolean(command.trim()) || scan?.buildType === "docker"));
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [buildLog]);
-  useEffect(() => {
-    if (!projectId && projects[0]?.id) {
-      setProjectId(projects[0].id);
-    }
-  }, [projectId, projects]);
   function handleRepoUrlChange(value) {
     const previousInferred = inferNameFromRepoUrl(repoUrl);
     const nextInferred = inferNameFromRepoUrl(value);
@@ -88,16 +79,9 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
     setBuildLog(["Initializing deployment environment..."]);
     setStep(2);
     try {
-      let launchProjectId = projectId;
+      const launchProjectId = projectId;
       if (!launchProjectId) {
-        setBuildLog((prev) => [...prev, "No project selected. Creating Default Project..."]);
-        const project = await api("/projects", {
-          method: "POST",
-          body: JSON.stringify({ name: "Default Project" })
-        });
-        launchProjectId = project.id;
-        setProjectId(project.id);
-        setBuildLog((prev) => [...prev, "Default Project ready."]);
+        setBuildLog((prev) => [...prev, "No project selected. LocalSURV will create or reuse an app project."]);
       }
       const result = await api(
         source === "local" ? "/services/deploy-from-local" : "/services/deploy-from-github",
@@ -106,10 +90,10 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
           body: JSON.stringify({
             projectId: launchProjectId,
             name: name.trim(),
-            localPath: source === "local" ? localPath.trim() : undefined,
-            repoUrl: source === "github" ? repoUrl.trim() : undefined,
-            command: source === "local" ? command.trim() : undefined,
-            port: port ? Number(port) : undefined,
+            localPath: source === "local" ? localPath.trim() : void 0,
+            repoUrl: source === "github" ? repoUrl.trim() : void 0,
+            command: source === "local" ? command.trim() : void 0,
+            port: port ? Number(port) : void 0,
             startAfterDeploy: true,
             enableQuickTunnel: exposure === "online"
           })
@@ -129,9 +113,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
         ]);
         return;
       }
-      // Poll for tunnel/status
       for (let i = 0; i < 30; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2e3));
         try {
           const svc = await api(`/services/${svcId}`, { silent: true });
           if (svc.tunnel_url) {
@@ -151,361 +134,273 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
       setLoading(false);
     }
   }
-  return _jsx("div", {
-    className: "modal-overlay",
-    onClick: onClose,
-    children: _jsxs("div", {
-      className: "modal-content",
-      style: { maxWidth: "600px" },
-      onClick: (e) => e.stopPropagation(),
-      children: [
-        _jsxs("header", {
-          className: "modal-header",
-          children: [
-            _jsxs("div", {
-              className: "row",
+  return /* @__PURE__ */ jsx("div", { className: "modal-overlay", onClick: onClose, children: /* @__PURE__ */ jsxs("div", { className: "modal-content", style: { maxWidth: "600px" }, onClick: (e) => e.stopPropagation(), children: [
+    /* @__PURE__ */ jsxs("header", { className: "modal-header", children: [
+      /* @__PURE__ */ jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsx("div", { className: "launch-icon", children: /* @__PURE__ */ jsx(Play, { size: 22 }) }),
+        /* @__PURE__ */ jsx("h3", { children: "Quick Launch Pipeline" })
+      ] }),
+      /* @__PURE__ */ jsx("p", { className: "hint", children: "Import a local folder or paste a GitHub repository URL, then run it locally or through a tunnel." })
+    ] }),
+    /* @__PURE__ */ jsx("div", { className: "modal-body", children: step === 1 ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: "1.5rem" }, children: [
+      /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+        /* @__PURE__ */ jsx("label", { children: "Deployment Method" }),
+        /* @__PURE__ */ jsxs("div", { className: "row", style: { gap: "1rem" }, children: [
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              className: `ghost ${source === "local" ? "active-btn" : ""}`,
+              onClick: () => setSource("local"),
+              "aria-label": "Import from a local folder",
+              "data-tooltip": "Import from a folder on this machine",
               children: [
-                _jsx("div", { className: "launch-icon", children: _jsx(Play, { size: 22 }) }),
-                _jsx("h3", { children: "Quick Launch Pipeline" })
+                /* @__PURE__ */ jsx(FolderOpen, { size: 16 }),
+                " Local Folder"
               ]
-            }),
-            _jsx("p", {
-              className: "hint",
-              children:
-                "Import a local folder or paste a GitHub repository URL, then run it locally or through a tunnel."
-            })
-          ]
-        }),
-        _jsx("div", {
-          className: "modal-body",
-          children:
-            step === 1
-              ? _jsxs("div", {
-                  style: { display: "grid", gap: "1.5rem" },
-                  children: [
-                    _jsxs("div", {
-                      className: "form-group",
-                      children: [
-                        _jsx("label", { children: "Deployment Method" }),
-                        _jsxs("div", {
-                          className: "row",
-                          style: { gap: "1rem" },
-                          children: [
-                            _jsxs("button", {
-                              className: `ghost ${source === "local" ? "active-btn" : ""}`,
-                              onClick: () => setSource("local"),
-                              "aria-label": "Import from a local folder",
-                              "data-tooltip": "Import from a folder on this machine",
-                              children: [_jsx(FolderOpen, { size: 16 }), " Local Folder"]
-                            }),
-                            _jsxs("button", {
-                              className: `ghost ${source === "github" ? "active-btn" : ""}`,
-                              onClick: () => setSource("github"),
-                              "aria-label": "Import from a GitHub URL",
-                              "data-tooltip": "Import from a remote GitHub repository",
-                              children: [_jsx(GitBranch, { size: 16 }), " GitHub URL"]
-                            })
-                          ]
-                        })
-                      ]
-                    }),
-                    _jsxs("div", {
-                      className: "form-group",
-                      children: [
-                        _jsx("label", {
-                          children: source === "local" ? "Local System Path" : "Repository URL"
-                        }),
-                        _jsxs("div", {
-                          className: "row",
-                          children: [
-                            _jsx("input", {
-                              placeholder:
-                                source === "local" ? "/Users/tobias/my-app" : "https://github.com/user/app",
-                              value: source === "local" ? localPath : repoUrl,
-                              onChange: (e) => {
-                                if (source === "local") {
-                                  setLocalPath(e.target.value);
-                                  setScan(null);
-                                } else {
-                                  handleRepoUrlChange(e.target.value);
-                                }
-                              }
-                            }),
-                            source === "local" &&
-                              _jsxs("button", {
-                                className: "ghost",
-                                onClick: () => void scanLocalPath(),
-                                disabled: scanning,
-                                "aria-label": "Scan local folder for dev servers",
-                                "data-tooltip": scanning
-                                  ? "Scanning folder..."
-                                  : "Find runnable dev server commands",
-                                "data-tooltip-side": "left",
-                                children: [
-                                  scanning
-                                    ? _jsx(Loader2, { size: 16, className: "animate-spin" })
-                                    : _jsx(Search, { size: 16 }),
-                                  "Scan"
-                                ]
-                              })
-                          ]
-                        })
-                      ]
-                    }),
-                    source === "local" &&
-                      scan &&
-                      _jsxs("div", {
-                        className: "scan-panel",
-                        children: [
-                          _jsxs("div", {
-                            className: "row between",
-                            children: [
-                              _jsxs("div", {
-                                children: [
-                                  _jsxs("div", {
-                                    className: "font-bold text-primary",
-                                    children: ["Detected ", scan.buildType, " project"]
-                                  }),
-                                  _jsxs("p", {
-                                    className: "muted small",
-                                    children: [
-                                      scan.candidates.length,
-                                      " possible dev server",
-                                      scan.candidates.length === 1 ? "" : "s",
-                                      " found."
-                                    ]
-                                  })
-                                ]
-                              }),
-                              _jsxs("button", {
-                                className: "ghost xsmall",
-                                onClick: () => void scanLocalPath(),
-                                "aria-label": "Rescan local folder",
-                                "data-tooltip": "Refresh detected commands",
-                                children: [_jsx(RefreshCw, { size: 13 }), " Rescan"]
-                              })
-                            ]
-                          }),
-                          scan.warnings.map((warning) =>
-                            _jsx("div", { className: "scan-warning", children: warning }, warning)
-                          ),
-                          _jsx("div", {
-                            className: "candidate-list",
-                            children: scan.candidates.map((candidate) =>
-                              _jsxs(
-                                "button",
-                                {
-                                  className: `candidate-item ${command === candidate.command ? "active" : ""}`,
-                                  "aria-label": `Use ${candidate.label}: ${candidate.command || "Dockerfile service"}`,
-                                  "data-tooltip": "Use this launch command",
-                                  onClick: () => {
-                                    setCommand(candidate.command);
-                                    if (!port && candidate.port) setPort(String(candidate.port));
-                                  },
-                                  children: [
-                                    _jsx(Terminal, { size: 16 }),
-                                    _jsxs("span", {
-                                      children: [
-                                        _jsx("strong", { children: candidate.label }),
-                                        _jsx("code", { children: candidate.command || "Dockerfile service" })
-                                      ]
-                                    }),
-                                    candidate.recommended &&
-                                      _jsx("span", { className: "badge accent", children: "Recommended" })
-                                  ]
-                                },
-                                candidate.id
-                              )
-                            )
-                          })
-                        ]
-                      }),
-                    source === "local" &&
-                      _jsxs("div", {
-                        className: "form-group",
-                        children: [
-                          _jsx("label", { children: "Dev Server Command" }),
-                          _jsx("input", {
-                            value: command,
-                            onChange: (event) => setCommand(event.target.value),
-                            placeholder: "npm run dev"
-                          })
-                        ]
-                      }),
-                    source === "github" &&
-                      _jsx("div", {
-                        className: "scan-panel",
-                        children: _jsxs("div", {
-                          className: "row",
-                          children: [
-                            _jsx(GitBranch, { size: 16, className: "text-accent" }),
-                            _jsxs("div", {
-                              children: [
-                                _jsx("div", {
-                                  className: "font-bold text-primary",
-                                  children: "GitHub direct launch"
-                                }),
-                                _jsx("p", {
-                                  className: "muted small",
-                                  children:
-                                    "LocalSURV will clone the URL, detect the runtime, run the build pipeline, and register the service."
-                                })
-                              ]
-                            })
-                          ]
-                        })
-                      }),
-                    _jsxs("div", {
-                      className: "form-group",
-                      children: [
-                        _jsx("label", { children: "Exposure Mode" }),
-                        _jsxs("div", {
-                          className: "mode-toggle",
-                          children: [
-                            _jsxs("button", {
-                              className: exposure === "local" ? "active" : "",
-                              onClick: () => setExposure("local"),
-                              "aria-label": "Use local-only exposure mode",
-                              "data-tooltip": "Keep the service on this machine",
-                              children: [
-                                _jsx(Laptop, { size: 16 }),
-                                _jsxs("span", {
-                                  children: [
-                                    _jsx("strong", { children: "Local" }),
-                                    _jsx("small", { children: "Bind to this machine only" })
-                                  ]
-                                })
-                              ]
-                            }),
-                            _jsxs("button", {
-                              className: exposure === "online" ? "active" : "",
-                              onClick: () => setExposure("online"),
-                              "aria-label": "Use online tunnel exposure mode",
-                              "data-tooltip": "Create a temporary public tunnel",
-                              children: [
-                                _jsx(Globe2, { size: 16 }),
-                                _jsxs("span", {
-                                  children: [
-                                    _jsx("strong", { children: "Online tunnel" }),
-                                    _jsx("small", { children: "Create a public Cloudflare URL" })
-                                  ]
-                                })
-                              ]
-                            })
-                          ]
-                        })
-                      ]
-                    }),
-                    _jsxs("div", {
-                      className: "form-row",
-                      children: [
-                        _jsxs("div", {
-                          className: "form-group",
-                          children: [
-                            _jsx("label", { children: "App Name" }),
-                            _jsx("input", {
-                              value: name,
-                              onChange: (e) => setName(e.target.value),
-                              placeholder: "my-quick-app"
-                            })
-                          ]
-                        }),
-                        _jsxs("div", {
-                          className: "form-group",
-                          children: [
-                            _jsx("label", { children: "Project" }),
-                            _jsxs("select", {
-                              value: projectId,
-                              onChange: (e) => setProjectId(e.target.value),
-                              children: [
-                                !projectId &&
-                                  projects.length === 0 &&
-                                  _jsx("option", { value: "", children: "Default Project will be created" }),
-                                projects.map((p) => _jsx("option", { value: p.id, children: p.name }, p.id))
-                              ]
-                            })
-                          ]
-                        })
-                      ]
-                    }),
-                    _jsxs("div", {
-                      className: "form-group",
-                      children: [
-                        _jsx("label", { children: "Port" }),
-                        _jsx("input", {
-                          value: port,
-                          onChange: (e) => setPort(e.target.value),
-                          placeholder: "Auto assign if empty"
-                        })
-                      ]
-                    })
-                  ]
-                })
-              : _jsxs("div", {
-                  className: "launch-monitor",
-                  style: { display: "flex", flexDirection: "column", gap: "1rem" },
-                  children: [
-                    _jsx("div", {
-                      className: "logs-viewer",
-                      ref: logRef,
-                      style: { height: "240px", fontSize: "0.8rem", background: "black" },
-                      children: buildLog.map((line, i) =>
-                        _jsx("div", { className: "log-line", children: line }, i)
-                      )
-                    }),
-                    tunnelUrl &&
-                      _jsx("div", {
-                        className: "card featured-form",
-                        style: { padding: "1rem", border: "1px solid var(--success)" },
-                        children: _jsxs("div", {
-                          className: "row between",
-                          children: [
-                            _jsx("span", { className: "success font-bold", children: "LIVE URL:" }),
-                            _jsx("a", {
-                              href: tunnelUrl,
-                              target: "_blank",
-                              rel: "noreferrer",
-                              className: "link font-bold",
-                              children: tunnelUrl
-                            })
-                          ]
-                        })
-                      })
-                  ]
-                })
-        }),
-        _jsxs("footer", {
-          className: "modal-footer",
-          children: [
-            _jsx("button", {
+            }
+          ),
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              className: `ghost ${source === "github" ? "active-btn" : ""}`,
+              onClick: () => setSource("github"),
+              "aria-label": "Import from a GitHub URL",
+              "data-tooltip": "Import from a remote GitHub repository",
+              children: [
+                /* @__PURE__ */ jsx(GitBranch, { size: 16 }),
+                " GitHub URL"
+              ]
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+        /* @__PURE__ */ jsx("label", { children: source === "local" ? "Local System Path" : "Repository URL" }),
+        /* @__PURE__ */ jsxs("div", { className: "row", children: [
+          /* @__PURE__ */ jsx(
+            "input",
+            {
+              placeholder: source === "local" ? "/Users/tobias/my-app" : "https://github.com/user/app",
+              value: source === "local" ? localPath : repoUrl,
+              onChange: (e) => {
+                if (source === "local") {
+                  setLocalPath(e.target.value);
+                  setScan(null);
+                } else {
+                  handleRepoUrlChange(e.target.value);
+                }
+              }
+            }
+          ),
+          source === "local" && /* @__PURE__ */ jsxs(
+            "button",
+            {
               className: "ghost",
-              onClick: onClose,
-              "aria-label": "Close quick launch without saving",
-              "data-tooltip": "Close without launching",
-              children: "Discard"
-            }),
-            step === 1 &&
-              _jsx("button", {
-                className: "primary",
-                onClick: handleLaunch,
-                disabled: !canLaunch || loading,
-                "aria-label": "Start the selected launch pipeline",
-                "data-tooltip": "Create and start this service",
-                children: "Initialize Launch Sequence"
-              }),
-            step === 2 &&
-              _jsx("button", {
-                className: "primary",
-                onClick: onLaunched,
-                "aria-label": "Close launch monitor",
-                "data-tooltip": "Return to services",
-                children: "Close Monitor"
-              })
-          ]
-        }),
-        _jsx("style", {
-          dangerouslySetInnerHTML: {
-            __html: `
+              onClick: () => void scanLocalPath(),
+              disabled: scanning,
+              "aria-label": "Scan local folder for dev servers",
+              "data-tooltip": scanning ? "Scanning folder..." : "Find runnable dev server commands",
+              "data-tooltip-side": "left",
+              children: [
+                scanning ? /* @__PURE__ */ jsx(Loader2, { size: 16, className: "animate-spin" }) : /* @__PURE__ */ jsx(Search, { size: 16 }),
+                "Scan"
+              ]
+            }
+          )
+        ] })
+      ] }),
+      source === "local" && scan && /* @__PURE__ */ jsxs("div", { className: "scan-panel", children: [
+        /* @__PURE__ */ jsxs("div", { className: "row between", children: [
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsxs("div", { className: "font-bold text-primary", children: [
+              "Detected ",
+              scan.buildType,
+              " project"
+            ] }),
+            /* @__PURE__ */ jsxs("p", { className: "muted small", children: [
+              scan.candidates.length,
+              " possible dev server",
+              scan.candidates.length === 1 ? "" : "s",
+              " ",
+              "found."
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              className: "ghost xsmall",
+              onClick: () => void scanLocalPath(),
+              "aria-label": "Rescan local folder",
+              "data-tooltip": "Refresh detected commands",
+              children: [
+                /* @__PURE__ */ jsx(RefreshCw, { size: 13 }),
+                " Rescan"
+              ]
+            }
+          )
+        ] }),
+        scan.warnings.map((warning) => /* @__PURE__ */ jsx("div", { className: "scan-warning", children: warning }, warning)),
+        /* @__PURE__ */ jsx("div", { className: "candidate-list", children: scan.candidates.map((candidate) => /* @__PURE__ */ jsxs(
+          "button",
+          {
+            className: `candidate-item ${command === candidate.command ? "active" : ""}`,
+            "aria-label": `Use ${candidate.label}: ${candidate.command || "Dockerfile service"}`,
+            "data-tooltip": "Use this launch command",
+            onClick: () => {
+              setCommand(candidate.command);
+              if (!port && candidate.port) setPort(String(candidate.port));
+            },
+            children: [
+              /* @__PURE__ */ jsx(Terminal, { size: 16 }),
+              /* @__PURE__ */ jsxs("span", { children: [
+                /* @__PURE__ */ jsx("strong", { children: candidate.label }),
+                /* @__PURE__ */ jsx("code", { children: candidate.command || "Dockerfile service" })
+              ] }),
+              candidate.recommended && /* @__PURE__ */ jsx("span", { className: "badge accent", children: "Recommended" })
+            ]
+          },
+          candidate.id
+        )) })
+      ] }),
+      source === "local" && /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+        /* @__PURE__ */ jsx("label", { children: "Dev Server Command" }),
+        /* @__PURE__ */ jsx(
+          "input",
+          {
+            value: command,
+            onChange: (event) => setCommand(event.target.value),
+            placeholder: "npm run dev"
+          }
+        )
+      ] }),
+      source === "github" && /* @__PURE__ */ jsx("div", { className: "scan-panel", children: /* @__PURE__ */ jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsx(GitBranch, { size: 16, className: "text-accent" }),
+        /* @__PURE__ */ jsxs("div", { children: [
+          /* @__PURE__ */ jsx("div", { className: "font-bold text-primary", children: "GitHub direct launch" }),
+          /* @__PURE__ */ jsx("p", { className: "muted small", children: "LocalSURV will clone the URL, detect the runtime, run the build pipeline, and register the service." })
+        ] })
+      ] }) }),
+      /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+        /* @__PURE__ */ jsx("label", { children: "Exposure Mode" }),
+        /* @__PURE__ */ jsxs("div", { className: "mode-toggle", children: [
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              className: exposure === "local" ? "active" : "",
+              onClick: () => setExposure("local"),
+              "aria-label": "Use local-only exposure mode",
+              "data-tooltip": "Keep the service on this machine",
+              children: [
+                /* @__PURE__ */ jsx(Laptop, { size: 16 }),
+                /* @__PURE__ */ jsxs("span", { children: [
+                  /* @__PURE__ */ jsx("strong", { children: "Local" }),
+                  /* @__PURE__ */ jsx("small", { children: "Bind to this machine only" })
+                ] })
+              ]
+            }
+          ),
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              className: exposure === "online" ? "active" : "",
+              onClick: () => setExposure("online"),
+              "aria-label": "Use online tunnel exposure mode",
+              "data-tooltip": "Create a temporary public tunnel",
+              children: [
+                /* @__PURE__ */ jsx(Globe2, { size: 16 }),
+                /* @__PURE__ */ jsxs("span", { children: [
+                  /* @__PURE__ */ jsx("strong", { children: "Online tunnel" }),
+                  /* @__PURE__ */ jsx("small", { children: "Create a public Cloudflare URL" })
+                ] })
+              ]
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxs("div", { className: "form-row", children: [
+        /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+          /* @__PURE__ */ jsx("label", { children: "App Name" }),
+          /* @__PURE__ */ jsx("input", { value: name, onChange: (e) => setName(e.target.value), placeholder: "my-quick-app" })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+          /* @__PURE__ */ jsx("label", { children: "Project" }),
+          /* @__PURE__ */ jsxs("select", { value: projectId, onChange: (e) => setProjectId(e.target.value), children: [
+            /* @__PURE__ */ jsx("option", { value: "", children: "Auto: create or reuse app project" }),
+            projects.map((p) => /* @__PURE__ */ jsx("option", { value: p.id, children: p.name }, p.id))
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxs("div", { className: "form-group", children: [
+        /* @__PURE__ */ jsx("label", { children: "Port" }),
+        /* @__PURE__ */ jsx(
+          "input",
+          {
+            value: port,
+            onChange: (e) => setPort(e.target.value),
+            placeholder: "Auto assign if empty"
+          }
+        )
+      ] })
+    ] }) : /* @__PURE__ */ jsxs("div", { className: "launch-monitor", style: { display: "flex", flexDirection: "column", gap: "1rem" }, children: [
+      /* @__PURE__ */ jsx(
+        "div",
+        {
+          className: "logs-viewer",
+          ref: logRef,
+          style: { height: "240px", fontSize: "0.8rem", background: "black" },
+          children: buildLog.map((line, i) => /* @__PURE__ */ jsx("div", { className: "log-line", children: line }, i))
+        }
+      ),
+      tunnelUrl && /* @__PURE__ */ jsx(
+        "div",
+        {
+          className: "card featured-form",
+          style: { padding: "1rem", border: "1px solid var(--success)" },
+          children: /* @__PURE__ */ jsxs("div", { className: "row between", children: [
+            /* @__PURE__ */ jsx("span", { className: "success font-bold", children: "LIVE URL:" }),
+            /* @__PURE__ */ jsx("a", { href: tunnelUrl, target: "_blank", rel: "noreferrer", className: "link font-bold", children: tunnelUrl })
+          ] })
+        }
+      )
+    ] }) }),
+    /* @__PURE__ */ jsxs("footer", { className: "modal-footer", children: [
+      /* @__PURE__ */ jsx(
+        "button",
+        {
+          className: "ghost",
+          onClick: onClose,
+          "aria-label": "Close quick launch without saving",
+          "data-tooltip": "Close without launching",
+          children: "Discard"
+        }
+      ),
+      step === 1 && /* @__PURE__ */ jsx(
+        "button",
+        {
+          className: "primary",
+          onClick: handleLaunch,
+          disabled: !canLaunch || loading,
+          "aria-label": "Start the selected launch pipeline",
+          "data-tooltip": "Create and start this service",
+          children: "Initialize Launch Sequence"
+        }
+      ),
+      step === 2 && /* @__PURE__ */ jsx(
+        "button",
+        {
+          className: "primary",
+          onClick: onLaunched,
+          "aria-label": "Close launch monitor",
+          "data-tooltip": "Return to services",
+          children: "Close Monitor"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsx(
+      "style",
+      {
+        dangerouslySetInnerHTML: {
+          __html: `
           .launch-icon { background: var(--accent-gradient); color: white; padding: 0.5rem; border-radius: var(--radius-sm); display: flex; }
           .active-btn { background: var(--accent-gradient) !important; color: white !important; }
           .success { color: var(--success); }
@@ -524,9 +419,11 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }) {
           .animate-spin { animation: spin 1s linear infinite; }
           @media (max-width: 640px) { .mode-toggle { grid-template-columns: 1fr; } }
         `
-          }
-        })
-      ]
-    })
-  });
+        }
+      }
+    )
+  ] }) });
 }
+export {
+  QuickLaunchModal
+};

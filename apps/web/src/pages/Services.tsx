@@ -23,7 +23,9 @@ import {
   Loader2,
   XCircle,
   Sparkles,
-  Database as DatabaseIcon
+  Database as DatabaseIcon,
+  KeyRound,
+  Bot
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -35,8 +37,10 @@ import { TemplateModal } from "../components/TemplateModal";
 import { ComposeModal } from "../components/ComposeModal";
 import { QuickLaunchModal } from "../components/QuickLaunchModal";
 import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
+import { PromoteEmbeddedDbModal, type EmbeddedDb } from "../components/PromoteEmbeddedDbModal";
 import { GoPublicWizard } from "../components/GoPublicWizard";
 import { StatusBadge } from "../components/StatusBadge";
+import { openServiceTerminal } from "../components/TerminalDock";
 import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
 import { Skeleton, CardSkeleton } from "../components/ui/Skeleton";
@@ -51,6 +55,7 @@ type Service = {
   port?: number;
   github_repo_url?: string;
   github_branch?: string;
+  github_auto_pull?: number;
   latest_commit_hash?: string;
   ssl_status?: string;
   environment?: string;
@@ -90,10 +95,13 @@ type OrphanInfo = {
   code_signals: Array<{ driver: string; ecosystem: string; source_file: string }>;
 };
 
-type EmbeddedInfo = {
-  service_id: string;
-  file_path: string;
-  persistent: boolean;
+type EnvRequirement = {
+  key: string;
+  source_file: string;
+  reason: "required-check" | "production-config" | "integration-secret" | "infrastructure-url";
+  status: "missing" | "present";
+  provided_by?: "service" | "project" | "linked-database";
+  value_preview?: string;
 };
 
 type LogEntry = {
@@ -134,12 +142,14 @@ export function ServicesPage() {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showQuickLaunch, setShowQuickLaunch] = useState(false);
   const [databaseDraft, setDatabaseDraft] = useState<{ projectId: string; name: string } | null>(null);
+  const [promoteTarget, setPromoteTarget] = useState<EmbeddedDb | null>(null);
 
   const [envFilter, setEnvFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [groupByProject, setGroupByProject] = useState(false);
   const [orphans, setOrphans] = useState<Map<string, OrphanInfo>>(new Map());
-  const [embeddedDbs, setEmbeddedDbs] = useState<Map<string, EmbeddedInfo>>(new Map());
+  const [embeddedDbs, setEmbeddedDbs] = useState<Map<string, EmbeddedDb>>(new Map());
+  const [envRequirements, setEnvRequirements] = useState<Map<string, EnvRequirement[]>>(new Map());
   const [provisioningId, setProvisioningId] = useState<string | null>(null);
   const [goPublicId, setGoPublicId] = useState<string | null>(null);
 
@@ -157,8 +167,13 @@ export function ServicesPage() {
       api<OrphanInfo[]>("/databases/orphan-services", { silent: true })
         .then((rows) => setOrphans(new Map(rows.map((r) => [r.service_id, r]))))
         .catch(() => undefined);
-      api<EmbeddedInfo[]>("/databases/embedded", { silent: true })
+      api<EmbeddedDb[]>("/databases/embedded", { silent: true })
         .then((rows) => setEmbeddedDbs(new Map(rows.map((r) => [r.service_id, r]))))
+        .catch(() => undefined);
+      api<Array<{ service_id: string; requirements: EnvRequirement[] }>>("/services/env-requirements", {
+        silent: true
+      })
+        .then((rows) => setEnvRequirements(new Map(rows.map((r) => [r.service_id, r.requirements]))))
         .catch(() => undefined);
       const logPairs = await Promise.all(
         serviceData.slice(0, 20).map(async (service) => {
@@ -370,6 +385,36 @@ export function ServicesPage() {
     } finally {
       setProvisioningId(null);
     }
+  }
+
+  function databaseServiceForStack(stack: ServiceStack): Service | null {
+    return (
+      stack.services.find((service) => embeddedDbs.has(service.id)) ??
+      stack.services.find((service) => {
+        const orphan = orphans.get(service.id);
+        return orphan && orphan.code_signals.length > 0;
+      }) ??
+      stack.services.find((service) => serviceRole(service, stack.services.length) === "API") ??
+      stack.services[0] ??
+      null
+    );
+  }
+
+  function openDatabaseFlowForStack(stack: ServiceStack): void {
+    const service = databaseServiceForStack(stack);
+    if (!service) return;
+    const embedded = embeddedDbs.get(service.id);
+    if (embedded) {
+      setPromoteTarget(embedded);
+      return;
+    }
+    void quickAddDatabase(service);
+  }
+
+  function databaseActionLabel(stack: ServiceStack): string {
+    const service = databaseServiceForStack(stack);
+    if (!service) return "Add database";
+    return embeddedDbs.has(service.id) ? "Promote data" : "Add database";
   }
 
   async function deleteService(service: Service): Promise<void> {
@@ -842,15 +887,16 @@ export function ServicesPage() {
                         </button>
                         <button
                           className="ghost xsmall"
-                          onClick={() =>
-                            setDatabaseDraft({
-                              projectId: stack.services[0]?.project_id ?? projects[0]?.id ?? "",
-                              name: `${stack.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-db`
-                            })
-                          }
-                          data-tooltip="Create a managed database in this app's project"
+                          disabled={provisioningId === databaseServiceForStack(stack)?.id}
+                          onClick={() => openDatabaseFlowForStack(stack)}
+                          data-tooltip="Create and link a managed database for this app. Existing embedded SQLite data is detected before setup."
                         >
-                          <DatabaseIcon size={14} /> Add database
+                          {provisioningId === databaseServiceForStack(stack)?.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <DatabaseIcon size={14} />
+                          )}
+                          {databaseActionLabel(stack)}
                         </button>
                       </div>
                       <div className="stack-resource-map">
@@ -940,7 +986,8 @@ export function ServicesPage() {
                                         <span className="tiny muted font-bold uppercase">{service.type}</span>
                                         {service.github_repo_url && (
                                           <span className="tiny muted row">
-                                            <GitBranch size={10} /> Sync Active
+                                            <GitBranch size={10} />{" "}
+                                            {service.github_auto_pull === 0 ? "GitHub Linked" : "Sync Active"}
                                           </span>
                                         )}
                                       </div>
@@ -990,9 +1037,18 @@ export function ServicesPage() {
                                     {(() => {
                                       const orphan = orphans.get(service.id);
                                       const embedded = embeddedDbs.get(service.id);
+                                      const isFrontend = serviceRole(service, stack.services.length) === "Frontend";
+                                      const stackHasDatabaseOwner = stack.services.some(
+                                        (candidate) =>
+                                          candidate.id !== service.id &&
+                                          (embeddedDbs.has(candidate.id) ||
+                                            serviceRole(candidate, stack.services.length) === "API")
+                                      );
                                       // Only nag when we have a real reason: detected SQLite or
                                       // a code-level driver. Silent for orphans that legitimately
-                                      // don't need a DB (static frontends, etc.).
+                                      // don't need a DB (static frontends, etc.). In multi-service
+                                      // apps, the API owns the DB; the frontend should call the API.
+                                      if (!embedded && isFrontend && stackHasDatabaseOwner) return null;
                                       if (!orphan || (!embedded && orphan.code_signals.length === 0))
                                         return null;
                                       const drivers = orphan.code_signals.map((s) => s.driver);
@@ -1013,15 +1069,48 @@ export function ServicesPage() {
                                           <button
                                             className="primary xsmall"
                                             disabled={provisioningId === service.id}
-                                            onClick={() => void quickAddDatabase(service)}
+                                            onClick={() =>
+                                              embedded
+                                                ? setPromoteTarget(embedded)
+                                                : void quickAddDatabase(service)
+                                            }
                                           >
                                             {provisioningId === service.id ? (
                                               <>
                                                 <Loader2 size={12} className="animate-spin" /> Provisioning…
                                               </>
                                             ) : (
-                                              "Add Postgres"
+                                              embedded ? "Promote data" : "Add Postgres"
                                             )}
+                                          </button>
+                                        </div>
+                                      );
+                                    })()}
+
+                                    {(() => {
+                                      const missing = (envRequirements.get(service.id) ?? []).filter(
+                                        (item) => item.status === "missing"
+                                      );
+                                      if (missing.length === 0) return null;
+                                      const preview = missing.slice(0, 5).map((item) => item.key);
+                                      const extra = missing.length - preview.length;
+                                      return (
+                                        <div className="env-missing-banner">
+                                          <KeyRound size={14} />
+                                          <div className="env-missing-text">
+                                            <strong>Missing required env</strong>
+                                            <span>
+                                              {preview.join(", ")}
+                                              {extra > 0 ? ` +${extra} more` : ""}
+                                            </span>
+                                          </div>
+                                          <button
+                                            className="ghost xsmall"
+                                            onClick={() => setEditingService(service)}
+                                            data-tooltip="Add service or project environment variables"
+                                            aria-label={`Open environment settings for ${service.name}`}
+                                          >
+                                            Add env
                                           </button>
                                         </div>
                                       );
@@ -1110,6 +1199,24 @@ export function ServicesPage() {
                                     >
                                       <Terminal size={14} /> Logs
                                     </Link>
+
+                                    <button
+                                      className="ghost xsmall"
+                                      onClick={() => openServiceTerminal(service, "shell")}
+                                      aria-label={`Open console for ${service.name}`}
+                                      data-tooltip="Open interactive console"
+                                    >
+                                      <Terminal size={14} /> Console
+                                    </button>
+
+                                    <button
+                                      className="ghost xsmall"
+                                      onClick={() => openServiceTerminal(service, "agents")}
+                                      aria-label={`Open agents for ${service.name}`}
+                                      data-tooltip="Install, authenticate, and run AI agents"
+                                    >
+                                      <Bot size={14} /> Agents
+                                    </button>
 
                                     <button
                                       className="ghost xsmall"
@@ -1223,6 +1330,13 @@ export function ServicesPage() {
         />
       )}
       {goPublicId && <GoPublicWizard serviceId={goPublicId} onClose={() => setGoPublicId(null)} />}
+      {promoteTarget && (
+        <PromoteEmbeddedDbModal
+          embedded={promoteTarget}
+          onClose={() => setPromoteTarget(null)}
+          onPromoted={() => void load()}
+        />
+      )}
       {databaseDraft && (
         <CreateDatabaseModal
           projects={projects}
@@ -1263,6 +1377,21 @@ export function ServicesPage() {
         .db-suggest-text strong { font-size: 0.78rem; }
         .db-suggest-text span { font-size: 0.7rem; color: var(--text-muted); }
         .db-suggest-banner button.primary { white-space: nowrap; }
+        .env-missing-banner {
+          display: flex;
+          align-items: center;
+          gap: 0.65rem;
+          margin: 0.5rem 0;
+          padding: 0.55rem 0.75rem;
+          border: 1px dashed color-mix(in srgb, var(--warn, #d97706) 55%, transparent);
+          border-radius: var(--radius-md);
+          background: color-mix(in srgb, var(--warn, #d97706) 10%, var(--bg-sunken));
+          color: var(--text-primary);
+        }
+        .env-missing-banner svg { color: var(--warn, #d97706); flex-shrink: 0; }
+        .env-missing-text { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.25; }
+        .env-missing-text strong { font-size: 0.78rem; }
+        .env-missing-text span { font-size: 0.7rem; color: var(--text-muted); overflow-wrap: anywhere; }
         .animate-spin { animation: dbspin 1s linear infinite; }
         @keyframes dbspin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .cert-dot {

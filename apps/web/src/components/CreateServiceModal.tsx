@@ -10,7 +10,7 @@ type Props = {
 
 export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
   const [form, setForm] = useState({
-    projectId: projects[0]?.id || "",
+    projectId: "",
     name: "",
     type: "process" as "process" | "docker" | "static",
     command: "",
@@ -61,10 +61,9 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
 
         <div className="modal-body">
           <div className="form-group">
-            <label>
-              Target Project <span className="required">*</span>
-            </label>
+            <label>Target Project</label>
             <select value={form.projectId} onChange={(e) => setForm({ ...form, projectId: e.target.value })}>
+              <option value="">Auto: create or reuse app project</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}

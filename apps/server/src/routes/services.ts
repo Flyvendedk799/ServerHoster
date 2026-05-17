@@ -5,14 +5,17 @@ import { nanoid } from "nanoid";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { nowIso, parsePortMapping, findFreePort } from "../lib/core.js";
+import { nowIso, parsePortMapping, findFreePort, findStaticEntry } from "../lib/core.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
 import { getDependents, restartService, startService, stopService } from "../services/runtime.js";
+import { killTerminalSession } from "../services/terminals.js";
 import { insertLog } from "../lib/core.js";
 import { applyPostDeployServiceState, deployFromGit, deployFromLocalPath } from "../services/deploy.js";
+import { resolveServiceProjectId } from "../services/projects.js";
+import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
 
 const serviceSchema = z.object({
-  projectId: z.string(),
+  projectId: z.string().optional(),
   name: z.string().min(1),
   type: z.enum(["process", "docker", "static"]),
   command: z.string().optional(),
@@ -23,6 +26,7 @@ const serviceSchema = z.object({
   autoRestart: z.boolean().default(true),
   maxRestarts: z.number().int().default(5),
   startMode: z.enum(["manual", "auto"]).default("manual"),
+  stopWithHoster: z.boolean().default(true),
   healthcheckPath: z.string().optional(),
   quickTunnelEnabled: z.number().int().min(0).max(1).default(0).optional()
 });
@@ -33,13 +37,13 @@ const envSchema = z.object({
   isSecret: z.boolean().default(false)
 });
 const composeImportSchema = z.object({
-  projectId: z.string(),
+  projectId: z.string().optional(),
   composeFilePath: z.string().optional(),
   composeContent: z.string().optional(),
   workingDir: z.string().optional()
 });
 const directDeploySchema = z.object({
-  projectId: z.string(),
+  projectId: z.string().optional(),
   name: z.string().min(1),
   repoUrl: z.string().url(),
   branch: z.string().default("main"),
@@ -51,7 +55,7 @@ const directDeploySchema = z.object({
 });
 
 const localDeploySchema = z.object({
-  projectId: z.string(),
+  projectId: z.string().optional(),
   name: z.string().min(1),
   localPath: z.string().min(1),
   command: z.string().optional(),
@@ -115,6 +119,7 @@ function scanLocalProject(localPath: string): {
   const hasDockerfile = files.includes("Dockerfile");
   const hasRequirements = files.includes("requirements.txt");
   const hasPyproject = files.includes("pyproject.toml");
+  const hasGodotProject = files.includes("project.godot");
 
   if (fs.existsSync(packagePath)) {
     try {
@@ -230,6 +235,29 @@ function scanLocalProject(localPath: string): {
     });
   }
 
+  if (hasGodotProject) {
+    pushCandidate(candidates, {
+      id: "godot-web",
+      label: "Godot Web export",
+      command: "python3 -m http.server $PORT --bind 0.0.0.0",
+      source: "project.godot",
+      port: 8000,
+      recommended: candidates.length === 0
+    });
+  }
+
+  const staticDir = findStaticEntry(resolved);
+  if (staticDir && !candidates.some((item) => item.id === "godot-web")) {
+    pushCandidate(candidates, {
+      id: "static-site",
+      label: "Static web app",
+      command: "python3 -m http.server $PORT --bind 0.0.0.0",
+      source: path.relative(resolved, staticDir) || "index.html",
+      port: 8000,
+      recommended: candidates.length === 0
+    });
+  }
+
   if (candidates.length === 0) {
     warnings.push("No obvious dev server script was found. Add a command manually before launching.");
   }
@@ -240,7 +268,11 @@ function scanLocalProject(localPath: string): {
       ? "node"
       : hasRequirements || hasPyproject
         ? "python"
-        : "unknown";
+        : hasGodotProject
+          ? "godot"
+          : staticDir
+            ? "static"
+            : "unknown";
   return {
     name: normalizeProjectName(resolved),
     buildType,
@@ -262,11 +294,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
         (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash
       FROM services s
       LEFT JOIN proxy_routes p ON p.service_id = s.id
-      LEFT JOIN certificates c ON c.domain = s.domain
+      LEFT JOIN certificates c ON c.domain = p.domain
       ORDER BY s.created_at DESC
     `
       )
       .all();
+  });
+
+  ctx.app.get("/services/env-requirements", async () => {
+    return listServiceEnvRequirements(ctx);
   });
 
   ctx.app.get("/services/:id", async (req) => {
@@ -285,6 +321,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     return service;
   });
 
+  ctx.app.get("/services/:id/env-requirements", async (req) => {
+    const { id } = req.params as { id: string };
+    return scanServiceEnvRequirements(ctx, id);
+  });
+
   ctx.app.post("/services/scan-local-project", async (req) => {
     const p = localProjectScanSchema.parse(req.body);
     return scanLocalProject(p.localPath);
@@ -294,6 +335,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = localDeploySchema.parse(req.body);
     const createdAt = nowIso();
     const serviceId = nanoid();
+    const projectId = resolveServiceProjectId(ctx, p.projectId, p.name);
     const assignedPort = p.port ?? (await findFreePort(3000, 3999));
 
     ctx.db
@@ -305,7 +347,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
       )
       .run(
         serviceId,
-        p.projectId,
+        projectId,
         p.name,
         "process",
         "",
@@ -349,9 +391,10 @@ export function registerServiceRoutes(ctx: AppContext): void {
   ctx.app.post("/services", async (req) => {
     const p = serviceSchema.parse(req.body);
     const assignedPort = p.port ?? (await findFreePort(3000, 3999));
+    const projectId = resolveServiceProjectId(ctx, p.projectId, p.name);
     const row = {
       id: nanoid(),
-      project_id: p.projectId,
+      project_id: projectId,
       name: p.name,
       type: p.type,
       command: p.command ?? "",
@@ -373,8 +416,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
       .prepare(
         `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
-      auto_restart, restart_count, max_restarts, healthcheck_path, start_mode, quick_tunnel_enabled, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      auto_restart, restart_count, max_restarts, healthcheck_path, start_mode, stop_with_hoster, quick_tunnel_enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         row.id,
@@ -392,6 +435,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
         row.max_restarts,
         row.healthcheck_path,
         row.start_mode,
+        p.stopWithHoster ? 1 : 0,
         row.quick_tunnel_enabled,
         row.created_at,
         row.updated_at
@@ -442,6 +486,19 @@ export function registerServiceRoutes(ctx: AppContext): void {
     }
 
     // Cascade delete child rows
+    const terminalRows = ctx.db
+      .prepare("SELECT id FROM terminal_sessions WHERE service_id = ? AND status = 'running'")
+      .all(id) as Array<{ id: string }>;
+    for (const row of terminalRows) killTerminalSession(ctx, row.id, "service deleted");
+    const profileRows = ctx.db
+      .prepare("SELECT id FROM agent_profiles WHERE service_id = ?")
+      .all(id) as Array<{ id: string }>;
+    for (const row of profileRows) {
+      ctx.db.prepare("DELETE FROM agent_secrets WHERE profile_id = ?").run(row.id);
+    }
+    ctx.db.prepare("DELETE FROM mcp_session_tokens WHERE service_id = ?").run(id);
+    ctx.db.prepare("DELETE FROM agent_profiles WHERE service_id = ?").run(id);
+    ctx.db.prepare("DELETE FROM terminal_sessions WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM env_vars WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM deployments WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM logs WHERE service_id = ?").run(id);
@@ -510,6 +567,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     domain: z.string().optional(),
     githubAutoPull: z.boolean().optional(),
     autoRestart: z.boolean().optional(),
+    stopWithHoster: z.boolean().optional(),
     dependsOn: z.array(z.string()).optional(),
     environment: z.enum(["production", "staging", "development"]).optional(),
     linkedDatabaseId: z.string().nullable().optional()
@@ -583,6 +641,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         .run(p.githubAutoPull ? 1 : 0, id);
     if (p.autoRestart !== undefined)
       ctx.db.prepare("UPDATE services SET auto_restart = ? WHERE id = ?").run(p.autoRestart ? 1 : 0, id);
+    if (p.stopWithHoster !== undefined)
+      ctx.db.prepare("UPDATE services SET stop_with_hoster = ? WHERE id = ?").run(p.stopWithHoster ? 1 : 0, id);
     if (p.dependsOn !== undefined) {
       ctx.db.prepare("UPDATE services SET depends_on = ? WHERE id = ?").run(JSON.stringify(p.dependsOn), id);
     }
@@ -726,6 +786,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
       networks?: Record<string, unknown>;
     } | null;
     const services = parsed?.services ?? {};
+    const stackName =
+      path.basename(p.workingDir || (p.composeFilePath ? path.dirname(p.composeFilePath) : "")) || "Compose Stack";
+    const projectId = resolveServiceProjectId(ctx, p.projectId, stackName);
 
     // Map compose service name → SURVHub service id (for both existing and new)
     // so we can resolve depends_on references even if the compose file refers
@@ -734,7 +797,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     for (const [serviceName] of Object.entries(services)) {
       const existing = ctx.db
         .prepare("SELECT id FROM services WHERE project_id = ? AND compose_service_name = ?")
-        .get(p.projectId, serviceName) as { id?: string } | undefined;
+        .get(projectId, serviceName) as { id?: string } | undefined;
       nameToId.set(serviceName, existing?.id ?? nanoid());
     }
 
@@ -773,7 +836,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
           if (mapped) return mapped;
           const existingDep = ctx.db
             .prepare("SELECT id FROM services WHERE project_id = ? AND compose_service_name = ?")
-            .get(p.projectId, n) as { id?: string } | undefined;
+            .get(projectId, n) as { id?: string } | undefined;
           return existingDep?.id ?? null;
         })
         .filter((v): v is string => Boolean(v));
@@ -815,7 +878,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
           )
           .run(
             id,
-            p.projectId,
+            projectId,
             serviceName,
             "docker",
             command,
@@ -870,6 +933,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const p = directDeploySchema.parse(req.body);
     const createdAt = nowIso();
     const serviceId = nanoid();
+    const projectId = resolveServiceProjectId(ctx, p.projectId, p.name, { gitUrl: p.repoUrl });
     const assignedPort = p.port ?? (await findFreePort(3000, 3999));
     ctx.db
       .prepare(
@@ -881,7 +945,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
       )
       .run(
         serviceId,
-        p.projectId,
+        projectId,
         p.name,
         "process",
         "",

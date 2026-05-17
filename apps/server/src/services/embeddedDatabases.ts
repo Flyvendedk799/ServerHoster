@@ -77,9 +77,8 @@ function containerNameForService(serviceId: string): string {
  * available manually.
  */
 async function probeContainer(containerName: string): Promise<{ path: string; size: number } | null> {
-  const script = EMBEDDED_DB_PROBE_PATHS.map(
-    (p) => `[ -f ${p} ] && wc -c < ${p} | tr -d ' \\n' && echo " ${p}"`
-  ).join(" ; ");
+  const paths = EMBEDDED_DB_PROBE_PATHS.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
+  const script = `for p in ${paths}; do if [ -f "$p" ]; then wc -c < "$p" | tr -d ' \\n'; echo " $p"; exit 0; fi; done; exit 0`;
   try {
     const { stdout } = await exec("docker", ["exec", containerName, "sh", "-c", script], {
       timeout: 4000,
@@ -152,7 +151,10 @@ export function listOrphanServices(ctx: AppContext): OrphanService[] {
   return out;
 }
 
-export async function listEmbeddedDatabases(ctx: AppContext): Promise<EmbeddedDatabase[]> {
+export async function listEmbeddedDatabases(
+  ctx: AppContext,
+  opts: { includeLinkedServices?: boolean } = {}
+): Promise<EmbeddedDatabase[]> {
   const services = ctx.db
     .prepare(
       "SELECT id, project_id, name, type, status, linked_database_id FROM services WHERE type = 'docker'"
@@ -164,7 +166,7 @@ export async function listEmbeddedDatabases(ctx: AppContext): Promise<EmbeddedDa
     services.map(async (svc) => {
       // If a managed DB is already linked, the embedded fallback is no longer
       // hidden — skip to avoid double-counting.
-      if (svc.linked_database_id) return;
+      if (svc.linked_database_id && !opts.includeLinkedServices) return;
       const env = getServiceEnv(ctx, svc.id);
       const missingEnv = PERSISTENCE_ENV_HINTS.filter((k) => !env[k]);
       // Skip services that already have *some* explicit DB URL — they're

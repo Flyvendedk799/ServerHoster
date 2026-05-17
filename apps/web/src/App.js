@@ -150,12 +150,21 @@ export function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("survhub_theme", theme);
   }, [theme]);
-  useEffect(() => {
-    localStorage.setItem("survhub_sidebar", collapsed ? "collapsed" : "expanded");
-  }, [collapsed]);
-  useEffect(() => {
-    async function checkStatus() {
-      try {
+    useEffect(() => {
+        localStorage.setItem("survhub_sidebar", collapsed ? "collapsed" : "expanded");
+    }, [collapsed]);
+    useEffect(() => {
+        const onAuthExpired = () => {
+            if (location.pathname !== "/login" && location.pathname !== "/onboarding") {
+                navigate("/login", { replace: true });
+            }
+        };
+        window.addEventListener("survhub:auth-expired", onAuthExpired);
+        return () => window.removeEventListener("survhub:auth-expired", onAuthExpired);
+    }, [location.pathname, navigate]);
+    useEffect(() => {
+        async function checkStatus() {
+            try {
         const res = await api("/auth/status", { silent: true });
         setBootstrapped(res.bootstrapped);
         // Never bounce an already-authenticated user back to bootstrap; their

@@ -24,7 +24,7 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
   const [deploying, setDeploying] = useState(false);
 
   const [form, setForm] = useState({
-    projectId: projects[0]?.id ?? "",
+    projectId: "",
     name: "",
     repoUrl: "",
     branch: "main",
@@ -168,6 +168,7 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
                     value={form.projectId}
                     onChange={(e) => setForm({ ...form, projectId: e.target.value })}
                   >
+                    <option value="">Auto: create or reuse app project</option>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
@@ -198,8 +199,8 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
                   onChange={(e) => setForm({ ...form, autoPull: e.target.checked })}
                 />
                 <div className="toggle-info">
-                  <span className="toggle-title">Automated Pulling (Webhooks)</span>
-                  <span className="toggle-desc">Automatically rebuild on every push to {form.branch}</span>
+                  <span className="toggle-title">GitHub Auto Update</span>
+                  <span className="toggle-desc">Poll for new commits on {form.branch}; add a webhook from service settings for instant pushes.</span>
                 </div>
               </label>
             </div>
