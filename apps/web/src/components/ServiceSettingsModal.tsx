@@ -36,6 +36,7 @@ type GithubSyncStatus = {
   latestCommitHash: string | null;
   remoteHash: string | null;
   updateAvailable: boolean;
+  requiresRestart?: boolean;
   canCheck: boolean;
   reason: string | null;
 };
@@ -328,7 +329,10 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
                 </span>
                 {syncStatus?.reason && <span className="hint">{syncStatus.reason}</span>}
                 {syncStatus?.updateAvailable && (
-                  <span className="hint text-warning">Remote branch has changes that are not deployed.</span>
+                  <span className="hint text-warning">
+                    Remote branch has changes that are not deployed.
+                    {syncStatus.requiresRestart ? " The live service is still running the older commit." : ""}
+                  </span>
                 )}
               </div>
 

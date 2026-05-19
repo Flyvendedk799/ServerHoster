@@ -6,10 +6,11 @@ import { buildGitEnv, injectGitCredentials } from "./settings.js";
 
 export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
   const service = ctx.db
-    .prepare("SELECT id, github_repo_url, github_branch, github_auto_pull FROM services WHERE id = ?")
+    .prepare("SELECT id, status, github_repo_url, github_branch, github_auto_pull FROM services WHERE id = ?")
     .get(serviceId) as
     | {
         id: string;
+        status?: string | null;
         github_repo_url?: string | null;
         github_branch?: string | null;
         github_auto_pull?: number | null;
@@ -28,6 +29,7 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
       latestCommitHash: null,
       remoteHash: null,
       updateAvailable: false,
+      requiresRestart: false,
       canCheck: false,
       reason: "Service is not linked to a GitHub repository."
     };
@@ -36,8 +38,12 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
   const latestDeploy = ctx.db
     .prepare(
       `SELECT commit_hash FROM deployments
-       WHERE service_id = ? AND commit_hash IS NOT NULL AND commit_hash != ''
-       ORDER BY created_at DESC LIMIT 1`
+       WHERE service_id = ?
+         AND status = 'success'
+         AND commit_hash IS NOT NULL
+         AND commit_hash != ''
+         AND (trigger_source IN ('manual', 'webhook', 'gitops-poller') OR trigger_source IS NULL)
+       ORDER BY COALESCE(finished_at, created_at) DESC LIMIT 1`
     )
     .get(serviceId) as { commit_hash?: string } | undefined;
   const latestCommitHash = latestDeploy?.commit_hash ?? null;
@@ -56,6 +62,7 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
       latestCommitHash,
       remoteHash,
       updateAvailable: Boolean(remoteHash && latestCommitHash !== remoteHash),
+      requiresRestart: Boolean(remoteHash && latestCommitHash !== remoteHash && service.status === "running"),
       canCheck: Boolean(remoteHash),
       reason: remoteHash ? null : `Branch ${branch} was not found on the remote.`
     };
@@ -69,10 +76,23 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
       latestCommitHash,
       remoteHash: null,
       updateAvailable: false,
+      requiresRestart: false,
       canCheck: false,
       reason: serializeError(error)
     };
   }
+}
+
+export async function getGithubSyncStatuses(
+  ctx: AppContext,
+  serviceIds: string[]
+): Promise<Array<Awaited<ReturnType<typeof getGithubSyncStatus>>>> {
+  const uniqueIds = [...new Set(serviceIds.filter(Boolean))].slice(0, 50);
+  const statuses: Array<Awaited<ReturnType<typeof getGithubSyncStatus>>> = [];
+  for (const serviceId of uniqueIds) {
+    statuses.push(await getGithubSyncStatus(ctx, serviceId));
+  }
+  return statuses;
 }
 
 export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
@@ -97,8 +117,12 @@ export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
       const latestDeploy = ctx.db
         .prepare(
           `SELECT commit_hash FROM deployments
-           WHERE service_id = ? AND commit_hash IS NOT NULL AND commit_hash != ''
-           ORDER BY created_at DESC LIMIT 1`
+           WHERE service_id = ?
+             AND status = 'success'
+             AND commit_hash IS NOT NULL
+             AND commit_hash != ''
+             AND (trigger_source IN ('manual', 'webhook', 'gitops-poller') OR trigger_source IS NULL)
+           ORDER BY COALESCE(finished_at, created_at) DESC LIMIT 1`
         )
         .get(row.id) as { commit_hash?: string } | undefined;
 

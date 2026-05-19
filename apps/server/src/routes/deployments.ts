@@ -6,7 +6,7 @@ import {
   rollbackDeployment,
   stopServiceIfRunning
 } from "../services/deploy.js";
-import { getGithubSyncStatus } from "../services/poller.js";
+import { getGithubSyncStatus, getGithubSyncStatuses } from "../services/poller.js";
 
 const deploySchema = z.object({
   serviceId: z.string(),
@@ -14,6 +14,9 @@ const deploySchema = z.object({
   branch: z.string().optional()
 });
 const rollbackSchema = z.object({ serviceId: z.string(), deploymentId: z.string() });
+const syncStatusBatchSchema = z.object({
+  serviceIds: z.array(z.string()).max(50).default([])
+});
 
 export function registerDeploymentRoutes(ctx: AppContext): void {
   ctx.app.post("/deployments/from-git", async (req) => {
@@ -30,6 +33,11 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
     const deployment = await deployFromGit(ctx, p.serviceId, repoUrl, branch, "manual");
     await applyPostDeployServiceState(ctx, p.serviceId, deployment, { startAfterDeploy: true });
     return deployment;
+  });
+
+  ctx.app.post("/services/github-sync-statuses", async (req) => {
+    const p = syncStatusBatchSchema.parse(req.body ?? {});
+    return { items: await getGithubSyncStatuses(ctx, p.serviceIds) };
   });
 
   ctx.app.get("/services/:id/github-sync-status", async (req) => {

@@ -25,7 +25,8 @@ import {
   Sparkles,
   Database as DatabaseIcon,
   KeyRound,
-  Bot
+  Bot,
+  AlertTriangle
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -157,6 +158,28 @@ type GitUpdateInfo = {
   branch: string | null;
 };
 
+type GithubSyncStatus = {
+  serviceId: string;
+  branch: string;
+  autoPull: boolean;
+  latestCommitHash: string | null;
+  remoteHash: string | null;
+  updateAvailable: boolean;
+  requiresRestart?: boolean;
+  canCheck: boolean;
+  reason: string | null;
+};
+
+type GitSummary = {
+  text: string;
+  title: string;
+  empty: boolean;
+  pending: boolean;
+  commitHash?: string;
+  remoteHash?: string;
+  serviceId?: string;
+};
+
 type ServiceStack = {
   id: string;
   title: string;
@@ -190,6 +213,8 @@ export function ServicesPage() {
   const [envRequirements, setEnvRequirements] = useState<Map<string, EnvRequirement[]>>(new Map());
   const [provisioningId, setProvisioningId] = useState<string | null>(null);
   const [goPublicId, setGoPublicId] = useState<string | null>(null);
+  const [githubSyncStatuses, setGithubSyncStatuses] = useState<Record<string, GithubSyncStatus>>({});
+  const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -201,6 +226,7 @@ export function ServicesPage() {
       setProjects(projectData);
       setServices(serviceData);
       setDatabases(databaseData);
+      void loadGithubSyncStatuses(serviceData);
       // Best-effort — never break the page if these fail.
       api<OrphanInfo[]>("/databases/orphan-services", { silent: true })
         .then((rows) => setOrphans(new Map(rows.map((r) => [r.service_id, r]))))
@@ -226,6 +252,27 @@ export function ServicesPage() {
       /* silent */
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadGithubSyncStatuses(rows: Service[]): Promise<void> {
+    const serviceIds = rows
+      .filter((service) => Boolean(service.github_repo_url))
+      .map((service) => service.id)
+      .slice(0, 50);
+    if (serviceIds.length === 0) {
+      setGithubSyncStatuses({});
+      return;
+    }
+    try {
+      const result = await api<{ items: GithubSyncStatus[] }>("/services/github-sync-statuses", {
+        method: "POST",
+        silent: true,
+        body: JSON.stringify({ serviceIds })
+      });
+      setGithubSyncStatuses(Object.fromEntries(result.items.map((item) => [item.serviceId, item])));
+    } catch {
+      setGithubSyncStatuses({});
     }
   }
 
@@ -355,6 +402,19 @@ export function ServicesPage() {
           message: "LocalSURV could not complete the action. Check the latest logs."
         }
       }));
+    }
+  }
+
+  async function deployLatestFromGit(service: Service): Promise<void> {
+    setRedeployingGitId(service.id);
+    try {
+      await api(`/services/${service.id}/redeploy`, { method: "POST" });
+      toast.success(`Deployed latest Git update for ${service.name}`);
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setRedeployingGitId(null);
     }
   }
 
@@ -574,6 +634,31 @@ export function ServicesPage() {
     };
   }
 
+  function gitShort(hash: string | null | undefined): string {
+    return hash ? hash.slice(0, 7) : "none";
+  }
+
+  function servicePendingGitUpdate(service: Service): GithubSyncStatus | null {
+    const status = githubSyncStatuses[service.id];
+    if (!status?.updateAvailable || !status.remoteHash) return null;
+    return status;
+  }
+
+  function pendingGitTitle(service: Service, status: GithubSyncStatus): string {
+    const local = status.latestCommitHash ?? service.latest_git_commit_hash ?? null;
+    const branch = status.branch || service.github_branch || "main";
+    const action =
+      service.status === "running"
+        ? "deploy latest to restart it with the new code"
+        : "deploy latest before starting it";
+    const automation = status.autoPull
+      ? "Auto-deploy is enabled; this should clear after the next successful Git deployment."
+      : "Auto-deploy is off; this needs a manual Git deploy.";
+    return `${service.name} has a pending Git update on ${branch}: remote ${gitShort(
+      status.remoteHash
+    )}, deployed ${gitShort(local)}. ${action}. ${automation}`;
+  }
+
   function stackGitUpdate(stack: ServiceStack): GitUpdateInfo | null {
     return stack.services.reduce<GitUpdateInfo | null>((latest, service) => {
       const current = serviceGitUpdate(service);
@@ -591,15 +676,30 @@ export function ServicesPage() {
     )} at ${date}`;
   }
 
-  function serviceGitSummary(
-    service: Service
-  ): { text: string; title: string; empty: boolean; commitHash?: string } | null {
+  function serviceGitSummary(service: Service): GitSummary | null {
+    const pending = servicePendingGitUpdate(service);
     const info = serviceGitUpdate(service);
+    if (pending) {
+      const local = pending.latestCommitHash ?? info?.commitHash ?? null;
+      return {
+        text:
+          service.status === "running"
+            ? "Pending Git update: deploy latest to refresh live service"
+            : "Pending Git update: deploy latest before start",
+        title: pendingGitTitle(service, pending),
+        empty: false,
+        pending: true,
+        commitHash: local ?? undefined,
+        remoteHash: pending.remoteHash ?? undefined,
+        serviceId: service.id
+      };
+    }
     if (info) {
       return {
         text: `Last updated by Git ${relativeTime(info.updatedAt)} via ${gitSourceLabel(info.triggerSource)}`,
         title: gitUpdateTitle(info),
         empty: false,
+        pending: false,
         commitHash: info.commitHash
       };
     }
@@ -610,19 +710,38 @@ export function ServicesPage() {
           ? "Last updated by Git: never (auto off)"
           : "Last updated by Git: never pulled",
       title: "Git repository linked, but no successful Git pull/deployment is recorded yet",
-      empty: true
+      empty: true,
+      pending: false
     };
   }
 
-  function stackGitSummary(
-    stack: ServiceStack
-  ): { text: string; title: string; empty: boolean; commitHash?: string } | null {
+  function stackGitSummary(stack: ServiceStack): GitSummary | null {
+    const pendingUpdates = stack.services
+      .map((service) => ({ service, status: servicePendingGitUpdate(service) }))
+      .filter((item): item is { service: Service; status: GithubSyncStatus } => Boolean(item.status));
+    const pending = pendingUpdates.find((item) => item.service.status === "running") ?? pendingUpdates[0];
+    if (pending) {
+      const local = pending.status.latestCommitHash ?? pending.service.latest_git_commit_hash ?? null;
+      return {
+        text:
+          pending.service.status === "running"
+            ? `Pending Git update: ${pending.service.name} is live on older code`
+            : `Pending Git update: ${pending.service.name} has newer remote code`,
+        title: pendingGitTitle(pending.service, pending.status),
+        empty: false,
+        pending: true,
+        commitHash: local ?? undefined,
+        remoteHash: pending.status.remoteHash ?? undefined,
+        serviceId: pending.service.id
+      };
+    }
     const latest = stackGitUpdate(stack);
     if (latest) {
       return {
         text: `Last updated by Git ${relativeTime(latest.updatedAt)} via ${gitSourceLabel(latest.triggerSource)}`,
         title: gitUpdateTitle(latest),
         empty: false,
+        pending: false,
         commitHash: latest.commitHash
       };
     }
@@ -630,7 +749,8 @@ export function ServicesPage() {
     return {
       text: "Last updated by Git: never pulled",
       title: "At least one service is linked to Git, but no successful Git pull/deployment is recorded yet",
-      empty: true
+      empty: true,
+      pending: false
     };
   }
 
@@ -934,6 +1054,9 @@ export function ServicesPage() {
                 <div className="app-stack-list">
                   {buildServiceStacks(group.services).map((stack) => {
                     const stackGit = stackGitSummary(stack);
+                    const stackGitService = stackGit?.serviceId
+                      ? stack.services.find((service) => service.id === stackGit.serviceId)
+                      : null;
                     return (
                       <section key={stack.id} className={`app-stack stack-${stackStatus(stack)}`}>
                         <div className="app-stack-header">
@@ -953,22 +1076,23 @@ export function ServicesPage() {
                             </p>
                             {stackGit && (
                               <div
-                                className={`stack-git-update ${stackGit.empty ? "empty" : ""}`}
+                                className={`stack-git-update ${stackGit.empty ? "empty" : ""} ${stackGit.pending ? "pending" : ""}`}
                                 title={stackGit.title}
                               >
-                                <GitBranch size={13} />
+                                {stackGit.pending ? <AlertTriangle size={13} /> : <GitBranch size={13} />}
                                 <span>{stackGit.text}</span>
                                 {stackGit.commitHash && <code>{stackGit.commitHash.slice(0, 7)}</code>}
+                                {stackGit.remoteHash && <code>remote {stackGit.remoteHash.slice(0, 7)}</code>}
                               </div>
                             )}
                           </div>
                           <div className="stack-service-pills">
                             {stackGit && (
                               <span
-                                className={`stack-service-pill git-update-pill ${stackGit.empty ? "empty" : ""}`}
+                                className={`stack-service-pill git-update-pill ${stackGit.empty ? "empty" : ""} ${stackGit.pending ? "pending" : ""}`}
                                 title={stackGit.title}
                               >
-                                <GitBranch size={12} />
+                                {stackGit.pending ? <AlertTriangle size={12} /> : <GitBranch size={12} />}
                                 {stackGit.text}
                               </span>
                             )}
@@ -1012,6 +1136,20 @@ export function ServicesPage() {
                           <button className="ghost xsmall" onClick={() => void stackAction(stack, "restart")}>
                             <RotateCw size={14} /> Restart stack
                           </button>
+                          {stackGit?.pending && stackGitService && (
+                            <button
+                              className="ghost xsmall git-pending-action"
+                              disabled={redeployingGitId === stackGitService.id}
+                              onClick={() => void deployLatestFromGit(stackGitService)}
+                            >
+                              {redeployingGitId === stackGitService.id ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <GitBranch size={14} />
+                              )}
+                              Deploy latest
+                            </button>
+                          )}
                           <button className="ghost xsmall" onClick={() => void stackAction(stack, "stop")}>
                             <Square size={14} /> Stop stack
                           </button>
@@ -1073,6 +1211,7 @@ export function ServicesPage() {
                                 const url = serviceUrl(service);
                                 const recent = serviceLogs[service.id] ?? [];
                                 const gitSummary = serviceGitSummary(service);
+                                const pendingGit = servicePendingGitUpdate(service);
                                 const actionBusy =
                                   op?.status === "queued" ||
                                   op?.status === "active" ||
@@ -1119,13 +1258,20 @@ export function ServicesPage() {
                                           </span>
                                           {gitSummary && (
                                             <span
-                                              className={`tiny row service-git-chip ${gitSummary.empty ? "empty" : ""}`}
+                                              className={`tiny row service-git-chip ${gitSummary.empty ? "empty" : ""} ${gitSummary.pending ? "pending" : ""}`}
                                               title={gitSummary.title}
                                             >
-                                              <GitBranch size={10} />
+                                              {gitSummary.pending ? (
+                                                <AlertTriangle size={10} />
+                                              ) : (
+                                                <GitBranch size={10} />
+                                              )}
                                               {gitSummary.text}
                                               {gitSummary.commitHash && (
                                                 <code>{gitSummary.commitHash.slice(0, 7)}</code>
+                                              )}
+                                              {gitSummary.remoteHash && (
+                                                <code>remote {gitSummary.remoteHash.slice(0, 7)}</code>
                                               )}
                                             </span>
                                           )}
@@ -1170,6 +1316,40 @@ export function ServicesPage() {
                                           >
                                             {service.tunnel_url}
                                           </a>
+                                        </div>
+                                      )}
+
+                                      {pendingGit && (
+                                        <div
+                                          className="git-pending-alert"
+                                          title={pendingGitTitle(service, pendingGit)}
+                                        >
+                                          <AlertTriangle size={16} />
+                                          <div>
+                                            <strong>Pending Git update</strong>
+                                            <span>
+                                              Remote {gitShort(pendingGit.remoteHash)} is newer than deployed{" "}
+                                              {gitShort(
+                                                pendingGit.latestCommitHash ?? service.latest_git_commit_hash
+                                              )}
+                                              .{" "}
+                                              {service.status === "running"
+                                                ? "Deploy latest to restart this live service with the new code."
+                                                : "Deploy latest before starting this service."}
+                                            </span>
+                                          </div>
+                                          <button
+                                            className="ghost xsmall git-pending-action"
+                                            disabled={redeployingGitId === service.id}
+                                            onClick={() => void deployLatestFromGit(service)}
+                                          >
+                                            {redeployingGitId === service.id ? (
+                                              <Loader2 size={14} className="animate-spin" />
+                                            ) : (
+                                              <GitBranch size={14} />
+                                            )}
+                                            Deploy latest
+                                          </button>
                                         </div>
                                       )}
 

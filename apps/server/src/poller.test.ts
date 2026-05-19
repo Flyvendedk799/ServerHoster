@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { nanoid } from "nanoid";
 import { buildApp } from "./app.js";
 import { nowIso } from "./lib/core.js";
-import { getGithubSyncStatus, pollGitUpdatesOnce } from "./services/poller.js";
+import { getGithubSyncStatus, getGithubSyncStatuses, pollGitUpdatesOnce } from "./services/poller.js";
 import { gracefulShutdown } from "./services/runtime.js";
 
 function hasGit(): boolean {
@@ -131,6 +131,21 @@ test("git poller deploys when a service has no commit baseline", { skip: !hasGit
     assert.equal(after.remoteHash, firstHash);
     assert.equal(after.latestCommitHash, firstHash);
     assert.equal(after.updateAvailable, false);
+    assert.equal(after.requiresRestart, false);
+
+    fs.writeFileSync(path.join(repo, "change.txt"), "new remote change\n");
+    const secondHash = commitRepo(repo, "second change");
+    ctx.db.prepare("UPDATE services SET status = 'running' WHERE id = ?").run(serviceId);
+
+    const pending = await getGithubSyncStatus(ctx, serviceId);
+    assert.equal(pending.remoteHash, secondHash);
+    assert.equal(pending.latestCommitHash, firstHash);
+    assert.equal(pending.updateAvailable, true);
+    assert.equal(pending.requiresRestart, true);
+
+    const batched = await getGithubSyncStatuses(ctx, [serviceId]);
+    assert.equal(batched[0]?.remoteHash, secondHash);
+    assert.equal(batched[0]?.requiresRestart, true);
   } finally {
     await gracefulShutdown(ctx);
     await rmTreeWithRetry(repo);
