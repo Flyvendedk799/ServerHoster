@@ -5,12 +5,32 @@ import { nanoid } from "nanoid";
 import yaml from "js-yaml";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { nowIso, parsePortMapping, findFreePort, findStaticEntry } from "../lib/core.js";
+import {
+  nowIso,
+  parsePortMapping,
+  findFreePort,
+  findStaticEntry,
+  assertPortAvailable,
+  dbReservedPorts,
+  assertWithinServiceDir
+} from "../lib/core.js";
+import { refreshLoginIngress, isCloudflareConnected } from "../services/cloudflare.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
-import { getDependents, restartService, startService, stopService } from "../services/runtime.js";
+import {
+  forceRestartService,
+  getDependents,
+  restartService,
+  startService,
+  stopService
+} from "../services/runtime.js";
 import { killTerminalSession } from "../services/terminals.js";
 import { insertLog } from "../lib/core.js";
-import { applyPostDeployServiceState, deployFromGit, deployFromLocalPath } from "../services/deploy.js";
+import {
+  applyPostDeployServiceState,
+  deployFromGit,
+  deployFromLocalPath,
+  stopServiceIfRunning
+} from "../services/deploy.js";
 import { resolveServiceProjectId } from "../services/projects.js";
 import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
 
@@ -334,7 +354,17 @@ export function registerServiceRoutes(ctx: AppContext): void {
       ORDER BY s.created_at DESC
     `
       )
-      .all();
+      .all()
+      .map((row) => {
+        // Surface the persistent DATA_DIR so the UI can show users where
+        // redeploy-safe data lives (host path; Docker containers see /data).
+        const r = row as { id: string; type?: string };
+        return {
+          ...(row as Record<string, unknown>),
+          data_dir: path.join(ctx.config.serviceDataDir, r.id),
+          data_dir_container: r.type === "docker" ? "/data" : null
+        };
+      });
   });
 
   ctx.app.get("/services/env-requirements", async () => {
@@ -372,7 +402,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const createdAt = nowIso();
     const serviceId = nanoid();
     const projectId = resolveServiceProjectId(ctx, p.projectId, p.name);
-    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
+    if (p.port !== undefined) assertPortAvailable(ctx, p.port);
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999, dbReservedPorts(ctx)));
 
     ctx.db
       .prepare(
@@ -426,10 +457,13 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
   ctx.app.post("/services", async (req) => {
     const p = serviceSchema.parse(req.body);
-    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
+    if (p.port !== undefined) assertPortAvailable(ctx, p.port);
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999, dbReservedPorts(ctx)));
     const projectId = resolveServiceProjectId(ctx, p.projectId, p.name);
+    const serviceId = nanoid();
+    if (p.workingDir) assertWithinServiceDir(ctx, serviceId, p.workingDir);
     const row = {
-      id: nanoid(),
+      id: serviceId,
       project_id: projectId,
       name: p.name,
       type: p.type,
@@ -483,24 +517,33 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const { id } = req.params as { id: string };
     const purgeDisk = (req.query as { purgeDisk?: string })?.purgeDisk === "true";
     const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(id) as
-      | { id: string; type: string; working_dir?: string; status?: string; domain?: string }
+      | { id: string; type: string; working_dir?: string; status?: string }
       | undefined;
     if (!service) throw new Error("Service not found");
 
+    // The bound domain lives in proxy_routes (services has no domain column), so
+    // `SELECT *` above never yields it — read it explicitly or the Cloudflare
+    // teardown below silently no-ops and leaves orphan DNS/ingress entries.
+    const boundDomain = (
+      ctx.db.prepare("SELECT domain FROM proxy_routes WHERE service_id = ?").get(id) as
+        | { domain?: string }
+        | undefined
+    )?.domain;
+
     // Tear down any Cloudflare-bound domain so we don't leave orphan DNS or
     // ingress entries in the user's account. Failures are queued for retry.
-    if (service.domain) {
+    if (boundDomain) {
       const { removeTunnelIngress, deleteDnsRecord } = await import("../services/cloudflare.js");
       const { enqueueCleanup } = await import("../services/cleanupQueue.js");
       try {
-        await removeTunnelIngress(ctx, service.domain);
+        await removeTunnelIngress(ctx, boundDomain);
       } catch {
-        enqueueCleanup(ctx, "remove_ingress", { domain: service.domain });
+        enqueueCleanup(ctx, "remove_ingress", { domain: boundDomain });
       }
       try {
-        await deleteDnsRecord(ctx, service.domain);
+        await deleteDnsRecord(ctx, boundDomain);
       } catch {
-        enqueueCleanup(ctx, "delete_dns", { domain: service.domain });
+        enqueueCleanup(ctx, "delete_dns", { domain: boundDomain });
       }
     }
 
@@ -539,6 +582,21 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM deployments WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM logs WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(id);
+
+    // Rewrite the login tunnel's config.yml now that this service's route is
+    // gone, so its hostname stops being served (a stale ingress entry can
+    // otherwise shadow another service's domain). The token-based cleanup above
+    // (removeTunnelIngress/deleteDnsRecord) handles the API-token path; this
+    // covers the browser-login connector. Gate on connected so we don't touch
+    // the connector when this install isn't login-bound.
+    if (isCloudflareConnected(ctx)) {
+      try {
+        refreshLoginIngress(ctx);
+      } catch (err) {
+        console.error("refreshLoginIngress after service delete failed:", err);
+      }
+    }
+
     try {
       ctx.db
         .prepare(
@@ -549,13 +607,17 @@ export function registerServiceRoutes(ctx: AppContext): void {
       /* certificates table may not yet exist on older installs */
     }
 
-    // Optional: remove the cloned project directory from disk
-    if (purgeDisk && service.working_dir) {
-      const wd = path.resolve(service.working_dir);
-      // Refuse to touch anything outside a plausible survhub data dir
-      if (wd.includes(".survhub") || wd.includes("survhub-repos")) {
+    // Optional: remove this service's disk footprint. Only id-derived paths are
+    // deleted (the clone root and the persistent data dir) — never the stored
+    // working_dir, which a user could have pointed elsewhere; a substring check
+    // on ".survhub" was how one bad path could once nuke a sibling's data.
+    if (purgeDisk) {
+      for (const dir of [
+        path.join(ctx.config.projectsDir, id),
+        path.join(ctx.config.serviceDataDir, id)
+      ]) {
         try {
-          fs.rmSync(wd, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true });
         } catch {
           /* ignore */
         }
@@ -569,10 +631,37 @@ export function registerServiceRoutes(ctx: AppContext): void {
     return { ok: true };
   });
 
-  ctx.app.post("/services/:id/start", async (req) => ({
-    ok: true,
-    ...(await startService(ctx, (req.params as { id: string }).id).then(() => ({})))
-  }));
+  // A service imported from Git that has never built successfully has no run
+  // command yet, so Start/Force-restart dead-end at "Missing command for
+  // service". When that's the case and a repo is present, build it first — the
+  // deploy detects/persists the command (and runs the native-dep remediation)
+  // then starts it — so those actions are self-healing out of the box instead of
+  // a 500 the user can't act on. Returns the deployment when it built, or null
+  // when there's nothing to auto-build (caller falls back to start/restart).
+  async function autoBuildIfUnbuilt(
+    id: string
+  ): Promise<{ deployed: true; deployment: Awaited<ReturnType<typeof deployFromGit>> } | null> {
+    const svc = ctx.db
+      .prepare("SELECT command, type, github_repo_url, github_branch FROM services WHERE id = ?")
+      .get(id) as
+      | { command?: string; type?: string; github_repo_url?: string; github_branch?: string }
+      | undefined;
+    const needsBuild = !!svc && svc.type !== "docker" && !String(svc.command ?? "").trim();
+    if (!needsBuild || !svc?.github_repo_url) return null;
+    const branch = svc.github_branch || "main";
+    await stopServiceIfRunning(ctx, id);
+    const deployment = await deployFromGit(ctx, id, svc.github_repo_url, branch, "manual");
+    await applyPostDeployServiceState(ctx, id, deployment, { startAfterDeploy: true });
+    return { deployed: true, deployment };
+  }
+
+  ctx.app.post("/services/:id/start", async (req) => {
+    const { id } = req.params as { id: string };
+    const built = await autoBuildIfUnbuilt(id);
+    if (built) return { ok: true, ...built };
+    await startService(ctx, id);
+    return { ok: true };
+  });
   ctx.app.post("/services/:id/stop", async (req) => {
     const { id } = req.params as { id: string };
     const dependents = getDependents(ctx, id).filter((depId) => {
@@ -593,6 +682,16 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ok: true,
     ...(await restartService(ctx, (req.params as { id: string }).id).then(() => ({})))
   }));
+  // Force restart: breaks a stuck action lock and hard-kills the runtime before
+  // starting again. Recovers services wedged at "stopping"/"starting". Like
+  // Start, it auto-builds an unbuilt Git service so it can't dead-end either.
+  ctx.app.post("/services/:id/force-restart", async (req) => {
+    const { id } = req.params as { id: string };
+    const built = await autoBuildIfUnbuilt(id);
+    if (built) return { ok: true, ...built };
+    await forceRestartService(ctx, id);
+    return { ok: true };
+  });
 
   const updateServiceSchema = z.object({
     name: z.string().optional(),
@@ -657,6 +756,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
         }
       } catch {
         errors.workingDir = `Working directory does not exist: ${p.workingDir}`;
+      }
+      // Confine a user-supplied working_dir to this service's own clone so it
+      // can't be repointed at another service's directory or an arbitrary path.
+      if (!errors.workingDir) {
+        try {
+          assertWithinServiceDir(ctx, id, p.workingDir);
+        } catch {
+          errors.workingDir = "Working directory must stay inside the service's own project directory";
+        }
       }
     }
 
@@ -753,6 +861,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
             console.error(`Automatic SSL failed for ${finalDomain}:`, err);
           });
         }
+      }
+
+      // The bound domain/port just changed — rewrite the login tunnel's
+      // config.yml so the new (or removed) hostname is served. No-op when not
+      // login-connected, so it's safe to call unconditionally here.
+      try {
+        refreshLoginIngress(ctx);
+      } catch (err) {
+        console.error("refreshLoginIngress after service update failed:", err);
       }
     }
 
@@ -973,7 +1090,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const createdAt = nowIso();
     const serviceId = nanoid();
     const projectId = resolveServiceProjectId(ctx, p.projectId, p.name, { gitUrl: p.repoUrl });
-    const assignedPort = p.port ?? (await findFreePort(3000, 3999));
+    if (p.port !== undefined) assertPortAvailable(ctx, p.port);
+    const assignedPort = p.port ?? (await findFreePort(3000, 3999, dbReservedPorts(ctx)));
     ctx.db
       .prepare(
         `INSERT INTO services (

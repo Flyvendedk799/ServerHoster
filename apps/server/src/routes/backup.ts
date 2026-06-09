@@ -40,11 +40,20 @@ export function registerBackupRoutes(ctx: AppContext): void {
     const tx = ctx.db.transaction(() => {
       for (const [table, rows] of Object.entries(payload.data)) {
         if (!safeTables.has(table) || rows.length === 0) continue;
-        const keys = Object.keys(rows[0] ?? {});
+        // Column names come from arbitrary client JSON and were interpolated raw
+        // into the SQL — validate every key against the table's real schema and
+        // quote identifiers, so a crafted import can't inject SQL or touch
+        // columns that don't exist.
+        const validCols = new Set(
+          (ctx.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (c) => c.name
+          )
+        );
+        const keys = Object.keys(rows[0] ?? {}).filter((k) => validCols.has(k));
         if (keys.length === 0) continue;
         const placeholders = keys.map(() => "?").join(", ");
         const insert = ctx.db.prepare(
-          `INSERT OR REPLACE INTO ${table} (${keys.join(", ")}) VALUES (${placeholders})`
+          `INSERT OR REPLACE INTO ${table} (${keys.map((k) => `"${k}"`).join(", ")}) VALUES (${placeholders})`
         );
         for (const row of rows) {
           insert.run(...keys.map((k) => row[k]));

@@ -32,7 +32,6 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
           text: "var(--success)",
           glow: "var(--success-glow)"
         };
-      case "stopped":
       case "crashed":
       case "error":
         return {
@@ -40,6 +39,13 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
           border: "var(--danger)",
           text: "var(--danger)",
           glow: "var(--danger-glow)"
+        };
+      case "stopped":
+        return {
+          bg: "var(--bg-elevated)",
+          border: "var(--border-strong)",
+          text: "var(--text-muted)",
+          glow: "none"
         };
       case "building":
       case "starting":
@@ -63,11 +69,19 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
 
   const colors = getColors(s);
 
+  const isTransitioning =
+    s === "building" ||
+    s === "starting" ||
+    s === "stopping" ||
+    s === "provisioning";
+
   if (dotOnly) {
     return (
       <span
         title={label || status}
-        className={className}
+        className={`status-dot${isTransitioning ? " is-transitioning" : ""}${
+          className ? ` ${className}` : ""
+        }`}
         style={{
           width: "8px",
           height: "8px",
@@ -83,7 +97,9 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
 
   return (
     <span
-      className={`chip ${className || ""}`}
+      className={`chip status-badge${
+        isTransitioning ? " is-transitioning" : ""
+      } ${className || ""}`}
       style={{
         background: colors.bg,
         borderColor: colors.border,

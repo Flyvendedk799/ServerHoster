@@ -17,7 +17,8 @@ import {
   Copy,
   LogOut,
   ChevronRight,
-  Play
+  Play,
+  Loader2
 } from "lucide-react";
 
 import { API_BASE_URL, api, clearAuthToken } from "../lib/api";
@@ -54,13 +55,18 @@ export function SettingsPage() {
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [cfConfig, setCfConfig] = useState({ accountId: "", tunnelId: "", zoneId: "" });
   const [sslMode, setSslMode] = useState<"http-01" | "dns-01">("http-01");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
 
   async function loadAll() {
     try {
-      const [gh, ssh, t] = await Promise.all([
+      const [gh, ssh, t, settings] = await Promise.all([
         api<any>("/settings/github/status", { silent: true }),
         api<any>("/settings/ssh", { silent: true }),
-        api<TunnelStatus>("/cloudflare/status", { silent: true })
+        api<TunnelStatus>("/cloudflare/status", { silent: true }),
+        api<{ settings: Array<{ key: string; value: string; secret: boolean }> }>("/settings", {
+          silent: true
+        })
       ]);
       setGithubStatus(gh);
       setGithubWebhookUrl(gh?.webhookUrl ?? `${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
@@ -68,8 +74,12 @@ export function SettingsPage() {
       setTunnel(t);
       if (t)
         setCfConfig({ accountId: t.accountId ?? "", tunnelId: t.tunnelId ?? "", zoneId: t.zoneId ?? "" });
+      const storedSslMode = settings?.settings?.find((s) => s.key === "ssl_mode")?.value;
+      if (storedSslMode === "http-01" || storedSslMode === "dns-01") setSslMode(storedSslMode);
     } catch {
       /* silent */
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -82,6 +92,7 @@ export function SettingsPage() {
   }, []);
 
   async function saveGithubPat() {
+    setBusy("github-pat");
     try {
       await api("/settings/github/pat", {
         method: "POST",
@@ -92,10 +103,13 @@ export function SettingsPage() {
       await loadAll();
     } catch {
       /* toasted */
+    } finally {
+      setBusy(null);
     }
   }
 
   async function saveGithubWebhookUrl() {
+    setBusy("github-webhook");
     try {
       await api("/settings/github/webhook-url", {
         method: "PUT",
@@ -105,16 +119,79 @@ export function SettingsPage() {
       await loadAll();
     } catch {
       /* toasted */
+    } finally {
+      setBusy(null);
     }
   }
 
   async function startTunnel() {
+    setBusy("tunnel-start");
     try {
       await api("/cloudflare/start", { method: "POST" });
       toast.success("Cloudflare Tunnel handshake initiated");
       await loadAll();
     } catch {
       /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function stopTunnel() {
+    setBusy("tunnel-stop");
+    try {
+      await api("/cloudflare/stop", { method: "POST" });
+      toast.success("Cloudflare Tunnel terminated");
+      await loadAll();
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveSslMode() {
+    setBusy("ssl-mode");
+    try {
+      await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ key: "ssl_mode", value: sslMode })
+      });
+      toast.success("Validation strategy saved");
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function exportSnapshot() {
+    setBusy("export");
+    try {
+      const d = await api("/backup/export");
+      const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `localsurv-export-${new Date().toISOString().slice(0, 19)}.json`;
+      a.click();
+      toast.success("Snapshot prepared");
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runOpsTask(taskId: string, path: string, message: string) {
+    setBusy(taskId);
+    try {
+      await api(path);
+      toast.success(message);
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -144,10 +221,14 @@ export function SettingsPage() {
       </header>
 
       <div className="settings-layout">
-        <aside className="settings-nav">
+        <aside className="settings-nav" role="tablist" aria-label="Settings sections">
           {tabs.map((tab) => (
             <button
               key={tab.id}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`settings-panel-${tab.id}`}
+              id={`settings-tab-${tab.id}`}
               className={activeTab === tab.id ? "active" : ""}
               onClick={() => setActiveTab(tab.id as any)}
             >
@@ -169,7 +250,22 @@ export function SettingsPage() {
           ))}
         </aside>
 
-        <section className="settings-content">
+        <section
+          className="settings-content"
+          role="tabpanel"
+          id={`settings-panel-${activeTab}`}
+          aria-labelledby={`settings-tab-${activeTab}`}
+        >
+          {loading ? (
+            <div className="form-stack">
+              <div className="card settings-skeleton" aria-busy="true" aria-live="polite">
+                <div className="skeleton-line" style={{ width: "40%" }} />
+                <div className="skeleton-line" style={{ width: "75%" }} />
+                <div className="skeleton-line" style={{ width: "60%" }} />
+              </div>
+              <span className="sr-only">Loading settings…</span>
+            </div>
+          ) : (
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -180,7 +276,7 @@ export function SettingsPage() {
             >
               {activeTab === "connectivity" && (
                 <div className="form-stack">
-                  <div className="card glass-card">
+                  <div className="card">
                     <header className="section-title">
                       <div className="row">
                         <Cloud className="text-info" size={20} />
@@ -188,7 +284,7 @@ export function SettingsPage() {
                       </div>
                       <StatusBadge status={tunnel?.running ? "running" : "stopped"} />
                     </header>
-                    <p className="muted small" style={{ marginBottom: "2rem" }}>
+                    <p className="muted small" style={{ marginBottom: "1rem" }}>
                       Connect your local node to the Cloudflare edge without opening ingress ports.
                     </p>
 
@@ -212,25 +308,36 @@ export function SettingsPage() {
                     </div>
 
                     <footer className="footer-actions">
-                      <button className="primary" onClick={startTunnel} disabled={tunnel?.running}>
-                        <Play size={16} /> Establish Connection
+                      <button
+                        className="primary"
+                        onClick={startTunnel}
+                        disabled={tunnel?.running || busy === "tunnel-start"}
+                      >
+                        {busy === "tunnel-start" ? (
+                          <Loader2 size={16} className="spin" />
+                        ) : (
+                          <Play size={16} />
+                        )}{" "}
+                        Establish Connection
                       </button>
                       <button
                         className="ghost text-danger"
-                        onClick={() => api("/cloudflare/stop", { method: "POST" }).then(loadAll)}
+                        onClick={stopTunnel}
+                        disabled={busy === "tunnel-stop"}
                       >
-                        Terminate Connection
+                        {busy === "tunnel-stop" && <Loader2 size={16} className="spin" />} Terminate
+                        Connection
                       </button>
                     </footer>
                   </div>
 
-                  <div className="card glass-card">
+                  <div className="card">
                     <div className="row">
                       <ShieldCheck className="text-success" size={20} />
                       <h3>Certificate Authority</h3>
                     </div>
                     <p className="muted small" style={{ margin: "1rem 0" }}>
-                      Configure how SURVHub issues SSL/TLS certificates via Let's Encrypt.
+                      Configure how LocalSURV issues SSL/TLS certificates via Let's Encrypt.
                     </p>
                     <div className="form-group">
                       <label className="tiny uppercase font-bold muted">Validation Strategy</label>
@@ -242,14 +349,10 @@ export function SettingsPage() {
                     <button
                       className="button small"
                       style={{ marginTop: "1.5rem" }}
-                      onClick={() =>
-                        api("/settings", {
-                          method: "PUT",
-                          body: JSON.stringify({ key: "ssl_mode", value: sslMode })
-                        })
-                      }
+                      onClick={saveSslMode}
+                      disabled={busy === "ssl-mode"}
                     >
-                      Save Strategy
+                      {busy === "ssl-mode" && <Loader2 size={14} className="spin" />} Save Strategy
                     </button>
                   </div>
                 </div>
@@ -257,7 +360,7 @@ export function SettingsPage() {
 
               {activeTab === "integrations" && (
                 <div className="form-stack">
-                  <div className="card glass-card">
+                  <div className="card">
                     <div className="row">
                       <GitBranch className="text-primary" size={20} />
                       <h3>GitHub CI Integration</h3>
@@ -289,8 +392,13 @@ export function SettingsPage() {
                         )}
                       </div>
                     </div>
-                    <button className="primary" style={{ marginTop: "1rem" }} onClick={saveGithubPat}>
-                      Update Token
+                    <button
+                      className="primary"
+                      style={{ marginTop: "1rem" }}
+                      onClick={saveGithubPat}
+                      disabled={busy === "github-pat"}
+                    >
+                      {busy === "github-pat" && <Loader2 size={16} className="spin" />} Update Token
                     </button>
 
                     <div className="form-group" style={{ marginTop: "1.75rem" }}>
@@ -318,12 +426,30 @@ export function SettingsPage() {
                         )}
                       </div>
                     </div>
-                    <button className="ghost" style={{ marginTop: "1rem" }} onClick={saveGithubWebhookUrl}>
-                      Save Webhook URL
-                    </button>
+                    <div className="row" style={{ gap: "0.5rem", marginTop: "1rem" }}>
+                      <button
+                        className="ghost"
+                        onClick={saveGithubWebhookUrl}
+                        disabled={busy === "github-webhook"}
+                      >
+                        {busy === "github-webhook" && <Loader2 size={14} className="spin" />} Save
+                        Webhook URL
+                      </button>
+                      <button
+                        className="ghost small font-bold"
+                        onClick={() =>
+                          githubWebhookUrl &&
+                          navigator.clipboard
+                            .writeText(githubWebhookUrl)
+                            .then(() => toast.success("Webhook URL copied to buffer"))
+                        }
+                      >
+                        <Copy size={14} /> Copy URL
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="card glass-card">
+                  <div className="card">
                     <div className="row">
                       <Key className="text-warning" size={20} />
                       <h3>Infrastructure SSH Key</h3>
@@ -351,7 +477,7 @@ export function SettingsPage() {
 
               {activeTab === "data" && (
                 <div className="form-stack">
-                  <div className="card glass-card">
+                  <div className="card">
                     <div className="row">
                       <Download className="text-accent" size={20} />
                       <h3>Instance Snapshot</h3>
@@ -359,21 +485,9 @@ export function SettingsPage() {
                     <p className="muted small" style={{ margin: "1rem 0" }}>
                       Export all configuration, routing rules, and service metadata as a portable JSON file.
                     </p>
-                    <button
-                      className="primary"
-                      onClick={() =>
-                        api("/backup/export").then((d) => {
-                          const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement("a");
-                          a.href = url;
-                          a.download = `survhub-export-${new Date().toISOString().slice(0, 19)}.json`;
-                          a.click();
-                          toast.success("Snapshot prepared");
-                        })
-                      }
-                    >
-                      Generate JSON Export
+                    <button className="primary" onClick={exportSnapshot} disabled={busy === "export"}>
+                      {busy === "export" && <Loader2 size={16} className="spin" />} Generate JSON
+                      Export
                     </button>
                   </div>
                 </div>
@@ -381,7 +495,7 @@ export function SettingsPage() {
 
               {activeTab === "system" && (
                 <div className="form-stack">
-                  <div className="card glass-card">
+                  <div className="card">
                     <div className="row">
                       <Monitor size={20} className="text-muted" />
                       <h3>Cluster Administration</h3>
@@ -389,22 +503,34 @@ export function SettingsPage() {
                     <p className="muted small" style={{ marginTop: "1rem" }}>
                       Execute maintenance tasks directly on the node control plane.
                     </p>
-                    <div className="row wrap" style={{ gap: "1rem", marginTop: "2rem" }}>
+                    <div className="row wrap" style={{ gap: "0.5rem", marginTop: "1rem" }}>
                       <button
                         className="button"
                         onClick={() =>
-                          api("/ops/audit-logs").then(() => toast.success("Audit pushed to syslogs"))
+                          runOpsTask("ops-audit", "/ops/audit-logs", "Audit pushed to syslogs")
                         }
+                        disabled={busy === "ops-audit"}
                       >
-                        <Terminal size={16} /> Audit Log Stream
+                        {busy === "ops-audit" ? (
+                          <Loader2 size={16} className="spin" />
+                        ) : (
+                          <Terminal size={16} />
+                        )}{" "}
+                        Audit Log Stream
                       </button>
                       <button
                         className="button"
                         onClick={() =>
-                          api("/ops/install-scripts").then(() => toast.success("Setup wizard cached"))
+                          runOpsTask("ops-harden", "/ops/install-scripts", "Setup wizard cached")
                         }
+                        disabled={busy === "ops-harden"}
                       >
-                        <Shield size={16} /> Refresh Hardening
+                        {busy === "ops-harden" ? (
+                          <Loader2 size={16} className="spin" />
+                        ) : (
+                          <Shield size={16} />
+                        )}{" "}
+                        Refresh Hardening
                       </button>
                     </div>
                   </div>
@@ -412,34 +538,40 @@ export function SettingsPage() {
               )}
             </motion.div>
           </AnimatePresence>
+          )}
         </section>
       </div>
 
       <style
         dangerouslySetInnerHTML={{
           __html: `
-        .settings-page .settings-layout { display: grid; grid-template-columns: 280px 1fr; gap: 4rem; margin-top: 1rem; align-items: flex-start; }
-        .settings-page .settings-nav { display: flex; flex-direction: column; gap: 0.75rem; background: var(--bg-glass); padding: 1rem; border-radius: var(--radius-lg); border: 1px solid var(--border-subtle); }
+        .settings-page .settings-layout { display: grid; grid-template-columns: 240px 1fr; gap: 1.5rem; align-items: flex-start; }
+        .settings-page .settings-nav { display: flex; flex-direction: column; gap: 0.25rem; background: var(--bg-glass); padding: 0.35rem; border-radius: var(--radius-lg); border: 1px solid var(--border-subtle); }
         .settings-page .settings-nav button { 
-          display: flex; align-items: center; gap: 1rem; padding: 1rem; 
+          display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0.65rem;
           background: none; border: 1px solid transparent; color: var(--text-muted); 
           cursor: pointer; border-radius: var(--radius-md); transition: var(--transition-fast); 
         }
         .settings-page .settings-nav button:hover { background: var(--bg-sunken); color: var(--text-primary); }
         .settings-page .settings-nav button.active { background: var(--bg-card); border-color: var(--border-glow); color: var(--text-primary); box-shadow: var(--shadow-md); }
-        .settings-page .tab-icon-box { width: 36px; height: 36px; background: var(--bg-sunken); display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: var(--transition-fast); }
-        .settings-page .active-icon { background: var(--accent-gradient); color: white; }
-        .settings-page .form-stack { display: flex; flex-direction: column; gap: 2.5rem; }
-        .settings-page .footer-actions { display: flex; gap: 1rem; margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--border-subtle); }
+        .settings-page .tab-icon-box { width: 30px; height: 30px; background: var(--bg-sunken); display: flex; align-items: center; justify-content: center; border-radius: 7px; transition: var(--transition-fast); }
+        .settings-page .active-icon { background: var(--accent-soft); color: var(--accent); }
+        .settings-page .form-stack { display: flex; flex-direction: column; gap: 1rem; }
+        .settings-page .footer-actions { display: flex; gap: 0.5rem; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); }
         .settings-page .ssh-box { 
-          background: #000; padding: 1.5rem; border-radius: var(--radius-md); 
+          background: #050505; padding: 1rem; border-radius: var(--radius-md);
           margin: 1.5rem 0; overflow-x: auto; font-family: var(--font-mono); font-size: 0.85rem; color: var(--success);
           border: 1px solid #333; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5);
         }
         .ml-auto { margin-left: auto; }
         .font-bold { font-weight: 700; }
         .tiny { font-size: 0.7rem; }
-        .glass-card { background: var(--bg-glass); border-color: var(--border-subtle); }
+        .settings-page .spin { animation: settings-spin 0.8s linear infinite; }
+        @keyframes settings-spin { to { transform: rotate(360deg); } }
+        .settings-page .settings-skeleton { display: flex; flex-direction: column; gap: 0.85rem; }
+        .settings-page .skeleton-line { height: 0.9rem; border-radius: var(--radius-md); background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--bg-glass) 50%, var(--bg-sunken) 75%); background-size: 200% 100%; animation: settings-shimmer 1.4s ease-in-out infinite; }
+        @keyframes settings-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .settings-page .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
       `
         }}
       />

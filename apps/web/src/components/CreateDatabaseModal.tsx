@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { Database, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   projects: Array<{ id: string; name: string }>;
@@ -17,17 +19,30 @@ const ENGINE_DEFAULT_PORT = {
   mongo: 27017
 };
 
+function generatePassword(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
+  const values = new Uint32Array(20);
+  crypto.getRandomValues(values);
+  return Array.from(values, (v) => chars[v % chars.length]).join("");
+}
+
 export function CreateDatabaseModal({ projects, onClose, onCreated, initialProjectId, initialName }: Props) {
   const [form, setForm] = useState({
     projectId: initialProjectId || projects[0]?.id || "",
     name: initialName || "",
     engine: "postgres" as "postgres" | "mysql" | "redis" | "mongo",
     port: "5432",
-    username: "",
+    username: "admin",
     password: "",
     databaseName: ""
   });
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  // Tracks whether the user typed their own port, so switching engine won't clobber it.
+  const portTouched = useRef(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useModalA11y(ref, { onClose, onSubmit: handleSubmit });
 
   async function handleSubmit() {
     if (!form.name) {
@@ -60,15 +75,19 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-database-title"
+        style={{ maxWidth: "560px" }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="modal-header">
           <div className="row">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M12 2v20M2 12h20" />
-              <ellipse cx="12" cy="5" rx="9" ry="3" />
-              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
-            </svg>
-            <h3>Provision Persistence</h3>
+            <Database size={20} className="text-accent" />
+            <h3 id="create-database-title">Provision Persistence</h3>
           </div>
           <p className="hint">Deploy a new managed database instance to your project.</p>
         </header>
@@ -100,7 +119,12 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 value={form.engine}
                 onChange={(e) => {
                   const eng = e.target.value as keyof typeof ENGINE_DEFAULT_PORT;
-                  setForm({ ...form, engine: eng, port: String(ENGINE_DEFAULT_PORT[eng]) });
+                  // Only re-default the port if the user hasn't entered their own.
+                  setForm((f) => ({
+                    ...f,
+                    engine: eng,
+                    port: portTouched.current ? f.port : String(ENGINE_DEFAULT_PORT[eng])
+                  }));
                 }}
               >
                 <option value="postgres">PostgreSQL</option>
@@ -114,7 +138,13 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
           <div className="form-row">
             <div className="form-group">
               <label>Port</label>
-              <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} />
+              <input
+                value={form.port}
+                onChange={(e) => {
+                  portTouched.current = true;
+                  setForm({ ...form, port: e.target.value });
+                }}
+              />
             </div>
             <div className="form-group">
               <label>
@@ -139,12 +169,37 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
             </div>
             <div className="form-group">
               <label>Root Pass</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
+              <div className="input-wrap">
+                <input
+                  className="has-action"
+                  style={{ paddingRight: "72px" }}
+                  type={showPassword ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="input-action"
+                  style={{ right: "38px" }}
+                  onClick={() => {
+                    setForm((f) => ({ ...f, password: generatePassword() }));
+                    setShowPassword(true);
+                  }}
+                  aria-label="Generate password"
+                  title="Generate strong password"
+                >
+                  <RefreshCw size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="input-action"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
             </div>
           </div>
         </div>

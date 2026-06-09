@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Bot, Download, Eraser, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
-import { connectLogs } from "../lib/ws";
+import { connectLogs, type LiveStatus } from "../lib/ws";
 import { toast } from "../lib/toast";
 import { openServiceTerminal } from "../components/TerminalDock";
 
@@ -26,7 +26,13 @@ export function ServiceLogsPage() {
   const [search, setSearch] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>("connecting");
+  const [newSinceScroll, setNewSinceScroll] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
+  // Mirror of autoScroll for the WS callback, whose closure is created once.
+  const autoScrollRef = useRef(autoScroll);
+  autoScrollRef.current = autoScroll;
 
   useEffect(() => {
     if (!serviceId) return;
@@ -55,7 +61,11 @@ export function ServiceLogsPage() {
       if (typed.type !== "log") return;
       if ((typed.serviceId ?? typed.service_id) !== serviceId) return;
       setLogs((prev) => [...prev, payload as LogRow].slice(-5000));
+      // When the user has scrolled up (follow disabled), tally arrivals so the
+      // jump pill can advertise how many lines are waiting below.
+      if (!autoScrollRef.current) setNewSinceScroll((n) => n + 1);
     });
+    ws.onStatus(setLiveStatus);
     return () => {
       cancelled = true;
       ws.close();
@@ -71,11 +81,43 @@ export function ServiceLogsPage() {
     });
   }, [logs, levelFilter, search]);
 
+  // Live per-level counts for the filter dropdown (counted over the full buffer,
+  // independent of the active level filter so each option shows its own total).
+  const levelCounts = useMemo(() => {
+    const counts = { all: logs.length, info: 0, warn: 0, error: 0 };
+    for (const log of logs) {
+      const lvl = (log.level ?? "info") as Exclude<LevelFilter, "all">;
+      if (lvl in counts) counts[lvl] += 1;
+    }
+    return counts;
+  }, [logs]);
+
   useEffect(() => {
     if (autoScroll && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: "auto", block: "end" });
     }
   }, [filtered, autoScroll]);
+
+  function handleViewerScroll(): void {
+    const el = viewerRef.current;
+    if (!el) return;
+    // Treat "within a line height of the bottom" as following.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (atBottom) {
+      if (!autoScroll) setAutoScroll(true);
+      if (newSinceScroll !== 0) setNewSinceScroll(0);
+    } else if (autoScroll) {
+      // User scrolled up: stop following and start counting new arrivals.
+      setAutoScroll(false);
+      setNewSinceScroll(0);
+    }
+  }
+
+  function jumpToLive(): void {
+    setAutoScroll(true);
+    setNewSinceScroll(0);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
 
   function downloadLogs(): void {
     try {
@@ -115,7 +157,18 @@ export function ServiceLogsPage() {
       <div className="page-header">
         <div className="title-group">
           <h2>Terminal Pro</h2>
-          <p className="muted">Live logs for {service?.name ?? serviceId}</p>
+          <p className="muted">
+            <span
+              className={`status-dot ${liveStatus === "open" ? "running" : liveStatus === "connecting" ? "pending" : "stopped"}`}
+              title={`Log stream ${liveStatus}`}
+            />{" "}
+            {liveStatus === "open"
+              ? "Streaming live logs"
+              : liveStatus === "connecting"
+                ? "Connecting to log stream…"
+                : "Log stream disconnected"}{" "}
+            for {service?.name ?? serviceId}
+          </p>
         </div>
         <Link to="/services" className="button ghost small">
           Back to Services
@@ -136,14 +189,19 @@ export function ServiceLogsPage() {
         <div className="terminal-toolbar">
           <Terminal size={16} className="text-accent" />
           <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value as LevelFilter)}>
-            <option value="all">All levels</option>
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
+            <option value="all">All levels ({levelCounts.all})</option>
+            <option value="info">info ({levelCounts.info})</option>
+            <option value="warn">warn ({levelCounts.warn})</option>
+            <option value="error">error ({levelCounts.error})</option>
           </select>
           <div className="terminal-search">
             <Search size={15} />
             <input placeholder="Search logs..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            {search.trim() && (
+              <span className="muted small">
+                {filtered.length} {filtered.length === 1 ? "match" : "matches"}
+              </span>
+            )}
           </div>
           <label className="toggle-inline">
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
@@ -157,23 +215,40 @@ export function ServiceLogsPage() {
           </button>
         </div>
 
-        <div className="logs-viewer terminal-pro">
-          {loading && <p className="muted">Loading logs...</p>}
-          {!loading && filtered.length === 0 && (
-            <p className="muted">No log entries match the current filter.</p>
+        <div className="logs-viewer-wrap">
+          <div className="logs-viewer terminal-pro" ref={viewerRef} onScroll={handleViewerScroll}>
+            {loading &&
+              Array.from({ length: 8 }).map((_, i) => (
+                <div
+                  key={`skeleton-${i}`}
+                  className="log-skeleton-row"
+                  style={{ width: `${90 - (i % 4) * 14}%`, animationDelay: `${i * 0.09}s` }}
+                />
+              ))}
+            {!loading && filtered.length === 0 && (
+              <p className="muted">No log entries match the current filter.</p>
+            )}
+            {!loading &&
+              filtered.map((log, i) => (
+                <div key={log.id ?? `${log.timestamp}-${i}`} className={`log-line level-${log.level ?? "info"}`}>
+                  <span className="log-time">
+                    {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ""}
+                  </span>{" "}
+                  <span className="log-level" style={{ color: levelColor(log.level) }}>
+                    [{log.level ?? "info"}]
+                  </span>{" "}
+                  <span className="log-msg">{log.message}</span>
+                </div>
+              ))}
+            <div ref={bottomRef} />
+          </div>
+          {!autoScroll && (
+            <button className="log-jump-pill" onClick={jumpToLive}>
+              {newSinceScroll > 0
+                ? `${newSinceScroll} new ↓`
+                : "Jump to live ↓"}
+            </button>
           )}
-          {filtered.map((log, i) => (
-            <div key={log.id ?? `${log.timestamp}-${i}`} className={`log-line level-${log.level ?? "info"}`}>
-              <span className="log-time">
-                {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ""}
-              </span>{" "}
-              <span className="log-level" style={{ color: levelColor(log.level) }}>
-                [{log.level ?? "info"}]
-              </span>{" "}
-              <span className="log-msg">{log.message}</span>
-            </div>
-          ))}
-          <div ref={bottomRef} />
         </div>
 
         <div className="muted small">

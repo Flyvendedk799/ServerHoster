@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   projects: Array<{ id: string; name: string }>;
@@ -20,10 +21,27 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
     enableQuickTunnel: false
   });
   const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const imageRequired = form.type === "docker";
+  const commandRequired = form.type !== "docker";
+  const imageMissing = imageRequired && !form.image.trim();
+  const commandMissing = commandRequired && !form.command.trim();
+  const canSubmit = !!form.name.trim() && !imageMissing && !commandMissing;
+
+  useModalA11y(ref, { onClose, onSubmit: handleSubmit });
 
   async function handleSubmit() {
-    if (!form.name) {
+    if (!form.name.trim()) {
       toast.error("Service name is required");
+      return;
+    }
+    if (imageMissing) {
+      toast.error("Image reference is required");
+      return;
+    }
+    if (commandMissing) {
+      toast.error("Start command is required");
       return;
     }
     setLoading(true);
@@ -53,9 +71,17 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "540px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-service-title"
+        style={{ maxWidth: "540px" }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="modal-header">
-          <h3>Create New Service</h3>
+          <h3 id="create-service-title">Create New Service</h3>
           <p className="hint">Manually configure or deploy a custom runtime.</p>
         </header>
 
@@ -112,8 +138,10 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
               <input
                 placeholder="e.g. nginx:latest"
                 value={form.image}
+                aria-invalid={imageMissing || undefined}
                 onChange={(e) => setForm({ ...form, image: e.target.value })}
               />
+              {imageMissing && <span className="field-hint error">Image reference is required.</span>}
             </div>
           ) : (
             <>
@@ -124,8 +152,10 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
                 <input
                   placeholder={form.type === "static" ? "e.g. serve -s dist" : "e.g. node index.js"}
                   value={form.command}
+                  aria-invalid={commandMissing || undefined}
                   onChange={(e) => setForm({ ...form, command: e.target.value })}
                 />
+                {commandMissing && <span className="field-hint error">Start command is required.</span>}
               </div>
               <div className="form-group">
                 <label>
@@ -157,7 +187,7 @@ export function CreateServiceModal({ projects, onClose, onCreated }: Props) {
           <button className="ghost" onClick={onClose} disabled={loading}>
             Cancel
           </button>
-          <button className="primary" onClick={handleSubmit} disabled={loading}>
+          <button className="primary" onClick={handleSubmit} disabled={loading || !canSubmit}>
             {loading ? "Creating..." : "Launch Service"}
           </button>
         </footer>

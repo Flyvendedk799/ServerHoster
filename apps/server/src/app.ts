@@ -12,7 +12,7 @@ import { ZodError } from "zod";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import type { AppContext } from "./types.js";
-import { serializeError } from "./lib/core.js";
+import { dockerUnavailableMessage, serializeError } from "./lib/core.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOpsRoutes } from "./routes/ops.js";
 import { registerProjectRoutes } from "./routes/projects.js";
@@ -25,6 +25,7 @@ import { registerMigrationRoutes } from "./routes/migrations.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerCloudflareRoutes } from "./routes/cloudflare.js";
+import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
 import { registerTunnelRoutes } from "./routes/tunnels.js";
@@ -196,6 +197,30 @@ export async function buildApp(): Promise<AppContext> {
         details: error.errors
       });
     }
+    // Honor an explicit statusCode set on thrown errors (e.g. 422/409/404) so
+    // deliberate client errors aren't masked as 500. Fastify's own validation
+    // errors also carry statusCode. Only 5xx is logged as a server fault.
+    const code = (error as { statusCode?: unknown }).statusCode;
+    if (typeof code === "number" && code >= 400 && code < 600) {
+      if (code >= 500) app.log.error(error);
+      // Surface a machine-readable `code` and `meta` so the client can render a
+      // tailored recovery UX (e.g. CF_WRONG_ZONE → an in-app re-authorize panel)
+      // instead of just toasting the message.
+      const body: Record<string, unknown> = { error: serializeError(error) };
+      const errCode = (error as { code?: unknown }).code;
+      // Only surface our own app codes — not Fastify/Node internals (FST_ERR_*,
+      // ERR_*) the client would misread as an actionable app code.
+      if (typeof errCode === "string" && !/^(FST_ERR|ERR)_/.test(errCode)) body.code = errCode;
+      const meta = (error as { meta?: unknown }).meta;
+      if (meta && typeof meta === "object") body.meta = meta;
+      return reply.code(code).send(body);
+    }
+    // A stopped Docker daemon throws a bare ECONNREFUSED on the socket — answer
+    // with a clear 503 instead of a cryptic 500 the user can't act on.
+    const dockerMsg = dockerUnavailableMessage(error);
+    if (dockerMsg) {
+      return reply.code(503).send({ error: dockerMsg });
+    }
     app.log.error(error);
     reply.code(500).send({ error: serializeError(error) });
   });
@@ -258,6 +283,14 @@ export async function buildApp(): Promise<AppContext> {
   void reconcileRuntimeStateOnBoot(ctx).catch((err) => {
     app.log.error({ err }, "reconcileRuntimeStateOnBoot failed");
   });
+  // Bring the managed Cloudflare login tunnel back up after a restart — its
+  // connector is a non-detached child that dies with us, so bound custom
+  // domains 530 until it's re-run.
+  try {
+    reconcileLoginTunnelOnBoot(ctx);
+  } catch (err) {
+    app.log.error({ err }, "reconcileLoginTunnelOnBoot failed");
+  }
   const stopHealthLoop = startHealthcheckLoop(ctx);
   ctx.shutdownTasks.push(() => stopHealthLoop());
   const stopDriftLoop = startContainerDriftLoop(ctx);

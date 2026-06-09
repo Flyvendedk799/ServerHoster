@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Braces, Check, Globe2, Zap } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   projects: Array<{ id: string; name: string }>;
@@ -34,6 +35,8 @@ export function TemplateModal({ projects, onClose, onCreated }: Props) {
   const [selected, setSelected] = useState(TEMPLATES[0].id);
   const [projectId, setProjectId] = useState(projects[0]?.id || "");
   const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y(ref, { onClose, onSubmit: handleSubmit });
 
   async function handleSubmit() {
     setLoading(true);
@@ -58,11 +61,19 @@ export function TemplateModal({ projects, onClose, onCreated }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "560px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="template-modal-title"
+      >
         <header className="modal-header">
           <div className="row">
             <Zap size={24} className="text-accent" />
-            <h3>Application Templates</h3>
+            <h3 id="template-modal-title">Application Templates</h3>
           </div>
           <p className="hint">Select a production-ready boilerplate to jumpstart development.</p>
         </header>
@@ -123,7 +134,7 @@ export function TemplateModal({ projects, onClose, onCreated }: Props) {
             background: var(--bg-sunken); border-color: var(--border-subtle); 
           }
           .template-item:hover { border-color: var(--accent); }
-          .template-item.active { border-color: var(--accent); background: var(--accent-gradient); color: white; }
+          .template-item.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
           .template-item .icon {
             width: 2.5rem;
             height: 2.5rem;
@@ -136,8 +147,8 @@ export function TemplateModal({ projects, onClose, onCreated }: Props) {
           }
           .template-item .name { font-weight: 700; margin-bottom: 0.2rem; }
           .template-item .desc { font-size: 0.8rem; opacity: 0.8; }
-          .template-item.active .icon { background: rgba(255,255,255,0.16); color: white; }
-          .template-item.active .desc { color: white; }
+          .template-item.active .icon { background: var(--accent); color: white; }
+          .template-item.active .desc { color: var(--text-muted); }
           .template-item .check { margin-left: auto; display: flex; align-items: center; }
         `
           }}

@@ -13,6 +13,7 @@ import {
 import { api } from "../lib/api";
 import { inferNameFromRepoUrl } from "../lib/repo";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Project = { id: string; name: string };
 type Props = {
@@ -53,11 +54,23 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [buildLog, setBuildLog] = useState<string[]>([]);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const canLaunch =
     Boolean(name.trim()) &&
     (source === "github"
       ? Boolean(repoUrl.trim())
       : Boolean(localPath.trim()) && (Boolean(command.trim()) || scan?.buildType === "docker"));
+
+  useModalA11y(dialogRef, {
+    onClose,
+    onSubmit: () => {
+      if (step === 1) {
+        if (canLaunch && !loading) void handleLaunch();
+      } else {
+        onLaunched();
+      }
+    }
+  });
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -179,13 +192,21 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "600px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "600px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quick-launch-modal-title"
+      >
         <header className="modal-header">
           <div className="row">
             <div className="launch-icon">
               <Play size={22} />
             </div>
-            <h3>Quick Launch Pipeline</h3>
+            <h3 id="quick-launch-modal-title">Quick Launch Pipeline</h3>
           </div>
           <p className="hint">
             Import a local folder or paste a GitHub repository URL, then run it locally or through a tunnel.
@@ -443,8 +464,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
         <style
           dangerouslySetInnerHTML={{
             __html: `
-          .launch-icon { background: var(--accent-gradient); color: white; padding: 0.5rem; border-radius: var(--radius-sm); display: flex; }
-          .active-btn { background: var(--accent-gradient) !important; color: white !important; }
+          .launch-icon { background: var(--accent-soft); color: var(--accent); padding: 0.5rem; border-radius: var(--radius-sm); display: flex; }
+          .active-btn { background: var(--accent-soft) !important; color: var(--text-primary) !important; border-color: var(--accent) !important; }
           .success { color: var(--success); }
           .scan-panel { display: grid; gap: 1rem; padding: 1rem; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-sunken); }
           .scan-warning { padding: 0.65rem 0.75rem; border-radius: var(--radius-sm); background: var(--warning-soft); color: var(--warning); font-size: 0.8rem; font-weight: 700; }

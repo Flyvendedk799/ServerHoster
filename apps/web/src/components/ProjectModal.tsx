@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { FolderKanban } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   project?: { id: string; name: string; description: string; gitUrl: string } | null;
@@ -15,6 +17,8 @@ export function ProjectModal({ project, onClose, onSaved }: Props) {
     gitUrl: project?.gitUrl || ""
   });
   const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y(ref, { onClose, onSubmit: handleSubmit });
 
   async function handleSubmit() {
     if (!form.name) {
@@ -55,13 +59,19 @@ export function ProjectModal({ project, onClose, onSaved }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "500px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "500px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-modal-title"
+      >
         <header className="modal-header">
           <div className="row">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-            <h3>{project ? "Modify Project" : "New Environment"}</h3>
+            <FolderKanban size={20} className="text-accent" />
+            <h3 id="project-modal-title">{project ? "Modify Project" : "New Environment"}</h3>
           </div>
           <p className="hint">Group related services and databases into a single workspace.</p>
         </header>

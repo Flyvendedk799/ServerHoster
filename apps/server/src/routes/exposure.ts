@@ -38,9 +38,14 @@ export function registerExposureRoutes(ctx: AppContext): void {
   /** Cert metadata for the service's currently-bound domain. */
   ctx.app.get("/services/:id/certificate", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const svc = ctx.db.prepare("SELECT domain, ssl_status FROM services WHERE id = ?").get(id) as
-      | { domain?: string; ssl_status?: string }
-      | undefined;
+    // domain lives in proxy_routes, not services — selecting services.domain
+    // threw "no such column: domain" and 500'd this endpoint on every call.
+    const svc = ctx.db
+      .prepare(
+        "SELECT p.domain AS domain, s.ssl_status FROM services s " +
+          "LEFT JOIN proxy_routes p ON p.service_id = s.id WHERE s.id = ?"
+      )
+      .get(id) as { domain?: string; ssl_status?: string } | undefined;
     if (!svc?.domain) {
       reply.code(404);
       return { error: "Service has no domain" };
@@ -64,9 +69,14 @@ export function registerExposureRoutes(ctx: AppContext): void {
   /** Force a renewal pass for this service's domain (manual trigger). */
   ctx.app.post("/services/:id/certificate/renew", async (req) => {
     const { id } = req.params as { id: string };
-    const svc = ctx.db.prepare("SELECT domain, ssl_status FROM services WHERE id = ?").get(id) as
-      | { domain?: string; ssl_status?: string }
-      | undefined;
+    // domain lives in proxy_routes, not services — selecting services.domain
+    // threw "no such column: domain" and 500'd this endpoint on every call.
+    const svc = ctx.db
+      .prepare(
+        "SELECT p.domain AS domain, s.ssl_status FROM services s " +
+          "LEFT JOIN proxy_routes p ON p.service_id = s.id WHERE s.id = ?"
+      )
+      .get(id) as { domain?: string; ssl_status?: string } | undefined;
     if (!svc?.domain) throw new Error("Service has no domain bound");
     if (svc.ssl_status === "cloudflare") {
       throw new Error("Cloudflare-tunneled domains are TLS-terminated at the edge; nothing to renew here");

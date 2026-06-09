@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
 import { nowIso, serializeError } from "../lib/core.js";
+import { createNotification } from "./notifications.js";
 
 const exec = promisify(execFile);
 
@@ -122,7 +123,10 @@ export async function containerAction(
   else if (action === "restart") await container.restart({ t: 10 });
 }
 
-export async function removeDatabase(ctx: AppContext, db: DatabaseRow): Promise<void> {
+export async function removeDatabase(
+  ctx: AppContext,
+  db: DatabaseRow
+): Promise<{ strandedServices: number }> {
   try {
     const container = ctx.docker.getContainer(db.container_id || containerNameForDatabase(db));
     await container.remove({ force: true, v: true });
@@ -130,8 +134,31 @@ export async function removeDatabase(ctx: AppContext, db: DatabaseRow): Promise<
     /* ignore */
   }
   ctx.db.prepare("DELETE FROM database_backups WHERE database_id = ?").run(db.id);
+
+  // Surface services that were pointed at this DB BEFORE we null the link: once
+  // removed, their injected DATABASE_URL resolves to a database that no longer
+  // exists, so the next deploy/restart will fail to connect. We warn (rather
+  // than force-stop) so the operator can re-point or re-provision deliberately.
+  const linked = ctx.db
+    .prepare("SELECT id, name, status FROM services WHERE linked_database_id = ?")
+    .all(db.id) as Array<{ id: string; name: string; status: string }>;
+  for (const svc of linked) {
+    ctx.app.log?.warn?.(
+      { serviceId: svc.id, serviceName: svc.name, databaseId: db.id, databaseName: db.name },
+      "linked_database_removed: service DATABASE_URL now points to a removed database"
+    );
+    createNotification(ctx, {
+      kind: "system",
+      severity: "warning",
+      title: `Database removed for service "${svc.name}"`,
+      body: `Database "${db.name}" was removed while service "${svc.name}" was linked to it. Its DATABASE_URL now points to a database that no longer exists — re-link or re-provision a database before the next deploy.`,
+      serviceId: svc.id
+    });
+  }
+
   ctx.db.prepare("UPDATE services SET linked_database_id = NULL WHERE linked_database_id = ?").run(db.id);
   ctx.db.prepare("DELETE FROM databases WHERE id = ?").run(db.id);
+  return { strandedServices: linked.length };
 }
 
 export async function getContainerLogs(ctx: AppContext, db: DatabaseRow, tail = 500): Promise<string> {

@@ -15,9 +15,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Search,
-  Command,
-  Slash
+  Command
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -35,6 +33,7 @@ import { api, clearAuthToken } from "./lib/api";
 import { connectLogs } from "./lib/ws";
 import { CommandPalette } from "./components/CommandPalette";
 import { TerminalDock } from "./components/TerminalDock";
+import { DockerBanner } from "./components/DockerBanner";
 
 function NotificationBadge() {
   const [count, setCount] = useState(0);
@@ -66,7 +65,7 @@ function NotificationBadge() {
     }
   }, []);
   if (count === 0) return null;
-  return <span className="badge danger">{count}</span>;
+  return <span className="nav-badge danger">{count}</span>;
 }
 
 function ServicesCountBadge() {
@@ -99,7 +98,7 @@ function ServicesCountBadge() {
     }
   }, []);
   if (count == null) return null;
-  return <span className="badge accent">{count}</span>;
+  return <span className="nav-badge">{count}</span>;
 }
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -112,7 +111,7 @@ type SidebarService = { id: string; name: string; status: string };
 
 const routeLabels: Record<string, string> = {
   dashboard: "Dashboard",
-  services: "Apps",
+  services: "Services",
   projects: "Projects",
   databases: "Databases",
   proxy: "Edge Ingress",
@@ -126,11 +125,11 @@ function Breadcrumbs({ pathname }: { pathname: string }) {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 0) return null;
   return (
-    <nav className="breadcrumbs" aria-label="Breadcrumb">
+    <nav className="topbar-crumb" aria-label="Breadcrumb">
       <span>LocalSURV</span>
       {parts.map((part, index) => (
         <span key={`${part}-${index}`} className="breadcrumb-part">
-          <Slash size={12} />
+          <span className="sep">/</span>
           <span>{routeLabels[part] ?? (index === 1 && parts[0] === "services" ? "Service" : part)}</span>
         </span>
       ))}
@@ -146,7 +145,6 @@ export function App() {
     () => (localStorage.getItem("survhub_theme") as "dark" | "light") || "dark"
   );
   const [bootstrapped, setBootstrapped] = useState<boolean | null>(null);
-  const [sidebarSearch, setSidebarSearch] = useState("");
   const [recentServices, setRecentServices] = useState<SidebarService[]>([]);
   const location = useLocation();
   const navigate = useNavigate();
@@ -178,7 +176,10 @@ export function App() {
         // Never bounce an already-authenticated user back to bootstrap; their
         // session is what matters, even if /auth/status flips during a race.
         const hasToken = Boolean(localStorage.getItem("survhub_token"));
-        if (!res.bootstrapped && !hasToken && location.pathname !== "/onboarding") {
+        // Respect an explicit "Log in instead" choice from the onboarding screen
+        // so a user who already has an account isn't force-routed to bootstrap.
+        const preferLogin = sessionStorage.getItem("survhub_prefer_login") === "1";
+        if (!res.bootstrapped && !hasToken && !preferLogin && location.pathname !== "/onboarding") {
           navigate("/onboarding");
         }
       } catch {
@@ -217,14 +218,23 @@ export function App() {
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route
           path="*"
-          element={<Navigate to={bootstrapped === false ? "/onboarding" : "/login"} replace />}
+          element={
+            <Navigate
+              to={
+                bootstrapped === false && sessionStorage.getItem("survhub_prefer_login") !== "1"
+                  ? "/onboarding"
+                  : "/login"
+              }
+              replace
+            />
+          }
         />
       </Routes>
     );
   }
 
   return (
-    <div className="layout" data-sidebar={collapsed ? "collapsed" : "expanded"}>
+    <div className={`app ${collapsed ? "collapsed" : ""}`} data-sidebar={collapsed ? "collapsed" : "expanded"}>
       <CommandPalette
         theme={theme}
         onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -232,260 +242,229 @@ export function App() {
       />
 
       <aside className="sidebar">
-        <header className="sidebar-header">
-          <h1>
-            <span className="logo-icon">◈</span>
-            <span className="sidebar-label">LocalSURV</span>
-          </h1>
-          <p className="muted">Control Plane</p>
+        <header className="sb-head">
+          <div className="sb-logo">LS</div>
+          {!collapsed && (
+            <div className="fcol" style={{ gap: 0, minWidth: 0 }}>
+              <span className="sb-name">LocalSURV</span>
+              <span className="sb-sub">Control Plane</span>
+            </div>
+          )}
+          <button
+            className="sb-toggle"
+            onClick={() => setCollapsed(!collapsed)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <ChevronRight size={11} /> : <ChevronLeft size={11} />}
+          </button>
         </header>
 
-        <button
-          className="sidebar-toggle"
-          onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          data-tooltip={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          data-tooltip-side="right"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-        </button>
-
-        {!collapsed && (
-          <div className="sidebar-search">
-            <Search size={15} />
-            <input
-              value={sidebarSearch}
-              onChange={(event) => setSidebarSearch(event.target.value)}
-              placeholder="Quick search..."
-            />
-            <kbd>
-              <Command size={11} />K
-            </kbd>
-          </div>
-        )}
-
-        <nav>
+        <nav className="sb-nav">
           <NavLink
             to="/dashboard"
             aria-label="Dashboard"
-            data-tooltip={collapsed ? "Dashboard" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Dashboard" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <LayoutDashboard size={20} />
-            <span className="sidebar-label">Dashboard</span>
+            <LayoutDashboard size={16} />
+            {!collapsed && <span>Dashboard</span>}
           </NavLink>
           <NavLink
             to="/services"
-            aria-label="Apps"
-            data-tooltip={collapsed ? "Apps" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            aria-label="Services"
+            title={collapsed ? "Services" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Server size={20} />
-            <span className="sidebar-label">Apps</span>
+            <Server size={16} />
+            {!collapsed && <span>Services</span>}
             {!collapsed && <ServicesCountBadge />}
           </NavLink>
           <NavLink
             to="/projects"
             aria-label="Projects"
-            data-tooltip={collapsed ? "Projects" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Projects" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <FolderKanban size={20} />
-            <span className="sidebar-label">Projects</span>
+            <FolderKanban size={16} />
+            {!collapsed && <span>Projects</span>}
           </NavLink>
           <NavLink
             to="/databases"
             aria-label="Databases"
-            data-tooltip={collapsed ? "Databases" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Databases" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Database size={20} />
-            <span className="sidebar-label">Databases</span>
+            <Database size={16} />
+            {!collapsed && <span>Databases</span>}
           </NavLink>
           <NavLink
             to="/proxy"
             aria-label="Edge Ingress"
-            data-tooltip={collapsed ? "Edge Ingress" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Edge Ingress" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Activity size={20} />
-            <span className="sidebar-label">Edge Ingress</span>
+            <Activity size={16} />
+            {!collapsed && <span>Edge Ingress</span>}
           </NavLink>
           <NavLink
             to="/deployments"
             aria-label="Deployments"
-            data-tooltip={collapsed ? "Deployments" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Deployments" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Terminal size={20} />
-            <span className="sidebar-label">Deployments</span>
+            <Terminal size={16} />
+            {!collapsed && <span>Deployments</span>}
           </NavLink>
           <NavLink
             to="/notifications"
             aria-label="Alerts"
-            data-tooltip={collapsed ? "Alerts" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Alerts" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Bell size={20} />
-            <span className="sidebar-label">Alerts</span>
+            <Bell size={16} />
+            {!collapsed && <span>Alerts</span>}
             {!collapsed && <NotificationBadge />}
           </NavLink>
           <NavLink
             to="/settings"
             aria-label="Settings"
-            data-tooltip={collapsed ? "Settings" : undefined}
-            data-tooltip-side="right"
-            className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+            title={collapsed ? "Settings" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Settings size={20} />
-            <span className="sidebar-label">Settings</span>
+            <Settings size={16} />
+            {!collapsed && <span>Settings</span>}
           </NavLink>
         </nav>
 
-        {!collapsed && recentServices.length > 0 && (
-          <section className="sidebar-recents">
-            <div className="sidebar-section-label">Recent Services</div>
-            {recentServices
-              .filter((service) => service.name.toLowerCase().includes(sidebarSearch.toLowerCase()))
-              .map((service) => (
-                <button
-                  key={service.id}
-                  className="recent-service"
-                  onClick={() => navigate("/services")}
-                  aria-label={`Open ${service.name} in services`}
-                  data-tooltip={`Open ${service.name}`}
-                  data-tooltip-side="right"
-                >
-                  <span className={`status-dot ${service.status}`} />
-                  <span>{service.name}</span>
-                  <span className="recent-status">{service.status}</span>
-                </button>
-              ))}
-          </section>
-        )}
-
-        <footer className="sidebar-footer">
+        <footer className="sb-footer">
           <button
-            className="ghost"
+            className="nav-item"
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            data-tooltip={collapsed ? `Switch to ${theme === "dark" ? "light" : "dark"} mode` : undefined}
-            data-tooltip-side="right"
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
           >
-            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-            <span className="sidebar-footer-text">{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
+            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            {!collapsed && <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>}
           </button>
           <button
-            className="ghost logout"
+            className="nav-item"
             onClick={() => {
               clearAuthToken();
               navigate("/login");
             }}
-            aria-label="Sign out"
-            data-tooltip={collapsed ? "Sign out" : undefined}
-            data-tooltip-side="right"
+            title="Sign out"
           >
-            <LogOut size={18} />
-            <span className="sidebar-footer-text">Sign Out</span>
+            <LogOut size={16} />
+            {!collapsed && <span>Sign Out</span>}
           </button>
         </footer>
       </aside>
 
-      <main className="content">
-        <Breadcrumbs pathname={location.pathname} />
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={location.pathname}
-            initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
-            transition={{ duration: 0.25, ease: "easeInOut" }}
-          >
-            <Routes location={location} key={location.pathname}>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route
-                path="/dashboard"
-                element={
-                  <ProtectedRoute>
-                    <DashboardPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/services"
-                element={
-                  <ProtectedRoute>
-                    <ServicesPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/services/:id/logs"
-                element={
-                  <ProtectedRoute>
-                    <ServiceLogsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/projects"
-                element={
-                  <ProtectedRoute>
-                    <ProjectsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/databases"
-                element={
-                  <ProtectedRoute>
-                    <DatabasesPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/proxy"
-                element={
-                  <ProtectedRoute>
-                    <ProxyPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/deployments"
-                element={
-                  <ProtectedRoute>
-                    <DeploymentsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/notifications"
-                element={
-                  <ProtectedRoute>
-                    <NotificationsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/settings"
-                element={
-                  <ProtectedRoute>
-                    <SettingsPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </motion.div>
-        </AnimatePresence>
+      <main className="main">
+        <div className="topbar">
+          <Breadcrumbs pathname={location.pathname} />
+          <div className="topbar-right">
+            <button
+              type="button"
+              className="topbar-command"
+              onClick={() => window.dispatchEvent(new Event("survhub:open-command-palette"))}
+              aria-label="Open command palette"
+            >
+              <Command size={13} />
+              <span>Command</span>
+              <kbd>Cmd K</kbd>
+            </button>
+          </div>
+        </div>
+        <div className="content">
+          <DockerBanner />
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={location.pathname}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
+              <Routes location={location} key={location.pathname}>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <ProtectedRoute>
+                      <DashboardPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/services"
+                  element={
+                    <ProtectedRoute>
+                      <ServicesPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/services/:id/logs"
+                  element={
+                    <ProtectedRoute>
+                      <ServiceLogsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/projects"
+                  element={
+                    <ProtectedRoute>
+                      <ProjectsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/databases"
+                  element={
+                    <ProtectedRoute>
+                      <DatabasesPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/proxy"
+                  element={
+                    <ProtectedRoute>
+                      <ProxyPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/deployments"
+                  element={
+                    <ProtectedRoute>
+                      <DeploymentsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/notifications"
+                  element={
+                    <ProtectedRoute>
+                      <NotificationsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/settings"
+                  element={
+                    <ProtectedRoute>
+                      <SettingsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </motion.div>
+          </AnimatePresence>
+        </div>
       </main>
       <TerminalDock />
     </div>

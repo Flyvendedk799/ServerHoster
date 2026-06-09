@@ -1,10 +1,19 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, GitBranch } from "lucide-react";
 import { api } from "../lib/api";
 import { ProjectModal } from "../components/ProjectModal";
+import { StatusBadge } from "../components/StatusBadge";
+import { CardSkeleton } from "../components/ui/Skeleton";
 import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
+
+function parseRepoSlug(gitUrl?: string): string | null {
+  if (!gitUrl) return null;
+  const cleaned = gitUrl.trim().replace(/\.git$/, "");
+  const match = cleaned.match(/[:/]([^/:]+)\/([^/:]+?)\/?$/);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
 
 type Service = {
   id: string;
@@ -22,6 +31,7 @@ type Project = {
 export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [services, setServices] = useState<Service[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingProject, setEditingProject] = useState<{
     id: string;
@@ -32,9 +42,13 @@ export function ProjectsPage() {
 
   async function load(): Promise<void> {
     await api("/projects/cleanup-empty", { method: "POST", silent: true }).catch(() => undefined);
-    const [pRows, sRows] = await Promise.all([api<Project[]>("/projects"), api<Service[]>("/services")]);
-    setProjects(pRows);
-    setServices(sRows);
+    try {
+      const [pRows, sRows] = await Promise.all([api<Project[]>("/projects"), api<Service[]>("/services")]);
+      setProjects(pRows);
+      setServices(sRows);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -82,8 +96,14 @@ export function ProjectsPage() {
       </header>
 
       <div className="grid">
-        {projects.length === 0 ? (
-          <div className="card text-center" style={{ gridColumn: "1 / -1", padding: "4rem" }}>
+        {loading ? (
+          <>
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+          </>
+        ) : projects.length === 0 ? (
+          <div className="card text-center empty-state-card" style={{ gridColumn: "1 / -1" }}>
             <div className="muted" style={{ marginBottom: "1rem" }}>
               No projects defined yet.
             </div>
@@ -100,7 +120,14 @@ export function ProjectsPage() {
                 <div className="service-header" style={{ marginBottom: "0.5rem" }}>
                   <div className="service-title-group">
                     <h3>{project.name}</h3>
-                    <div className="muted tiny">UUID: {project.id.slice(0, 8)}...</div>
+                    <div
+                      className="muted tiny row"
+                      style={{ gap: "0.3rem", alignItems: "center" }}
+                      title={project.id}
+                    >
+                      <GitBranch size={11} />
+                      {parseRepoSlug(project.git_url) || "No repository linked"}
+                    </div>
                   </div>
                   <div className="row">
                     <button
@@ -143,14 +170,24 @@ export function ProjectsPage() {
                       <div className="muted tiny uppercase font-bold">Services</div>
                       <div className="font-semibold">{s?.total || 0}</div>
                     </div>
-                    <div className="stat-unit" style={{ textAlign: "right" }}>
-                      <div className="muted tiny uppercase font-bold">Running</div>
-                      <div
-                        className="font-semibold"
-                        style={{ color: s?.running > 0 ? "var(--success)" : "inherit" }}
-                      >
-                        {s?.running || 0}
-                      </div>
+                    <div
+                      className="stat-unit row"
+                      style={{ justifyContent: "flex-end", alignItems: "center", gap: "0.4rem" }}
+                    >
+                      {s?.crashed > 0 ? (
+                        <StatusBadge status="crashed" label={`${s.crashed} crashed`} />
+                      ) : (
+                        <>
+                          <StatusBadge
+                            status={s?.running > 0 ? "running" : "none"}
+                            label={s?.running > 0 ? "Healthy" : "Idle"}
+                            dotOnly
+                          />
+                          <span className="font-semibold">
+                            {s?.running || 0} running
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

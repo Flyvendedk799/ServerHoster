@@ -15,7 +15,15 @@ import {
   stopTunnel,
   stopQuickTunnel,
   upsertDnsCname,
-  upsertTunnelIngress
+  upsertTunnelIngress,
+  // browser-login ("Connect Cloudflare") additions:
+  startCloudflareLogin,
+  getCloudflareLoginStatus,
+  ensureNamedTunnel,
+  bindDomainViaLogin,
+  unbindDomainViaLogin,
+  disconnectCloudflare,
+  isCloudflareConnected
 } from "../services/cloudflare.js";
 import { broadcast, nowIso } from "../lib/core.js";
 import { setSecretSetting, deleteSetting, getSetting, getSecretSetting } from "../services/settings.js";
@@ -94,6 +102,35 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
     const binaryPath = await ensureCloudflared(ctx);
     return { ok: true, binaryPath };
   });
+
+  // ===== Connect Cloudflare (browser login) ================================
+
+  // Start `cloudflared tunnel login` and return the captured auth URL so the UI
+  // can open it. The named tunnel is provisioned lazily on the first status poll
+  // that sees cert.pem (below).
+  ctx.app.post("/cloudflare/connect/login", async (req) => {
+    const force = (req.body as { force?: boolean } | undefined)?.force === true;
+    const { authUrl } = await startCloudflareLogin(ctx, { force });
+    // On a forced re-auth we always want the browser to reopen (to pick a new
+    // zone), so don't report the stale connection as "already connected".
+    return { ok: true, authUrl, connected: force ? false : isCloudflareConnected(ctx) };
+  });
+
+  // Poll target. Once cert.pem exists, lazily create-or-reuse the named tunnel
+  // (ensureNamedTunnel throws — and we swallow — until the user has authorized).
+  ctx.app.get("/cloudflare/connect/status", async () => {
+    try {
+      if (!getSetting(ctx, "cloudflare_login_tunnel_id")) {
+        ensureNamedTunnel(ctx);
+        broadcast(ctx, { type: "exposure_changed" });
+      }
+    } catch {
+      /* not authorized yet — cert.pem absent */
+    }
+    return getCloudflareLoginStatus(ctx);
+  });
+
+  ctx.app.post("/cloudflare/connect/disconnect", async () => disconnectCloudflare(ctx));
 
   ctx.app.get("/cloudflare/quick-tunnel/:serviceId", async (req) => {
     const { serviceId } = req.params as { serviceId: string };
@@ -192,14 +229,46 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
    */
   ctx.app.post("/services/:id/expose/domain", async (req) => {
     const { id: serviceId } = req.params as { id: string };
-    const { domain: rawDomain } = z.object({ domain: z.string().min(1) }).parse(req.body);
+    const { domain: rawDomain, overwriteDns } = z
+      .object({ domain: z.string().min(1), overwriteDns: z.boolean().optional() })
+      .parse(req.body);
     const domain = rawDomain.trim().toLowerCase();
     if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain) || domain === "localhost") {
       throw new Error("domain must be a valid hostname (e.g. app.example.com)");
     }
-    const service = ctx.db.prepare("SELECT id, port, domain FROM services WHERE id = ?").get(serviceId) as
-      | { id: string; port?: number; domain?: string }
-      | undefined;
+    // Guard against two services claiming the same hostname. The shared tunnel
+    // serves every bound domain (one ingress rule per proxy_routes row), so a
+    // duplicate domain would emit two rules for one hostname and cloudflared
+    // would silently serve whichever is first — shadowing the other service.
+    // Binding is per-service; taking over another service's domain must be
+    // explicit (unbind it there first), so a second service can never clobber an
+    // already-public one (e.g. exposing FM_ECOM can't steal Mast3kMedia's domain).
+    const owner = ctx.db
+      .prepare("SELECT service_id FROM proxy_routes WHERE domain = ? AND service_id != ?")
+      .get(domain, serviceId) as { service_id: string } | undefined;
+    if (owner) {
+      const other = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(owner.service_id) as
+        | { name?: string }
+        | undefined;
+      const e = new Error(
+        `${domain} is already routed to "${other?.name ?? owner.service_id}". Unbind it there first, or use a different domain for this service.`
+      ) as Error & { statusCode?: number; code?: string };
+      e.statusCode = 409;
+      e.code = "DOMAIN_IN_USE";
+      throw e;
+    }
+    // Prefer the browser-login tunnel when connected — no API tokens to hunt.
+    if (isCloudflareConnected(ctx)) {
+      return bindDomainViaLogin(ctx, serviceId, domain, { overwriteDns });
+    }
+    // --- legacy API-token path (Advanced fallback) ------------------------
+    // domain lives in proxy_routes, not services (services.domain doesn't exist).
+    const service = ctx.db
+      .prepare(
+        "SELECT s.id, s.port, p.domain AS domain FROM services s " +
+          "LEFT JOIN proxy_routes p ON p.service_id = s.id WHERE s.id = ?"
+      )
+      .get(serviceId) as { id: string; port?: number; domain?: string } | undefined;
     if (!service) throw new Error("Service not found");
     if (!service.port) throw new Error("Service has no port assigned");
     if (!getSecretSetting(ctx, "cloudflare_api_token")) {
@@ -228,9 +297,10 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
           "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
         )
         .run(nanoid(), serviceId, domain, service.port, nowIso());
+      // domain is the proxy_routes row above; services only tracks ssl_status.
       ctx.db
-        .prepare("UPDATE services SET domain = ?, ssl_status = 'cloudflare', updated_at = ? WHERE id = ?")
-        .run(domain, nowIso(), serviceId);
+        .prepare("UPDATE services SET ssl_status = 'cloudflare', updated_at = ? WHERE id = ?")
+        .run(nowIso(), serviceId);
       setSystemEnv(ctx, serviceId, "PUBLIC_URL", `https://${domain}`);
     })();
 
@@ -250,9 +320,16 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
   /** Tear down the custom-domain binding for a service. */
   ctx.app.delete("/services/:id/expose/domain", async (req) => {
     const { id: serviceId } = req.params as { id: string };
-    const service = ctx.db.prepare("SELECT id, domain FROM services WHERE id = ?").get(serviceId) as
-      | { id: string; domain?: string }
-      | undefined;
+    // Prefer the login-tunnel unbind when connected (uses proxy_routes for state).
+    if (isCloudflareConnected(ctx)) {
+      return unbindDomainViaLogin(ctx, serviceId);
+    }
+    const service = ctx.db
+      .prepare(
+        "SELECT s.id, p.domain AS domain FROM services s " +
+          "LEFT JOIN proxy_routes p ON p.service_id = s.id WHERE s.id = ?"
+      )
+      .get(serviceId) as { id: string; domain?: string } | undefined;
     if (!service) throw new Error("Service not found");
     if (!service.domain) return { ok: true };
     const domain = service.domain;
@@ -269,7 +346,7 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
     ctx.db.transaction(() => {
       ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(serviceId);
       ctx.db
-        .prepare("UPDATE services SET domain = NULL, ssl_status = 'none', updated_at = ? WHERE id = ?")
+        .prepare("UPDATE services SET ssl_status = 'none', updated_at = ? WHERE id = ?")
         .run(nowIso(), serviceId);
       setSystemEnv(ctx, serviceId, "PUBLIC_URL", null);
     })();
@@ -284,9 +361,9 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
    */
   ctx.app.post("/services/:id/expose/test", async (req) => {
     const { id: serviceId } = req.params as { id: string };
-    const service = ctx.db.prepare("SELECT domain FROM services WHERE id = ?").get(serviceId) as
-      | { domain?: string }
-      | undefined;
+    const service = ctx.db
+      .prepare("SELECT domain FROM proxy_routes WHERE service_id = ?")
+      .get(serviceId) as { domain?: string } | undefined;
     if (!service?.domain) throw new Error("Service has no domain bound");
     const url = `https://${service.domain}`;
     const start = Date.now();

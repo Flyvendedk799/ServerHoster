@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
-import { connectLogs } from "../lib/ws";
+import { connectLogs, type LiveSocket } from "../lib/ws";
 import { Check, Cloud, Loader2, X } from "lucide-react";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   databaseId: string;
@@ -44,8 +45,10 @@ export function TransferDatabaseModal({ databaseId, databaseName, engine, onClos
   }
 
   const transferIdRef = useRef<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<LiveSocket | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalA11y(dialogRef, { onClose, onSubmit: () => void submit() });
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -102,17 +105,9 @@ export function TransferDatabaseModal({ databaseId, databaseName, engine, onClos
         body: JSON.stringify({ externalUrl: externalUrl.trim() })
       });
       transferIdRef.current = res.transferId;
-      // Subscribe scoped events for this transferId. The server has a 200ms
-      // grace before emitting chunks, plenty of time for this to arrive.
-      const sendAttach = (): void => {
-        try {
-          ws.send(JSON.stringify({ type: "attach_transfer", transferId: res.transferId }));
-        } catch {
-          /* will retry in onopen */
-        }
-      };
-      if (ws.readyState === WebSocket.OPEN) sendAttach();
-      else ws.addEventListener("open", sendAttach, { once: true });
+      // Subscribe scoped events for this transferId. LiveSocket.send queues until
+      // the socket is open (and re-sends nothing else), so a single call is safe.
+      ws.send(JSON.stringify({ type: "attach_transfer", transferId: res.transferId }));
     } catch {
       ws.close();
       setBusy(false);
@@ -121,11 +116,19 @@ export function TransferDatabaseModal({ databaseId, databaseName, engine, onClos
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "640px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "640px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transfer-db-modal-title"
+      >
         <header className="modal-header">
           <div className="row">
             <Cloud size={20} />
-            <h3>Transfer to hosted database</h3>
+            <h3 id="transfer-db-modal-title">Transfer to hosted database</h3>
           </div>
           <p className="hint">
             Pipes <code>{databaseName}</code> into the destination via an ephemeral{" "}

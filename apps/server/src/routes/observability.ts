@@ -5,6 +5,7 @@ import { listNotifications, markAllRead, markRead, unreadCount } from "../servic
 import { collectSystemHealth } from "../services/health.js";
 import { setSetting } from "../services/settings.js";
 import { isPrometheusEnabled, renderPrometheusText } from "../services/prometheus.js";
+import { dockerUnavailableMessage } from "../lib/core.js";
 
 export function registerObservabilityRoutes(ctx: AppContext): void {
   ctx.app.get("/metrics/services", async () => getLatestMetrics(ctx));
@@ -47,6 +48,30 @@ export function registerObservabilityRoutes(ctx: AppContext): void {
   });
 
   ctx.app.get("/health/system", async () => collectSystemHealth(ctx));
+
+  // Lightweight liveness check for the Docker daemon, so the UI can warn once
+  // when Colima/Docker Desktop is offline instead of letting each container
+  // service fail individually with a cryptic error. `hasDockerServices` lets the
+  // client suppress the banner for users who run no containers.
+  ctx.app.get("/health/docker", async () => {
+    const hasDockerServices =
+      (ctx.db.prepare("SELECT COUNT(*) AS n FROM services WHERE type = 'docker'").get() as { n: number }).n > 0;
+    try {
+      await Promise.race([
+        ctx.docker.ping(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("docker ping timed out")), 3000))
+      ]);
+      return { available: true, hasDockerServices };
+    } catch (error) {
+      return {
+        available: false,
+        hasDockerServices,
+        message:
+          dockerUnavailableMessage(error) ??
+          "Docker daemon is not reachable. Start Docker (e.g. `colima restart`) and try again."
+      };
+    }
+  });
 
   // Prometheus scrape endpoint. Off by default (set `prometheus.enabled` to
   // "1" via the settings API or LOCALSURV_PROMETHEUS=1). Returns 404 when

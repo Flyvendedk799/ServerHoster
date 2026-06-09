@@ -3,14 +3,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Globe,
   Activity,
-  Shield,
   Trash2,
   Plus,
   ExternalLink,
   ArrowRightLeft,
   Server,
   Hash,
-  Link2
+  Link2,
+  AlertTriangle
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -25,7 +25,7 @@ type RouteRow = {
   target_port: number;
 };
 
-type Service = { id: string; name: string };
+type Service = { id: string; name: string; status?: string };
 
 export function ProxyPage() {
   const [routes, setRoutes] = useState<RouteRow[]>([]);
@@ -56,8 +56,12 @@ export function ProxyPage() {
   }, []);
 
   async function createRoute(): Promise<void> {
-    if (!form.domain || !form.targetPort) {
+    if (!form.domain.trim() || !form.targetPort) {
       toast.error("Please specify both domain and port");
+      return;
+    }
+    if (!portValid) {
+      toast.error("Port must be an integer between 1 and 65535");
       return;
     }
     try {
@@ -77,6 +81,15 @@ export function ProxyPage() {
     }
   }
 
+  async function copyTarget(target: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(target);
+      toast.success("Target address copied");
+    } catch {
+      toast.error("Clipboard failed");
+    }
+  }
+
   async function deleteRoute(route: RouteRow): Promise<void> {
     const ok = await confirmDialog({
       title: "Decommission edge route?",
@@ -93,6 +106,13 @@ export function ProxyPage() {
       /* toasted */
     }
   }
+
+  const portNum = Number(form.targetPort);
+  const portFilled = form.targetPort.trim() !== "";
+  const portValid =
+    portFilled && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535;
+  const portOutOfRange = portFilled && !portValid;
+  const canProvision = form.domain.trim() !== "" && portValid;
 
   if (loading) {
     return (
@@ -118,10 +138,7 @@ export function ProxyPage() {
         </div>
       </header>
 
-      <section
-        className="card glass-card"
-        style={{ marginBottom: "4rem", border: "1px solid var(--border-glow)" }}
-      >
+      <section className="card" style={{ border: "1px solid var(--border-glow)" }}>
         <div className="section-title">
           <div className="row">
             <Plus className="text-accent" size={20} />
@@ -166,10 +183,19 @@ export function ProxyPage() {
                 onChange={(e) => setForm((p) => ({ ...p, targetPort: e.target.value }))}
               />
             </div>
+            {portOutOfRange ? (
+              <span className="field-hint error">Port must be an integer between 1 and 65535.</span>
+            ) : (
+              <span className="field-hint">Valid range: 1–65535.</span>
+            )}
           </div>
         </div>
-        <div className="row" style={{ marginTop: "2rem", justifyContent: "flex-end" }}>
-          <button className="primary" onClick={() => void createRoute()}>
+        <div className="row" style={{ marginTop: "1rem", justifyContent: "flex-end" }}>
+          <button
+            className="primary"
+            disabled={!canProvision}
+            onClick={() => void createRoute()}
+          >
             <ArrowRightLeft size={18} /> Provision Rule
           </button>
         </div>
@@ -188,29 +214,44 @@ export function ProxyPage() {
           {routes.length === 0 ? (
             <motion.div
               key="empty"
-              className="card text-center"
-              style={{ gridColumn: "1 / -1", padding: "6rem 2rem", opacity: 0.6 }}
+              className="card text-center empty-state-card"
+              style={{ gridColumn: "1 / -1" }}
             >
               <Globe size={60} className="muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
               <p className="muted font-bold">No active ingress rules detected.</p>
               <p className="tiny muted" style={{ maxWidth: "400px", margin: "1rem auto" }}>
-                Ingress rules map external DNS records to your private services running in the Survhub
+                Ingress rules map external DNS records to your private services running in the LocalSURV
                 cluster.
               </p>
             </motion.div>
           ) : (
-            routes.map((route) => (
+            routes.map((route) => {
+              // Honest target-state signal. The proxy hop is local http by design —
+              // TLS is terminated upstream at Cloudflare — so we make no TLS claim
+              // here. Instead we surface what the data actually knows: whether the
+              // target service exists, has a port, and is currently running.
+              const targetService = services.find((s) => s.id === route.service_id);
+              const hasPort = Number.isFinite(route.target_port) && route.target_port > 0;
+              const badge = !targetService
+                ? { label: "UNREACHABLE", color: "var(--danger)" }
+                : !hasPort
+                  ? { label: "NO PORT", color: "var(--danger)" }
+                  : targetService.status === "running"
+                    ? { label: "LIVE", color: "var(--success)" }
+                    : { label: "IDLE", color: "var(--text-muted)" };
+              return (
               <motion.div
                 key={route.id}
                 layout
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="card service-card"
+                className={`card service-card ${targetService ? "" : "is-dead"}`}
               >
-                <div className="env-tag" style={{ border: "1.5px solid var(--info)", color: "var(--info)" }}>
+                <div className="env-tag" style={{ border: `1.5px solid ${badge.color}`, color: badge.color }}>
                   <div className="row micro">
-                    <Shield size={10} /> <span>SSL ACTIVE</span>
+                    {targetService ? <Activity size={10} /> : <AlertTriangle size={10} />}{" "}
+                    <span>{badge.label}</span>
                   </div>
                 </div>
 
@@ -225,15 +266,21 @@ export function ProxyPage() {
                   <div className="route-mapping-box">
                     <div className="row small font-mono">
                       <span className="muted uppercase tiny font-bold">Local</span>
-                      <span className="text-accent font-bold">127.0.0.1:{route.target_port}</span>
+                      <span
+                        className="text-accent font-bold copyable"
+                        data-tooltip="Copy target address"
+                        onClick={() => void copyTarget(`127.0.0.1:${route.target_port}`)}
+                      >
+                        127.0.0.1:{route.target_port}
+                      </span>
                     </div>
                   </div>
 
                   <div className="row small" style={{ marginTop: "1rem" }}>
                     <Server size={14} className="muted" />
                     <span className="tiny font-bold uppercase muted">Target:</span>
-                    <span className="small font-bold">
-                      {services.find((s) => s.id === route.service_id)?.name ?? "Dead Link"}
+                    <span className={`small font-bold ${targetService ? "" : "text-danger"}`}>
+                      {targetService?.name ?? "Dead Link"}
                     </span>
                   </div>
                 </div>
@@ -243,20 +290,32 @@ export function ProxyPage() {
                   style={{ marginTop: "1.5rem", borderTop: "1px solid var(--border-subtle)" }}
                 >
                   <button className="ghost text-danger xsmall" onClick={() => void deleteRoute(route)}>
-                    <Trash2 size={14} /> Remove Rule
+                    <Trash2 size={14} /> {targetService ? "Remove Rule" : "Remove Orphaned Route"}
                   </button>
-                  <a
-                    href={`http://${route.domain}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="button ghost xsmall"
-                    style={{ marginLeft: "auto" }}
-                  >
-                    <ExternalLink size={14} /> Open
-                  </a>
+                  {targetService ? (
+                    <a
+                      href={`http://${route.domain}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="button ghost xsmall"
+                      style={{ marginLeft: "auto" }}
+                    >
+                      <ExternalLink size={14} /> Open
+                    </a>
+                  ) : (
+                    <span
+                      className="button ghost xsmall is-disabled"
+                      aria-disabled="true"
+                      data-tooltip="Route target is missing — nowhere to open"
+                      style={{ marginLeft: "auto", pointerEvents: "none", opacity: 0.45 }}
+                    >
+                      <ExternalLink size={14} /> Open
+                    </span>
+                  )}
                 </div>
               </motion.div>
-            ))
+              );
+            })
           )}
         </AnimatePresence>
       </div>

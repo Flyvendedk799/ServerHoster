@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
 import { AlertTriangle, Database, Link2, Sparkles } from "lucide-react";
 import { SqlFileInput } from "./SqlFileInput";
+import { useModalA11y } from "../lib/useModalA11y";
 
 export type EmbeddedDb = {
   service_id: string;
@@ -34,6 +35,8 @@ export function PromoteEmbeddedDbModal({ embedded, onClose, onPromoted }: Props)
   const hasRealSqlite = embedded.size_bytes > 0 && embedded.file_path !== "(no embedded file detected)";
   const [importEmbeddedSqlite, setImportEmbeddedSqlite] = useState(hasRealSqlite);
   const [importOutput, setImportOutput] = useState<{ log?: string; error?: string | null } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y(ref, { onClose, onSubmit: () => void submit() });
 
   async function submit(): Promise<void> {
     if (mode === "external" && !externalUrl.trim()) {
@@ -80,11 +83,19 @@ export function PromoteEmbeddedDbModal({ embedded, onClose, onPromoted }: Props)
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "620px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "620px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="promote-db-modal-title"
+      >
         <header className="modal-header">
           <div className="row">
             <Sparkles size={20} />
-            <h3>Promote embedded database</h3>
+            <h3 id="promote-db-modal-title">Promote embedded database</h3>
           </div>
           <p className="hint">
             <code>{embedded.file_path}</code> inside <code>{embedded.container_name}</code> is{" "}

@@ -10,6 +10,7 @@ import {
   Play,
   Square,
   RotateCw,
+  Power,
   Terminal,
   Globe,
   Settings2,
@@ -67,6 +68,10 @@ type Service = {
   tunnel_url?: string | null;
   linked_database_id?: string | null;
   cert_expires_at?: number | null;
+  /** Host path of the persistent, redeploy-safe data dir (injected as DATA_DIR). */
+  data_dir?: string | null;
+  /** Container-side mount of data_dir for docker services ("/data"). */
+  data_dir_container?: string | null;
 };
 
 function certBadgeState(
@@ -85,6 +90,16 @@ function gitSourceLabel(source: string | null | undefined): string {
   if (source === "webhook") return "GitHub webhook";
   if (source === "manual") return "manual Git redeploy";
   return "Git";
+}
+
+/** Pull a concise, human reason out of a failed deployment's build log so a
+ * toast can say WHY (the deploy pipeline writes "Deploy failed: <msg>"). */
+function extractDeployError(buildLog?: string): string | null {
+  if (!buildLog) return null;
+  const m = buildLog.match(/Deploy failed:\s*(.+)/);
+  const line = (m ? m[1] : buildLog.trim().split("\n").filter((l) => l.trim()).pop() ?? "").trim();
+  if (!line) return null;
+  return line.length > 140 ? `${line.slice(0, 137)}…` : line;
 }
 
 function relativeTime(iso: string | null | undefined): string {
@@ -195,6 +210,7 @@ export function ServicesPage() {
   const [serviceLogs, setServiceLogs] = useState<Record<string, LogEntry[]>>({});
   const [operations, setOperations] = useState<Record<string, ServiceOperation>>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [showGithubDeploy, setShowGithubDeploy] = useState(false);
@@ -215,6 +231,7 @@ export function ServicesPage() {
   const [goPublicId, setGoPublicId] = useState<string | null>(null);
   const [githubSyncStatuses, setGithubSyncStatuses] = useState<Record<string, GithubSyncStatus>>({});
   const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
+  const [forceRestartingId, setForceRestartingId] = useState<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -226,6 +243,7 @@ export function ServicesPage() {
       setProjects(projectData);
       setServices(serviceData);
       setDatabases(databaseData);
+      setLoadError(false);
       void loadGithubSyncStatuses(serviceData);
       // Best-effort — never break the page if these fail.
       api<OrphanInfo[]>("/databases/orphan-services", { silent: true })
@@ -249,7 +267,9 @@ export function ServicesPage() {
       );
       setServiceLogs((prev) => ({ ...prev, ...Object.fromEntries(logPairs) }));
     } catch (err) {
-      /* silent */
+      // Core resource fetch failed — distinguish this from an empty account so
+      // the grid can offer a Retry instead of a misleading "create first service".
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -405,14 +425,74 @@ export function ServicesPage() {
     }
   }
 
+  /**
+   * Hard power-cycle for a wedged service. Breaks any stuck action lock and
+   * SIGKILLs the runtime before starting again — the escape hatch for a service
+   * pinned at "stopping"/"starting" that the normal restart can't touch. Stays
+   * enabled even while the card looks busy, since that's exactly when it's needed.
+   */
+  async function forceRestart(service: Service): Promise<void> {
+    const ok = await confirmDialog({
+      title: `Force restart "${service.name}"?`,
+      message:
+        'Immediately kills the runtime with no graceful shutdown, then starts it again. Use this to recover a service stuck at "stopping" or "starting". Any in-flight requests will be dropped.',
+      danger: true,
+      confirmLabel: "Force Restart"
+    });
+    if (!ok) return;
+    setForceRestartingId(service.id);
+    setOperations((prev) => ({
+      ...prev,
+      [service.id]: {
+        action: "restart",
+        stage: "queued",
+        status: "queued",
+        message: "Force restart request sent to LocalSURV...",
+        startedAt: Date.now()
+      }
+    }));
+    try {
+      await api(`/services/${service.id}/force-restart`, { method: "POST" });
+      await load();
+      toast.success(`Force restarted ${service.name}`);
+    } catch {
+      setOperations((prev) => ({
+        ...prev,
+        [service.id]: {
+          ...(prev[service.id] ?? { action: "restart", startedAt: Date.now() }),
+          action: "restart",
+          stage: "error",
+          status: "error",
+          message: "LocalSURV could not force restart the service. Check the latest logs."
+        }
+      }));
+    } finally {
+      setForceRestartingId(null);
+    }
+  }
+
   async function deployLatestFromGit(service: Service): Promise<void> {
     setRedeployingGitId(service.id);
     try {
-      await api(`/services/${service.id}/redeploy`, { method: "POST" });
-      toast.success(`Deployed latest Git update for ${service.name}`);
+      // /redeploy clones+builds+restarts and returns the deployment — which may
+      // be status:"failed" with a 200, so we must inspect it rather than assume
+      // success (a failed clone/build was previously toasted as a win).
+      const dep = await api<{ status: string; build_log?: string; commit_hash?: string }>(
+        `/services/${service.id}/redeploy`,
+        { method: "POST", silent: true }
+      );
+      if (dep.status === "success") {
+        const sha = dep.commit_hash ? ` (${dep.commit_hash.slice(0, 7)})` : "";
+        toast.success(`${service.name} deployed${sha} and restarted on the latest code`);
+      } else {
+        const reason = extractDeployError(dep.build_log);
+        toast.error(
+          `Deploy failed for ${service.name}${reason ? `: ${reason}` : ""} — open the deployment logs for details.`
+        );
+      }
       await load();
-    } catch {
-      /* toasted */
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `Deploy failed for ${service.name}`);
     } finally {
       setRedeployingGitId(null);
     }
@@ -541,14 +621,32 @@ export function ServicesPage() {
   }
 
   const filteredServices = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
     return services.filter((s) => {
       const matchesEnv = envFilter === "all" || (s.environment ?? "production") === envFilter;
-      const matchesQuery =
-        s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        s.type.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchesEnv && matchesQuery;
+      if (!query) return matchesEnv;
+      const haystack = [
+        s.name,
+        s.type,
+        s.domain,
+        s.port != null ? String(s.port) : null,
+        s.github_repo_url,
+        s.github_branch ?? s.latest_git_branch
+      ]
+        .filter((field): field is string => Boolean(field))
+        .join(" ")
+        .toLowerCase();
+      return matchesEnv && haystack.includes(query);
     });
   }, [services, envFilter, searchQuery]);
+
+  /** True when an active search/filter — not an empty account — hid every service. */
+  const filterHidEverything = services.length > 0 && filteredServices.length === 0;
+
+  function clearFilters(): void {
+    setEnvFilter("all");
+    setSearchQuery("");
+  }
 
   const serviceGroups = useMemo(() => {
     if (!groupByProject) return [{ id: "all", title: "All Services", services: filteredServices }];
@@ -564,6 +662,33 @@ export function ServicesPage() {
   function serviceUrl(service: Service): string | null {
     if (service.domain) return `http://${service.domain}`;
     if (service.port) return `http://localhost:${service.port}`;
+    return null;
+  }
+
+  /**
+   * Why (if any) a lifecycle action is a no-op for the given status. Returns a
+   * human reason string when the action should be disabled, otherwise null.
+   * Force restart is intentionally never gated — it's the stuck-service escape
+   * hatch. Grounded in the status strings this page actually emits:
+   * running / starting / stopping / stopped / crashed / building / error.
+   */
+  function lifecycleDisabledReason(
+    status: string,
+    action: "start" | "stop" | "restart"
+  ): string | null {
+    if (action === "start") {
+      if (status === "running") return "Already running";
+      if (status === "starting") return "Already starting";
+    }
+    if (action === "stop") {
+      if (status === "stopped") return "Already stopped";
+      if (status === "crashed") return "Not running — nothing to stop";
+      if (status === "stopping") return "Already stopping";
+    }
+    if (action === "restart") {
+      if (status === "stopped") return "Stopped — start it instead";
+      if (status === "crashed") return "Crashed — start it instead";
+    }
     return null;
   }
 
@@ -585,6 +710,45 @@ export function ServicesPage() {
     if (service.status === "building") return "Building. Watch deployment logs for progress.";
     if (service.status === "crashed") return "Crashed. Open logs to inspect the failure.";
     return "Idle. Start the service to watch the launch sequence.";
+  }
+
+  /** Ordered launch stages shown as progress bars in each service card. */
+  const LAUNCH_STAGES = ["queued", "starting", "healthcheck", "live"] as const;
+
+  /**
+   * Resolve the real launch-panel state from the in-flight op + service status.
+   * Maps the many runtime stage names (pulling/container/running/...) onto the
+   * four displayed steps, and reports a single in-flight `activeIndex` plus a
+   * `failed` flag so the panel can turn its bars red. Completed steps are every
+   * step before the active one; the active step is never also "complete".
+   */
+  function launchPanelState(
+    operation: ServiceOperation | undefined,
+    status: string
+  ): { activeIndex: number; failed: boolean } {
+    const failed =
+      operation?.status === "error" || status === "crashed" || status === "error";
+    // A finished, healthy runtime: every step settled, nothing in-flight.
+    if (operation?.status === "success" || status === "running") {
+      return { activeIndex: LAUNCH_STAGES.length, failed };
+    }
+    if (status === "stopped" && !operation) {
+      return { activeIndex: -1, failed };
+    }
+    // Translate the granular runtime stage into one of the four shown steps.
+    const stage = operation?.stage ?? status;
+    const stageToIndex: Record<string, number> = {
+      queued: 0,
+      starting: 1,
+      pulling: 1,
+      container: 1,
+      building: 1,
+      healthcheck: 2,
+      live: 3,
+      running: 3
+    };
+    const activeIndex = stageToIndex[stage] ?? (operation ? 0 : -1);
+    return { activeIndex, failed };
   }
 
   function normalizeStackName(name: string): string {
@@ -614,6 +778,35 @@ export function ServicesPage() {
     if (stack.services.every((service) => service.status === "running")) return "running";
     if (stack.services.some((service) => service.status === "running")) return "partial";
     return "stopped";
+  }
+
+  /**
+   * Stack-level mirror of lifecycleDisabledReason: a stack action is a no-op
+   * only when *every* member service would individually be a no-op for it.
+   * Returns a reason string to disable + explain, or null when at least one
+   * service can act.
+   */
+  function stackLifecycleDisabledReason(
+    stack: ServiceStack,
+    action: "start" | "stop" | "restart"
+  ): string | null {
+    const actionable = stack.services.some(
+      (service) => lifecycleDisabledReason(service.status, action) === null
+    );
+    if (actionable) return null;
+    if (action === "start") return "Every service is already running or starting";
+    if (action === "stop") return "No running service to stop";
+    return "No running service to restart";
+  }
+
+  /** True while any service in the stack has an in-flight op for this action. */
+  function stackActionInFlight(stack: ServiceStack, action: "start" | "stop" | "restart"): boolean {
+    return stack.services.some((service) => {
+      const op = operations[service.id];
+      return (
+        op?.action === action && (op.status === "queued" || op.status === "active")
+      );
+    });
   }
 
   function primaryStackUrl(stack: ServiceStack): string | null {
@@ -827,7 +1020,7 @@ export function ServicesPage() {
     <div className="services-page">
       <header className="page-header">
         <div className="title-group">
-          <h2>Apps</h2>
+          <h2>Services</h2>
           <p className="muted">
             Manage each application as a stack of runtime, database, and endpoint resources.
           </p>
@@ -883,7 +1076,7 @@ export function ServicesPage() {
         </div>
       </header>
 
-      <section className="action-grid">
+      <section className="action-grid feature-grid">
         <motion.div
           whileHover={{ y: -5 }}
           className="action-card featured"
@@ -959,7 +1152,7 @@ export function ServicesPage() {
           onClick={() => setShowQuickLaunch(true)}
           role="button"
           tabIndex={0}
-          aria-label="Open Lightning Launch"
+          aria-label="Open Quick Launch"
           data-tooltip="Import a folder, pick a dev server, and launch"
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
@@ -968,12 +1161,35 @@ export function ServicesPage() {
             }
           }}
         >
-          <div className="icon-box" style={{ background: "var(--accent-gradient)", color: "white" }}>
+          <div className="icon-box" style={{ background: "var(--blue)", color: "white" }}>
             <Play size={24} />
           </div>
-          <h3>Lightning Launch</h3>
+          <h3>Quick Launch</h3>
           <p className="muted small">Zero-config instant deployment.</p>
           <button className="primary small">Fire Up</button>
+        </motion.div>
+
+        <motion.div
+          whileHover={{ y: -5 }}
+          className="action-card"
+          onClick={() => setShowCreateModal(true)}
+          role="button"
+          tabIndex={0}
+          aria-label="Create a custom service"
+          data-tooltip="Manually configure a process, Docker image, or static web folder"
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setShowCreateModal(true);
+            }
+          }}
+        >
+          <div className="icon-box" style={{ color: "var(--green)" }}>
+            <Plus size={24} />
+          </div>
+          <h3>Custom Service</h3>
+          <p className="muted small">Create a process, Docker image, or static site.</p>
+          <button className="small">Configure</button>
         </motion.div>
       </section>
 
@@ -1034,11 +1250,35 @@ export function ServicesPage() {
           </div>
         </div>
 
-        {filteredServices.length === 0 ? (
-          <div className="card text-center" style={{ padding: "6rem 2rem", opacity: 0.8 }}>
+        {filteredServices.length === 0 && loadError && services.length === 0 ? (
+          <div className="empty-state is-error">
+            <AlertTriangle size={48} />
+            <h3>Couldn't load your services</h3>
+            <p>
+              We couldn't reach the LocalSURV runtime to fetch your services. Check that it's running,
+              then try again.
+            </p>
+            <button className="primary" onClick={() => void load()}>
+              <RotateCw size={16} /> Retry
+            </button>
+          </div>
+        ) : filterHidEverything ? (
+          <div className="filter-empty">
+            <Search size={40} className="text-muted" />
+            <h3>No services match</h3>
+            <p className="muted small">
+              No services match your current search or environment filter. Try a different query or
+              clear the filters to see everything.
+            </p>
+            <button className="ghost" onClick={clearFilters}>
+              <XCircle size={16} /> Clear filters
+            </button>
+          </div>
+        ) : filteredServices.length === 0 ? (
+          <div className="card text-center empty-state-card">
             <Box size={60} className="text-muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
             <h3 className="muted">No app resources detected in this environment.</h3>
-            <p className="muted small" style={{ maxWidth: "400px", margin: "1rem auto 2rem" }}>
+            <p className="muted small" style={{ maxWidth: "400px", margin: "0.75rem auto 1rem" }}>
               Start by connecting a repository or importing a stack to create your first application
               workspace.
             </p>
@@ -1130,12 +1370,44 @@ export function ServicesPage() {
                           </div>
                         </div>
                         <div className="app-stack-actions">
-                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "start")}>
-                            <Play size={14} /> Start stack
-                          </button>
-                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "restart")}>
-                            <RotateCw size={14} /> Restart stack
-                          </button>
+                          {(() => {
+                            const startReason = stackLifecycleDisabledReason(stack, "start");
+                            return (
+                              <button
+                                className="ghost xsmall"
+                                disabled={Boolean(startReason)}
+                                data-tooltip={startReason ?? "Start every runtime in this stack"}
+                                title={startReason ?? undefined}
+                                onClick={() => void stackAction(stack, "start")}
+                              >
+                                {stackActionInFlight(stack, "start") ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Play size={14} />
+                                )}{" "}
+                                Start stack
+                              </button>
+                            );
+                          })()}
+                          {(() => {
+                            const restartReason = stackLifecycleDisabledReason(stack, "restart");
+                            return (
+                              <button
+                                className="ghost xsmall"
+                                disabled={Boolean(restartReason)}
+                                data-tooltip={restartReason ?? "Restart every runtime in this stack"}
+                                title={restartReason ?? undefined}
+                                onClick={() => void stackAction(stack, "restart")}
+                              >
+                                {stackActionInFlight(stack, "restart") ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <RotateCw size={14} />
+                                )}{" "}
+                                Restart stack
+                              </button>
+                            );
+                          })()}
                           {stackGit?.pending && stackGitService && (
                             <button
                               className="ghost xsmall git-pending-action"
@@ -1150,9 +1422,25 @@ export function ServicesPage() {
                               Deploy latest
                             </button>
                           )}
-                          <button className="ghost xsmall" onClick={() => void stackAction(stack, "stop")}>
-                            <Square size={14} /> Stop stack
-                          </button>
+                          {(() => {
+                            const stopReason = stackLifecycleDisabledReason(stack, "stop");
+                            return (
+                              <button
+                                className="ghost xsmall"
+                                disabled={Boolean(stopReason)}
+                                data-tooltip={stopReason ?? "Stop every runtime in this stack"}
+                                title={stopReason ?? undefined}
+                                onClick={() => void stackAction(stack, "stop")}
+                              >
+                                {stackActionInFlight(stack, "stop") ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Square size={14} />
+                                )}{" "}
+                                Stop stack
+                              </button>
+                            );
+                          })()}
                           <button
                             className="ghost xsmall"
                             disabled={provisioningId === databaseServiceForStack(stack)?.id}
@@ -1379,12 +1667,32 @@ export function ServicesPage() {
                                         const detail = embedded
                                           ? `${embedded.file_path} won't survive container recreates.`
                                           : `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "…" : ""}. Add Postgres so data persists.`;
+                                        const dataDir =
+                                          service.data_dir_container ?? service.data_dir;
                                         return (
                                           <div className="db-suggest-banner">
                                             <DatabaseIcon size={14} />
                                             <div className="db-suggest-text">
                                               <strong>{headline}</strong>
                                               <span>{detail}</span>
+                                              {dataDir && (
+                                                <span className="muted tiny">
+                                                  Or keep files in{" "}
+                                                  <code
+                                                    className="copyable"
+                                                    data-tooltip="Copy path — injected as $DATA_DIR, survives redeploys"
+                                                    onClick={() => {
+                                                      void navigator.clipboard
+                                                        .writeText(dataDir)
+                                                        .then(() => toast.success("DATA_DIR path copied"))
+                                                        .catch(() => toast.error("Clipboard failed"));
+                                                    }}
+                                                  >
+                                                    $DATA_DIR
+                                                  </code>{" "}
+                                                  — a persistent dir that survives redeploys.
+                                                </span>
+                                              )}
                                             </div>
                                             <button
                                               className="primary xsmall"
@@ -1438,7 +1746,14 @@ export function ServicesPage() {
                                         );
                                       })()}
 
-                                      <div className={`launch-panel ${op?.status ?? service.status}`}>
+                                      {(() => {
+                                        const launch = launchPanelState(op, service.status);
+                                        return (
+                                      <div
+                                        className={`launch-panel ${op?.status ?? service.status}${
+                                          launch.failed ? " error crashed" : ""
+                                        }`}
+                                      >
                                         <div className="launch-panel-head">
                                           <div className="row">
                                             {operationIcon(op, service.status)}
@@ -1459,12 +1774,18 @@ export function ServicesPage() {
                                         </div>
                                         <p className="launch-message">{operationLabel(op, service)}</p>
                                         <div className="launch-steps">
-                                          {["queued", "starting", "healthcheck", "live"].map((stage) => (
-                                            <span
-                                              key={stage}
-                                              className={`launch-step ${op?.stage === stage || (stage === "live" && service.status === "running") ? "active" : ""} ${service.status === "running" && stage !== "queued" ? "complete" : ""}`}
-                                            />
-                                          ))}
+                                          {LAUNCH_STAGES.map((stage, index) => {
+                                            const complete = index < launch.activeIndex;
+                                            const active = index === launch.activeIndex;
+                                            return (
+                                              <span
+                                                key={stage}
+                                                className={`launch-step${complete ? " complete" : ""}${
+                                                  active ? " active" : ""
+                                                }`}
+                                              />
+                                            );
+                                          })}
                                         </div>
                                         {recent.length > 0 && (
                                           <div className="mini-log">
@@ -1480,36 +1801,95 @@ export function ServicesPage() {
                                           </div>
                                         )}
                                       </div>
+                                        );
+                                      })()}
                                     </div>
 
                                     <div className="service-footer">
                                       <div className="row" style={{ gap: "0.25rem" }}>
+                                        {(() => {
+                                          const startReason = lifecycleDisabledReason(
+                                            service.status,
+                                            "start"
+                                          );
+                                          const stopReason = lifecycleDisabledReason(
+                                            service.status,
+                                            "stop"
+                                          );
+                                          const restartReason = lifecycleDisabledReason(
+                                            service.status,
+                                            "restart"
+                                          );
+                                          const inFlight = (action: ServiceOperation["action"]) =>
+                                            actionBusy && op?.action === action;
+                                          return (
+                                            <>
+                                              <button
+                                                className="ghost xsmall"
+                                                disabled={actionBusy || Boolean(startReason)}
+                                                aria-label={`Start ${service.name}`}
+                                                data-tooltip={
+                                                  startReason ??
+                                                  "Start service and stream launch progress"
+                                                }
+                                                title={startReason ?? undefined}
+                                                onClick={() => serviceAction(service.id, "start")}
+                                              >
+                                                {inFlight("start") ? (
+                                                  <Loader2 size={14} className="animate-spin" />
+                                                ) : (
+                                                  <Play size={14} />
+                                                )}
+                                              </button>
+                                              <button
+                                                className="ghost xsmall"
+                                                disabled={actionBusy || Boolean(stopReason)}
+                                                aria-label={`Stop ${service.name}`}
+                                                data-tooltip={
+                                                  stopReason ??
+                                                  "Stop service and show shutdown progress"
+                                                }
+                                                title={stopReason ?? undefined}
+                                                onClick={() => serviceAction(service.id, "stop")}
+                                              >
+                                                {inFlight("stop") ? (
+                                                  <Loader2 size={14} className="animate-spin" />
+                                                ) : (
+                                                  <Square size={14} />
+                                                )}
+                                              </button>
+                                              <button
+                                                className="ghost xsmall"
+                                                disabled={actionBusy || Boolean(restartReason)}
+                                                aria-label={`Restart ${service.name}`}
+                                                data-tooltip={
+                                                  restartReason ??
+                                                  "Restart service with live progress"
+                                                }
+                                                title={restartReason ?? undefined}
+                                                onClick={() => serviceAction(service.id, "restart")}
+                                              >
+                                                {inFlight("restart") ? (
+                                                  <Loader2 size={14} className="animate-spin" />
+                                                ) : (
+                                                  <RotateCw size={14} />
+                                                )}
+                                              </button>
+                                            </>
+                                          );
+                                        })()}
                                         <button
-                                          className="ghost xsmall"
-                                          disabled={actionBusy}
-                                          aria-label={`Start ${service.name}`}
-                                          data-tooltip="Start service and stream launch progress"
-                                          onClick={() => serviceAction(service.id, "start")}
+                                          className="ghost xsmall text-warning"
+                                          disabled={forceRestartingId === service.id}
+                                          aria-label={`Force restart ${service.name}`}
+                                          data-tooltip="Force restart — hard-kills a stuck service and starts it again"
+                                          onClick={() => void forceRestart(service)}
                                         >
-                                          <Play size={14} />
-                                        </button>
-                                        <button
-                                          className="ghost xsmall"
-                                          disabled={actionBusy}
-                                          aria-label={`Stop ${service.name}`}
-                                          data-tooltip="Stop service and show shutdown progress"
-                                          onClick={() => serviceAction(service.id, "stop")}
-                                        >
-                                          <Square size={14} />
-                                        </button>
-                                        <button
-                                          className="ghost xsmall"
-                                          disabled={actionBusy}
-                                          aria-label={`Restart ${service.name}`}
-                                          data-tooltip="Restart service with live progress"
-                                          onClick={() => serviceAction(service.id, "restart")}
-                                        >
-                                          <RotateCw size={14} />
+                                          {forceRestartingId === service.id ? (
+                                            <Loader2 size={14} className="animate-spin" />
+                                          ) : (
+                                            <Power size={14} />
+                                          )}
                                         </button>
                                       </div>
 
@@ -1576,7 +1956,7 @@ export function ServicesPage() {
         )}
       </section>
 
-      <section className="logs-container" style={{ marginTop: "4rem" }}>
+      <section className="logs-container">
         <div className="section-title">
           <div className="row">
             <Terminal size={18} />
@@ -1585,7 +1965,7 @@ export function ServicesPage() {
         </div>
         <div className="logs-viewer" style={{ height: "300px" }}>
           {logs.length === 0 ? (
-            <div className="muted italic text-center" style={{ padding: "4rem" }}>
+            <div className="muted italic text-center empty-state-card">
               <Activity size={24} className="text-muted" style={{ marginBottom: "1rem", opacity: 0.2 }} />
               <p className="tiny">Awaiting infrastructure events...</p>
             </div>

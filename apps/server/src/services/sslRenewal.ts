@@ -69,8 +69,14 @@ export async function renewExpiringCerts(
     if (isCircuitBroken(cert.domain)) continue;
     // We need a serviceId to feed provisionCertificate; pick the first service
     // bound to this domain. If none, the cert is orphaned — drop it.
+    // `domain` lives on proxy_routes, NOT services — selecting services.domain
+    // threw "no such column: domain", aborting the whole renewal pass (the error
+    // was then swallowed), so certs silently expired and HTTPS went down.
     const svc = ctx.db
-      .prepare("SELECT id, domain, ssl_status FROM services WHERE domain = ? LIMIT 1")
+      .prepare(
+        "SELECT s.id, p.domain AS domain, s.ssl_status FROM services s " +
+          "JOIN proxy_routes p ON p.service_id = s.id WHERE p.domain = ? LIMIT 1"
+      )
       .get(cert.domain) as ServiceRow | undefined;
     if (!svc) {
       ctx.db.prepare("DELETE FROM certificates WHERE domain = ?").run(cert.domain);
@@ -115,7 +121,14 @@ export function startSslRenewalLoop(ctx: AppContext): () => void {
   }, 60_000);
   renewalTimer = setInterval(
     () => {
-      void renewExpiringCerts(ctx).catch(() => undefined);
+      void renewExpiringCerts(ctx).catch((err) =>
+        createNotification(ctx, {
+          kind: "ssl",
+          severity: "error",
+          title: "SSL renewal pass failed",
+          body: String(err instanceof Error ? err.message : err)
+        })
+      );
     },
     24 * 60 * 60 * 1000
   );

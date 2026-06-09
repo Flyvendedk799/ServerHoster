@@ -2,7 +2,13 @@ import fs from "node:fs";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { broadcastTransferEvent, findFreePort, nowIso } from "../lib/core.js";
+import {
+  assertPortAvailable,
+  broadcastTransferEvent,
+  dbReservedPorts,
+  findFreePort,
+  nowIso
+} from "../lib/core.js";
 import { encryptSecret } from "../security.js";
 import {
   buildConnectionString,
@@ -134,6 +140,9 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
 
   ctx.app.post("/databases", async (req) => {
     const p = databaseSchema.parse(req.body);
+    // Reject up front if the requested host port is already claimed by another
+    // service or database — avoids a doomed container create + a port clash.
+    assertPortAvailable(ctx, p.port);
     const id = nanoid();
     const imageMap: Record<string, string> = {
       postgres: "postgres:16",
@@ -182,7 +191,11 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
         HostConfig: {
           PortBindings: { [`${internalPort}/tcp`]: [{ HostPort: String(p.port) }] },
           RestartPolicy: { Name: "unless-stopped" },
-          Binds: [`survhub_${p.engine}_${p.name}:${DATABASE_DATA_PATH[p.engine]}`]
+          // Key the named volume on the unique DB id, NOT (engine, name): two
+          // databases sharing a user-facing name across projects must never
+          // mount the same data + credentials (silent cross-project bleed).
+          // Mirrors the id-scoped pattern the promote path already uses.
+          Binds: [`survhub_db_${id}:${DATABASE_DATA_PATH[p.engine]}`]
         }
       });
       await container.start();
@@ -250,8 +263,8 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
   ctx.app.delete("/databases/:id", async (req) => {
     const db = getDatabase(ctx, (req.params as { id: string }).id);
     if (!db) throw new Error("Database not found");
-    await removeDatabase(ctx, db);
-    return { ok: true };
+    const { strandedServices } = await removeDatabase(ctx, db);
+    return { ok: true, strandedServices };
   });
 
   ctx.app.get("/databases/:id/logs", async (req) => {
@@ -428,7 +441,9 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
     let containerName = row?.container_id || (row ? `survhub-db-${row.id.slice(0, 8)}` : "");
     if (!row) {
       const id = nanoid();
-      const port = await findFreePort(54320, 54420);
+      // Skip ports already reserved by any service/database row so a freed-but-
+      // remembered port isn't re-handed to this managed Postgres.
+      const port = await findFreePort(54320, 54420, dbReservedPorts(ctx));
       const username = "postgres";
       const password = nanoid(16);
       const databaseName = (p.databaseName ?? service.name).replace(/[^a-zA-Z0-9_]/g, "_") || "appdb";

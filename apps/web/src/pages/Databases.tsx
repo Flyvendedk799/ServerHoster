@@ -7,6 +7,7 @@ import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
 import { PromoteEmbeddedDbModal, type EmbeddedDb } from "../components/PromoteEmbeddedDbModal";
 import { TransferDatabaseModal } from "../components/TransferDatabaseModal";
 import { SqlFileInput } from "../components/SqlFileInput";
+import { CardSkeleton } from "../components/ui/Skeleton";
 import {
   AlertTriangle,
   Cloud,
@@ -120,6 +121,7 @@ export function DatabasesPage() {
   const [dbLogs, setDbLogs] = useState("");
   const [seedSql, setSeedSql] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [backingUpId, setBackingUpId] = useState<string | null>(null);
   const [didLoadOnce, setDidLoadOnce] = useState(false);
   const [consoleTab, setConsoleTab] = useState<"overview" | "data" | "backups" | "sql" | "logs" | "linking">(
     "overview"
@@ -136,8 +138,10 @@ export function DatabasesPage() {
   } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  async function load(): Promise<void> {
-    setRefreshing(true);
+  // userInitiated drives the manual Refresh spinner; the background poll must not touch it
+  // so a user click reflects only the user's own action.
+  async function load(userInitiated = false): Promise<void> {
+    if (userInitiated) setRefreshing(true);
     try {
       const [dbs, projs, svcs] = await Promise.all([
         api<DatabaseRow[]>("/databases"),
@@ -161,7 +165,7 @@ export function DatabasesPage() {
     } catch {
       /* ignore */
     }
-    setRefreshing(false);
+    if (userInitiated) setRefreshing(false);
     setDidLoadOnce(true);
   }
 
@@ -224,37 +228,64 @@ export function DatabasesPage() {
       setTablePreview(null);
       return;
     }
+    let cancelled = false;
     void api<Backup[]>(`/databases/${selectedDbId}/backups`)
-      .then(setBackups)
+      .then((bks) => {
+        if (!cancelled) setBackups(bks);
+      })
       .catch(() => undefined);
     void api<{ logs: string }>(`/databases/${selectedDbId}/logs?tail=160`)
-      .then((res) => setDbLogs(res.logs))
+      .then((res) => {
+        if (!cancelled) setDbLogs(res.logs);
+      })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [selectedDbId]);
 
   useEffect(() => {
     if (!selectedDb || consoleTab !== "data") return;
     if (selectedDb.engine !== "postgres" && selectedDb.engine !== "mysql") return;
+    let cancelled = false;
     setTablesLoading(true);
     void api<typeof tables>(`/databases/${selectedDb.id}/tables`)
       .then((rows) => {
+        if (cancelled) return;
         setTables(rows);
         if (!activeTable && rows[0]) setActiveTable({ schema: rows[0].schema, name: rows[0].name });
       })
-      .catch(() => setTables([]))
-      .finally(() => setTablesLoading(false));
+      .catch(() => {
+        if (!cancelled) setTables([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTablesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDbId, consoleTab]);
 
   useEffect(() => {
     if (!selectedDb || consoleTab !== "data" || !activeTable) return;
+    let cancelled = false;
     setPreviewLoading(true);
     void api<typeof tablePreview>(
       `/databases/${selectedDb.id}/tables/${activeTable.schema}/${activeTable.name}/preview?limit=100`
     )
-      .then((res) => setTablePreview(res))
-      .catch(() => setTablePreview(null))
-      .finally(() => setPreviewLoading(false));
+      .then((res) => {
+        if (!cancelled) setTablePreview(res);
+      })
+      .catch(() => {
+        if (!cancelled) setTablePreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDbId, consoleTab, activeTable?.schema, activeTable?.name]);
 
@@ -271,7 +302,7 @@ export function DatabasesPage() {
   async function deleteDb(db: DatabaseRow): Promise<void> {
     const ok = await confirmDialog({
       title: `Delete database "${db.name}"?`,
-      message: "This removes the container and all backups tracked by SURVHub.",
+      message: "This removes the container and all backups tracked by LocalSURV.",
       danger: true,
       confirmLabel: "Delete"
     });
@@ -296,13 +327,18 @@ export function DatabasesPage() {
   }
 
   async function runBackup(id: string): Promise<void> {
+    setBackingUpId(id);
     try {
       const res = await api<{ size: number }>(`/databases/${id}/backup`, { method: "POST" });
       toast.success(`Backup created (${fmtSize(res.size)})`);
       const bks = await api<Backup[]>(`/databases/${id}/backups`);
       setBackups(bks);
+      // Refresh the stale-backup chip on the card without flipping the manual spinner.
+      await load();
     } catch {
       /* toasted */
+    } finally {
+      setBackingUpId(null);
     }
   }
 
@@ -369,7 +405,7 @@ export function DatabasesPage() {
         <div className="row" style={{ gap: "0.5rem" }}>
           <button
             className="ghost"
-            onClick={() => void load()}
+            onClick={() => void load(true)}
             disabled={refreshing}
             data-tooltip="Re-scan databases and embedded persistence"
           >
@@ -495,16 +531,12 @@ export function DatabasesPage() {
       {!didLoadOnce ? (
         <div className="grid">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="card skeleton-card">
-              <div className="skeleton-bar" style={{ width: "40%" }} />
-              <div className="skeleton-bar" style={{ width: "75%" }} />
-              <div className="skeleton-bar" style={{ width: "60%" }} />
-            </div>
+            <CardSkeleton key={i} />
           ))}
         </div>
       ) : rows.length === 0 ? (
         <div className="grid">
-          <div className="card text-center" style={{ gridColumn: "1 / -1", padding: "4rem" }}>
+          <div className="card text-center empty-state-card" style={{ gridColumn: "1 / -1" }}>
             <div className="muted" style={{ marginBottom: "1rem" }}>
               No database instances provisioned.
             </div>
@@ -567,13 +599,38 @@ export function DatabasesPage() {
                         {(() => {
                           const days = backupAgeDays(row.stats?.last_backup_at);
                           const stale = days == null || days > 7;
+                          const inFlight = backingUpId === row.id;
+                          if (!stale) {
+                            return (
+                              <span
+                                className="db-stat-chip"
+                                data-tooltip="Most recent backup snapshot"
+                              >
+                                <FileClock size={11} /> backup{" "}
+                                {fmtRelative(row.stats?.last_backup_at ?? null)}
+                              </span>
+                            );
+                          }
                           return (
-                            <span
-                              className={`db-stat-chip ${stale ? "warn" : ""}`}
-                              data-tooltip="Most recent backup snapshot"
+                            <button
+                              type="button"
+                              className="db-stat-chip warn"
+                              disabled={inFlight}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void runBackup(row.id);
+                              }}
+                              data-tooltip={`Last backup ${fmtRelative(
+                                row.stats?.last_backup_at ?? null
+                              )} — back up now`}
                             >
-                              <FileClock size={11} /> backup {fmtRelative(row.stats?.last_backup_at ?? null)}
-                            </span>
+                              {inFlight ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <FileClock size={11} />
+                              )}{" "}
+                              {inFlight ? "Backing up…" : "Back up now"}
+                            </button>
                           );
                         })()}
                       </div>
@@ -654,16 +711,23 @@ export function DatabasesPage() {
       )}
 
       {selectedDb && (
-        <section className="card management-panel" style={{ marginTop: "3rem" }}>
+        <section className="card management-panel">
           <header className="section-title">
             <div className="row">
               <Database size={18} />
               <h3>Database Console: {selectedDb.name}</h3>
               <StatusBadge status={selectedDb.container_status?.state ?? "stopped"} />
+              <span className="chip xsmall">{selectedDb.engine}</span>
+              <span className="chip xsmall">
+                {selectedDb.stats?.size_bytes != null ? fmtSize(selectedDb.stats.size_bytes) : "— size"}
+              </span>
             </div>
             <div className="row">
               <button onClick={() => void dbAction(selectedDb.id, "start")}>
                 <Play size={16} /> Start
+              </button>
+              <button onClick={() => void dbAction(selectedDb.id, "stop")}>
+                <Square size={16} /> Stop
               </button>
               <button onClick={() => void dbAction(selectedDb.id, "restart")}>
                 <RotateCw size={16} /> Restart
@@ -1077,23 +1141,6 @@ export function DatabasesPage() {
           text-transform: uppercase;
           color: var(--text-muted);
         }
-        .databases-page .skeleton-card {
-          padding: 1rem;
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-        .databases-page .skeleton-bar {
-          height: 12px;
-          border-radius: 6px;
-          background: linear-gradient(90deg, var(--bg-sunken) 0%, var(--border-subtle) 50%, var(--bg-sunken) 100%);
-          background-size: 200% 100%;
-          animation: skeleton-shimmer 1.4s ease-in-out infinite;
-        }
-        @keyframes skeleton-shimmer {
-          0% { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
         .databases-page .animate-spin { animation: spin 1s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .databases-page .db-console-tabs {
@@ -1212,6 +1259,15 @@ export function DatabasesPage() {
           border-color: color-mix(in srgb, var(--warn, #d97706) 40%, transparent);
           background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent);
         }
+        .databases-page button.db-stat-chip {
+          font: inherit;
+          font-size: 0.7rem;
+          cursor: pointer;
+        }
+        .databases-page button.db-stat-chip:hover:not(:disabled) {
+          background: color-mix(in srgb, var(--warn, #d97706) 22%, transparent);
+        }
+        .databases-page button.db-stat-chip:disabled { cursor: default; opacity: 0.85; }
       `
         }}
       />

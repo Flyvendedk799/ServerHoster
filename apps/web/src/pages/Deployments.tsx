@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -15,7 +15,8 @@ import {
   Play,
   CheckCircle2,
   XCircle,
-  Loader2
+  Loader2,
+  Check
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -35,10 +36,11 @@ type Deployment = {
   finished_at?: string;
   branch?: string;
   trigger_source?: string;
+  failure_stage?: string | null;
 };
 
 type Service = { id: string; name: string; github_repo_url?: string };
-type BuildLogMap = Record<string, Array<{ line: string; stream: "stdout" | "stderr" }>>;
+type BuildLogMap = Record<string, Array<{ line: string; stream: "stdout" | "stderr"; ts: number }>>;
 type PhaseMap = Record<string, string>;
 
 function fmtDuration(startIso?: string, endIso?: string): string {
@@ -48,6 +50,54 @@ function fmtDuration(startIso?: string, endIso?: string): string {
   const sec = Math.round(ms / 100) / 10;
   if (sec < 60) return `${sec}s`;
   return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+}
+
+// The deploy pipeline the server walks (deploy.ts DeployPhase): the live WS
+// `build_progress` phase names map onto these four user-facing steps, and
+// `failure_stage` (cloning/building/starting/queued/unknown) pins the bad one.
+type StepState = "done" | "active" | "error" | "pending";
+const BUILD_STEPS = [
+  { key: "clone", label: "Clone", phase: "cloning" },
+  { key: "install", label: "Install", phase: "installing" },
+  { key: "build", label: "Build", phase: "building" },
+  { key: "deploy", label: "Deploy", phase: "starting" }
+] as const;
+
+const FAILURE_STAGE_TO_STEP: Record<string, number> = {
+  queued: 0,
+  cloning: 0,
+  installing: 1,
+  building: 2,
+  starting: 3
+};
+
+/**
+ * Derive per-step state from the deployment's real status + the live WS phase.
+ * `phase` is the latest `build_progress` value (or undefined before the first
+ * tick); `status` is the persisted row status; `failureStage` pins the failed
+ * step on a failed deployment.
+ */
+function computeBuildSteps(
+  status: string,
+  phase: string | undefined,
+  failureStage?: string | null
+): StepState[] {
+  if (status === "success") {
+    return BUILD_STEPS.map(() => "done");
+  }
+  if (status === "failed") {
+    const failedIdx = FAILURE_STAGE_TO_STEP[failureStage ?? ""] ?? 0;
+    return BUILD_STEPS.map((_, i) =>
+      i < failedIdx ? "done" : i === failedIdx ? "error" : "pending"
+    );
+  }
+  // running / pending: terminal phases (done/failed) handled above via status.
+  const activeIdx = BUILD_STEPS.findIndex((s) => s.phase === phase);
+  // Before the first phase tick (queued / undefined) the first step is active.
+  const current = activeIdx === -1 ? 0 : activeIdx;
+  return BUILD_STEPS.map((_, i) =>
+    i < current ? "done" : i === current ? "active" : "pending"
+  );
 }
 
 export function DeploymentsPage() {
@@ -61,8 +111,13 @@ export function DeploymentsPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [liveLogs, setLiveLogs] = useState<BuildLogMap>({});
   const [phases, setPhases] = useState<PhaseMap>({});
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "open" | "closed">("connecting");
+  const [maximized, setMaximized] = useState<Set<string>>(new Set());
+  const [retrying, setRetrying] = useState<Set<string>>(new Set());
 
-  const terminalRef = useRef<HTMLDivElement>(null);
+  // One log-viewer node per running build (a single shared ref only scrolled
+  // the last-mounted build).
+  const terminalRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   async function load(): Promise<void> {
     try {
@@ -95,7 +150,7 @@ export function DeploymentsPage() {
             ...prev,
             [typed.deploymentId!]: [
               ...existing,
-              { line: typed.line!, stream: typed.stream ?? "stdout" }
+              { line: typed.line!, stream: typed.stream ?? "stdout", ts: Date.now() }
             ].slice(-2000)
           };
         });
@@ -105,13 +160,14 @@ export function DeploymentsPage() {
         void load();
       }
     });
+    ws.onStatus((s) => setLiveStatus(s));
     return () => ws.close();
   }, [filterServiceId]);
 
-  // Auto-scroll terminal
+  // Auto-scroll every running build's log viewer.
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    for (const el of Object.values(terminalRefs.current)) {
+      if (el) el.scrollTop = el.scrollHeight;
     }
   }, [liveLogs]);
 
@@ -123,6 +179,27 @@ export function DeploymentsPage() {
       await load();
     } catch {
       /* toasted */
+    }
+  }
+
+  async function retry(d: Deployment): Promise<void> {
+    if (retrying.has(d.id)) return;
+    setRetrying((prev) => new Set(prev).add(d.id));
+    try {
+      await api("/deployments/from-git", {
+        method: "POST",
+        body: JSON.stringify({ serviceId: d.service_id })
+      });
+      toast.success("Retrying build...");
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setRetrying((prev) => {
+        const next = new Set(prev);
+        next.delete(d.id);
+        return next;
+      });
     }
   }
 
@@ -157,17 +234,14 @@ export function DeploymentsPage() {
         </div>
       </header>
 
-      <section
-        className="card featured-form"
-        style={{ marginBottom: "4rem", border: "1px solid var(--border-glow)" }}
-      >
+      <section className="card featured-form" style={{ border: "1px solid var(--border-glow)" }}>
         <div className="section-title">
           <div className="row">
             <Rocket className="text-accent" size={20} />
             <h3>Manual Trigger</h3>
           </div>
         </div>
-        <div className="row wrap" style={{ gap: "2rem", alignItems: "flex-end" }}>
+        <div className="row wrap" style={{ gap: "1rem", alignItems: "flex-end" }}>
           <div className="field-group" style={{ flex: 1, minWidth: "240px" }}>
             <label className="tiny font-bold uppercase muted">Target Service</label>
             <select
@@ -203,9 +277,8 @@ export function DeploymentsPage() {
         <section
           className="card active-pipeline"
           style={{
-            marginBottom: "4rem",
             border: "1px solid var(--accent)",
-            background: "rgba(59,130,246,0.05)"
+            background: "var(--accent-soft)"
           }}
         >
           <div className="section-title">
@@ -214,14 +287,20 @@ export function DeploymentsPage() {
               <h3>Active Build Output</h3>
             </div>
             <div className="row">
-              <span className="badge accent pulsate">STREAMING</span>
+              {liveStatus === "open" ? (
+                <span className="badge accent pulsate">STREAMING</span>
+              ) : (
+                <span className="badge muted" style={{ opacity: 0.6 }}>
+                  RECONNECTING
+                </span>
+              )}
             </div>
           </div>
           <AnimatePresence>
             {running.map((d) => (
               <motion.div
                 key={d.id}
-                className="build-container"
+                className={`build-container ${maximized.has(d.id) ? "is-maximized" : ""}`}
                 initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
@@ -232,23 +311,64 @@ export function DeploymentsPage() {
                     <TerminalIcon size={14} className="muted" />
                     <span className="font-bold">{services.find((s) => s.id === d.service_id)?.name}</span>
                     <span className="muted">•</span>
-                    <span className="text-accent uppercase tiny font-bold">
-                      {phases[d.id] ?? "Initializing"}
-                    </span>
+                    <div className="build-stepper">
+                      {computeBuildSteps(d.status, phases[d.id], d.failure_stage).map((state, i) => (
+                        <Fragment key={BUILD_STEPS[i].key}>
+                          {i > 0 && <div className="build-step-sep" />}
+                          <div
+                            className={`build-step ${
+                              state === "done"
+                                ? "is-done"
+                                : state === "active"
+                                  ? "is-active"
+                                  : state === "error"
+                                    ? "is-error"
+                                    : ""
+                            }`}
+                          >
+                            <span className="build-step-dot">
+                              {state === "done" ? (
+                                <Check size={11} />
+                              ) : state === "active" ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : state === "error" ? (
+                                <XCircle size={11} />
+                              ) : (
+                                i + 1
+                              )}
+                            </span>
+                            {BUILD_STEPS[i].label}
+                          </div>
+                        </Fragment>
+                      ))}
+                    </div>
                   </div>
                   <div className="row">
                     <button
                       className="ghost xsmall"
-                      onClick={() => toast.info("Full-screen logs coming soon")}
+                      title={maximized.has(d.id) ? "Restore" : "Maximize"}
+                      onClick={() =>
+                        setMaximized((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(d.id)) next.delete(d.id);
+                          else next.add(d.id);
+                          return next;
+                        })
+                      }
                     >
                       <Maximize2 size={12} />
                     </button>
                   </div>
                 </div>
-                <div className="logs-viewer terminal" ref={terminalRef}>
+                <div
+                  className="logs-viewer terminal"
+                  ref={(el) => {
+                    terminalRefs.current[d.id] = el;
+                  }}
+                >
                   {(liveLogs[d.id] ?? []).map((entry, i) => (
                     <div key={i} className={`log-line ${entry.stream}`}>
-                      <span className="log-time tiny">[{new Date().toLocaleTimeString()}]</span>
+                      <span className="log-time tiny">[{new Date(entry.ts).toLocaleTimeString()}]</span>
                       <span className="log-msg">{entry.line}</span>
                     </div>
                   ))}
@@ -276,8 +396,8 @@ export function DeploymentsPage() {
           {deployments.length === 0 ? (
             <motion.div
               key="empty"
-              className="card text-center"
-              style={{ gridColumn: "1 / -1", padding: "6rem 2rem", opacity: 0.6 }}
+              className="card text-center empty-state-card"
+              style={{ gridColumn: "1 / -1" }}
             >
               <History size={60} className="muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
               <p className="muted italic">No synchronization records in the current context.</p>
@@ -390,8 +510,21 @@ export function DeploymentsPage() {
                     <Copy size={12} />
                   </button>
                   {d.status === "failed" && (
-                    <button className="ghost xsmall text-danger" style={{ marginLeft: "auto" }}>
-                      Retry Build
+                    <button
+                      className="ghost xsmall text-danger"
+                      style={{ marginLeft: "auto" }}
+                      disabled={retrying.has(d.id)}
+                      onClick={() => void retry(d)}
+                    >
+                      {retrying.has(d.id) ? (
+                        <>
+                          <Loader2 size={12} className="animate-spin" /> Retrying…
+                        </>
+                      ) : (
+                        <>
+                          <Play size={12} /> Retry Build
+                        </>
+                      )}
                     </button>
                   )}
                 </div>
@@ -404,8 +537,10 @@ export function DeploymentsPage() {
       <style
         dangerouslySetInnerHTML={{
           __html: `
-        .deployments-page .active-pipeline { box-shadow: 0 0 40px rgba(59,130,246,0.15); }
+        .deployments-page .active-pipeline { box-shadow: var(--shadow-md); }
         .deployments-page .terminal { height: 400px; }
+        .deployments-page .build-container.is-maximized { position: fixed; inset: 1.5rem; z-index: 50; margin: 0 !important; background: var(--bg-sunken, #0a0a0a); box-shadow: var(--shadow-md); border-radius: var(--radius-md); display: flex; flex-direction: column; }
+        .deployments-page .build-container.is-maximized .terminal { flex: 1; height: auto; }
         .deployments-page .terminal-header { padding: 0.75rem 1rem; background: #111; border-top-left-radius: var(--radius-md); border-top-right-radius: var(--radius-md); border-bottom: 1px solid #333; }
         .deployments-page .log-line.stderr { color: var(--danger); }
         .deployments-page .pulsate { animation: pulse 2s infinite; }

@@ -7,7 +7,7 @@ import { nanoid } from "nanoid";
 import { spawn as spawnPty } from "node-pty";
 import type { WebSocket } from "ws";
 import type { AppContext } from "../types.js";
-import { getService, nowIso, serializeError } from "../lib/core.js";
+import { getService, nowIso, sanitizedHostEnv, serializeError } from "../lib/core.js";
 import { getServiceEnvWithLinks } from "./runtime.js";
 
 const exec = promisify(execFile);
@@ -95,7 +95,7 @@ function prepareHostEnv(
 ): NodeJS.ProcessEnv {
   const serviceEnv = getServiceEnvWithLinks(ctx, serviceId);
   return {
-    ...process.env,
+    ...sanitizedHostEnv(),
     TERM: process.env.TERM ?? "xterm-256color",
     ...serviceEnv,
     ...(extra ?? {})
@@ -416,11 +416,19 @@ export async function createTerminalSession(ctx: AppContext, options: TerminalCr
     const runtime = ctx.terminalSessions.get(id);
     if (runtime?.idleTimer) clearTimeout(runtime.idleTimer);
     ctx.terminalSessions.delete(id);
-    ctx.db
-      .prepare(
-        "UPDATE terminal_sessions SET status = ?, updated_at = ?, ended_at = ?, exit_code = ?, exit_signal = ? WHERE id = ?"
-      )
-      .run("ended", ended, ended, event.exitCode ?? null, event.signal ?? null, id);
+    // Only finalize a still-'running' session. killTerminalSession (idle reaper /
+    // explicit kill) already set a terminal status like 'idle_timeout' before the
+    // pty exits — don't clobber it back to 'ended'.
+    const cur = ctx.db.prepare("SELECT status FROM terminal_sessions WHERE id = ?").get(id) as
+      | { status?: string }
+      | undefined;
+    if (cur?.status === "running") {
+      ctx.db
+        .prepare(
+          "UPDATE terminal_sessions SET status = ?, updated_at = ?, ended_at = ?, exit_code = ?, exit_signal = ? WHERE id = ?"
+        )
+        .run("ended", ended, ended, event.exitCode ?? null, event.signal ?? null, id);
+    }
     broadcastTerminal(ctx, id, {
       type: "terminal_exit",
       exitCode: event.exitCode ?? null,

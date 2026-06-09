@@ -38,6 +38,11 @@ export const config = {
   dbPath: path.join(dataRoot, "survhub.db"),
   logsDir: path.join(dataRoot, "logs"),
   projectsDir: path.join(dataRoot, "projects"),
+  // Per-service persistent data. Lives OUTSIDE projectsDir on purpose: the git
+  // clone is disposable (every deploy hard-resets it), so anything an app needs
+  // to keep — SQLite files, uploads, caches — must live here. Injected into
+  // every service as DATA_DIR (bind-mounted to /data for Docker services).
+  serviceDataDir: path.join(dataRoot, "service-data"),
   certsDir: path.join(dataRoot, "certs"),
   scriptsDir: path.join(dataRoot, "scripts"),
   agentHomeDir: process.env.SURVHUB_AGENT_HOME_DIR ?? path.join(dataRoot, "agents"),

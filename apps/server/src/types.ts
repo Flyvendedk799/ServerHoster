@@ -12,6 +12,10 @@ export type RuntimeProcess = {
   process: ChildProcessWithoutNullStreams;
   serviceId: string;
   processGroupPid?: number;
+  /** Unique per spawn; lets a stale exit handler tell if it was replaced. */
+  instanceId: string;
+  /** Fires once the process has stayed up long enough to clear the crash counter. */
+  stabilityTimer?: ReturnType<typeof setTimeout>;
 };
 export type BuildType = "docker" | "node" | "python" | "godot" | "static" | "unknown";
 

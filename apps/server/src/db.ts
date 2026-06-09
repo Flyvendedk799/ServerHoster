@@ -357,7 +357,16 @@ const migrations = [
     kind TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
-  "CREATE INDEX IF NOT EXISTS idx_instance_backups_created ON instance_backups(created_at DESC)"
+  "CREATE INDEX IF NOT EXISTS idx_instance_backups_created ON instance_backups(created_at DESC)",
+  // Last commit the GitOps poller attempted to deploy (success OR failure). The
+  // poller keys "is this a new commit?" off this so a commit that keeps failing
+  // to build isn't redeployed every tick forever.
+  "ALTER TABLE services ADD COLUMN last_attempted_commit TEXT",
+  // Process-group id of a running process/static service. Persisted so that a
+  // child spawned detached (which survives a ServerHoster restart) can be
+  // ADOPTED on boot — otherwise it shows as "stopped" while still live, and a
+  // force-restart spawns a second instance that collides on the port.
+  "ALTER TABLE services ADD COLUMN runtime_pgid INTEGER"
 ];
 
 for (const statement of migrations) {

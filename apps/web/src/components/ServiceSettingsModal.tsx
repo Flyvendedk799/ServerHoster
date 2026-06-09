@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { API_BASE_URL, api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Service = {
   id: string;
@@ -80,6 +81,8 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
   const [syncStatus, setSyncStatus] = useState<GithubSyncStatus | null>(null);
   const [webhookUrl, setWebhookUrl] = useState(`${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
   const webhookLooksLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(webhookUrl);
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y(ref, { onClose, onSubmit: save });
 
   useEffect(() => {
     void Promise.all([
@@ -198,9 +201,17 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "600px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "600px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="service-settings-modal-title"
+      >
         <header className="modal-header">
-          <h3>Service Settings</h3>
+          <h3 id="service-settings-modal-title">Service Settings</h3>
           <p className="hint">
             Configuring <span style={{ color: "var(--accent-light)" }}>{service.name}</span>
           </p>
@@ -306,7 +317,7 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
               checked={form.stopWithHoster}
               onChange={(e) => setForm({ ...form, stopWithHoster: e.target.checked })}
             />
-            <span>Stop this service when ServerHoster stops</span>
+            <span>Stop this service when LocalSURV stops</span>
           </label>
           <p className="hint">
             Leave this on for local dev apps. Turn it off for durable background services that should survive
@@ -398,7 +409,7 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
         <style
           dangerouslySetInnerHTML={{
             __html: `
-          .active-chip { background: var(--accent-gradient) !important; color: white !important; border-color: transparent !important; }
+          .active-chip { background: var(--accent-soft) !important; color: var(--text-primary) !important; border-color: var(--accent) !important; }
           .github-sync-box { border-top: 1px solid var(--border-default); padding-top: 1rem; margin-top: 1rem; }
           .github-sync-meta { display: grid; gap: 0.25rem; margin: 0.5rem 0 0.75rem; }
           .github-sync-meta code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-light); }

@@ -3,11 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { api, setAuthToken } from "../lib/api";
 import { toast } from "../lib/toast";
 import { motion } from "framer-motion";
-import { Lock, User, LogIn, Loader2, ShieldCheck, UserPlus } from "lucide-react";
+import { Lock, User, LogIn, Loader2, ShieldCheck, UserPlus, Eye, EyeOff } from "lucide-react";
 
 export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hasUsers, setHasUsers] = useState<boolean | null>(null);
   const navigate = useNavigate();
@@ -30,46 +31,41 @@ export function LoginPage() {
         body: JSON.stringify(body)
       });
       setAuthToken(res.token);
-      toast.success("Identity verified. Access granted.");
+      toast.success("Signed in");
       navigate("/dashboard");
     } catch (err) {
-      toast.error("Access Denied: Invalid credentials");
+      toast.error("Incorrect username or password");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="auth-page">
-      <div className="auth-gradient" />
-
+    <div className="auth-screen animate-up">
       <motion.div
-        className="auth-card glass-card"
-        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+        className="auth-card"
+        initial={{ opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
       >
-        <div className="auth-header">
-          <motion.div
-            className="auth-logo"
-            animate={{ rotate: [0, 10, -10, 0] }}
-            transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-          >
-            ◈
-          </motion.div>
-          <h1 className="font-bold">Welcome Back</h1>
-          <p className="muted small">Sign in to manage your local infrastructure node</p>
+        <div className="auth-logo-wrap">
+          <div className="auth-logo">LS</div>
+          <span className="auth-product">LocalSURV</span>
         </div>
+        <div className="auth-title">Sign in</div>
+        <div className="auth-sub">Sign in to manage your services</div>
 
         <form className="auth-form" onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="tiny uppercase font-bold muted">
-              Security Identity (Username) <span className="optional">— optional</span>
+          <div className="field">
+            <label className="field-label">
+              Username <span className="optional">optional</span>
             </label>
-            <div className="pr-overlap">
-              <User size={18} className="icon-overlay muted" />
+            <div className="input-wrap">
+              <span className="input-icon">
+                <User size={14} />
+              </span>
               <input
-                className="with-icon"
+                className="input"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -77,115 +73,77 @@ export function LoginPage() {
                   hasUsers ? "Username for your admin account" : "Leave blank to use admin passphrase"
                 }
                 autoFocus
+                autoComplete="username"
               />
             </div>
-            <p className="hint tiny" style={{ marginTop: "0.4rem" }}>
+            <span className="field-hint">
               {hasUsers === false
-                ? "No admin accounts created yet — leave this blank to use the legacy passphrase."
+                ? "No admin accounts created yet; leave blank for the legacy passphrase."
                 : "Leave blank to log in with the legacy passphrase."}
-            </p>
+            </span>
           </div>
 
-          <div className="form-group" style={{ marginTop: "1rem" }}>
-            <label className="tiny uppercase font-bold muted">Access Phrase (Password)</label>
-            <div className="pr-overlap">
-              <Lock size={18} className="icon-overlay muted" />
+          <div className="field">
+            <label className="field-label">Password</label>
+            <div className="input-wrap">
+              <span className="input-icon">
+                <Lock size={14} />
+              </span>
               <input
-                className="with-icon"
-                type="password"
+                className="input has-action"
+                type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
+                placeholder="Password"
                 required
+                autoComplete="current-password"
               />
+              <button
+                type="button"
+                className="input-action"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
             </div>
           </div>
 
           <button
             type="submit"
-            className="primary large"
+            className="btn btn-primary btn-lg"
             disabled={loading}
-            style={{ marginTop: "2rem", width: "100%", justifyContent: "center" }}
+            style={{ width: "100%", justifyContent: "center", marginTop: 4 }}
           >
             {loading ? (
-              <Loader2 className="animate-spin" size={20} />
+              <Loader2 className="spinner" size={16} />
             ) : (
               <>
-                <LogIn size={20} /> Sign In
+                <LogIn size={15} /> Sign In
               </>
             )}
           </button>
         </form>
 
-        <div
-          className="auth-footer"
-          style={{ marginTop: "2rem", borderTop: "1px solid var(--border-subtle)", paddingTop: "1.5rem" }}
-        >
-          <div className="row center muted xsmall">
-            <ShieldCheck size={14} className="text-success" />
-            <span>Secure Session Management Active</span>
-          </div>
+        <div className="auth-footer">
+          <ShieldCheck size={13} style={{ color: "var(--green)", opacity: 0.8 }} />
+          <span>Secure session management active</span>
           {hasUsers === false && (
             <button
               type="button"
-              className="ghost xsmall create-admin-link"
-              onClick={() => navigate("/onboarding")}
+              className="btn btn-default btn-sm create-admin-link"
+              onClick={() => {
+                // Clear any "prefer login" override so the user can reach
+                // onboarding instead of being bounced back to this screen.
+                sessionStorage.removeItem("survhub_prefer_login");
+                navigate("/onboarding");
+              }}
             >
               <UserPlus size={14} /> Create an admin account
             </button>
           )}
         </div>
       </motion.div>
-
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `
-        .auth-page { 
-          min-height: 100vh; display: flex; align-items: center; justify-content: center; 
-          padding: 2rem; position: relative; overflow: hidden; background: #020617;
-        }
-        .auth-gradient {
-           position: absolute; inset: 0;
-           background: radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%);
-           opacity: 0.6;
-        }
-        .auth-card { 
-          width: 100%; max-width: 440px; padding: 3rem; background: var(--bg-card); 
-          border-radius: var(--radius-lg); border: 1px solid var(--border-glow); 
-          box-shadow: 0 25px 50px -12px rgba(0,0,0,0.8); z-index: 10;
-          backdrop-filter: blur(24px);
-        }
-        .auth-header { text-align: center; margin-bottom: 2.5rem; }
-        .auth-logo { width: 64px; height: 64px; background: var(--accent-gradient); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem; color: white; font-size: 2.5rem; box-shadow: 0 10px 20px rgba(59,130,246,0.3); }
-        .auth-form { display: flex; flex-direction: column; gap: 0.5rem; }
-        .large { height: 52px; font-size: 1.1rem; }
-        .with-icon { padding-left: 2.75rem !important; }
-        .icon-overlay { position: absolute; left: 1rem; top: 12px; }
-        .animate-spin { animation: spin 1s linear infinite; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .center { justify-content: center; }
-        .font-bold { font-weight: 700; }
-        .uppercase { text-transform: uppercase; letter-spacing: 0.1em; }
-        .tiny { font-size: 0.7rem; }
-        .xsmall { font-size: 0.8rem; }
-        .optional { opacity: 0.55; font-weight: 400; text-transform: none; letter-spacing: 0; }
-        .create-admin-link {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.4rem;
-          margin: 0.75rem auto 0;
-          width: max-content;
-          background: transparent;
-          border: 1px dashed var(--border-subtle);
-          color: var(--text-muted);
-          padding: 0.4rem 0.8rem;
-          border-radius: var(--radius-sm);
-          cursor: pointer;
-        }
-        .create-admin-link:hover { color: var(--accent-light); border-color: var(--accent); }
-      `
-        }}
-      />
     </div>
   );
 }

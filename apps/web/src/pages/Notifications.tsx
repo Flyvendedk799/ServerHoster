@@ -1,4 +1,12 @@
 import { useEffect, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Info,
+  AlertCircle,
+  XCircle,
+  RotateCw
+} from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
@@ -20,9 +28,31 @@ const SEVERITY_COLOR: Record<Notification["severity"], string> = {
   error: "var(--danger)"
 };
 
+const SEVERITY_ICON: Record<Notification["severity"], typeof Info> = {
+  success: CheckCircle2,
+  info: Info,
+  warning: AlertCircle,
+  error: XCircle
+};
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const secs = Math.round((Date.now() - then) / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
 export function NotificationsPage() {
   const [items, setItems] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
+  const [loadError, setLoadError] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookKind, setWebhookKind] = useState<"discord" | "slack">("discord");
 
@@ -31,8 +61,9 @@ export function NotificationsPage() {
       const res = await api<{ items: Notification[]; unread: number }>("/notifications", { silent: true });
       setItems(res.items);
       setUnread(res.unread);
+      setLoadError(false);
     } catch {
-      /* silent */
+      setLoadError(true);
     }
   }
 
@@ -91,7 +122,7 @@ export function NotificationsPage() {
         </div>
       </header>
 
-      <section className="card featured-form" style={{ marginBottom: "3rem" }}>
+      <section className="card featured-form">
         <div className="section-title">
           <h3>Outgoing Webhooks</h3>
         </div>
@@ -120,34 +151,47 @@ export function NotificationsPage() {
       </section>
 
       <section className="card list-container" style={{ padding: 0 }}>
-        {items.length === 0 ? (
-          <div className="muted italic text-center" style={{ padding: "4rem" }}>
+        {items.length === 0 && loadError ? (
+          <div className="empty-state is-error">
+            <AlertTriangle size={28} className="text-danger" />
+            <p>Could not reach the notification service.</p>
+            <button className="ghost small" onClick={() => void load()}>
+              <RotateCw size={14} /> Retry
+            </button>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="muted italic text-center empty-state-card">
             Your inbox is clear. No recent system alerts.
           </div>
         ) : (
           <div className="notification-list">
-            {items.map((n) => (
-              <div key={n.id} className={`notification-item row ${n.read ? "read" : "unread"}`}>
-                <div className="severity-bar" style={{ background: SEVERITY_COLOR[n.severity] }} />
-                <div className="content" style={{ flex: 1 }}>
-                  <div className="row between">
-                    <h4 className="font-semibold">{n.title}</h4>
-                    <span className="tiny muted">{new Date(n.created_at).toLocaleTimeString()}</span>
+            {items.map((n) => {
+              const SeverityIcon = SEVERITY_ICON[n.severity];
+              return (
+                <div key={n.id} className={`notification-item row ${n.read ? "read" : "unread"}`}>
+                  <div className="severity-bar" style={{ background: SEVERITY_COLOR[n.severity] }} />
+                  <SeverityIcon
+                    size={18}
+                    style={{ color: SEVERITY_COLOR[n.severity], flexShrink: 0, marginTop: "2px" }}
+                  />
+                  <div className="content" style={{ flex: 1 }}>
+                    <div className="row between">
+                      <h4 className="font-semibold">{n.title}</h4>
+                      <span className="tiny muted">{relativeTime(n.created_at)}</span>
+                    </div>
+                    {n.body && <p className="muted small">{n.body}</p>}
+                    <div className="row tiny muted" style={{ marginTop: "0.5rem", gap: "0.5rem" }}>
+                      <span className="chip xsmall uppercase">{n.kind}</span>
+                    </div>
                   </div>
-                  {n.body && <p className="muted small">{n.body}</p>}
-                  <div className="row tiny muted" style={{ marginTop: "0.5rem", gap: "0.5rem" }}>
-                    <span className="chip xsmall uppercase">{n.kind}</span>
-                    <span>&bull;</span>
-                    <span>{new Date(n.created_at).toLocaleDateString()}</span>
-                  </div>
+                  {!n.read && (
+                    <button className="ghost tiny" onClick={() => markRead(n.id)}>
+                      Mark Read
+                    </button>
+                  )}
                 </div>
-                {!n.read && (
-                  <button className="ghost tiny" onClick={() => markRead(n.id)}>
-                    Mark Read
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

@@ -1,5 +1,10 @@
 import type { AppContext } from "../types.js";
-import { detectCloudflared, getQuickTunnelStatus, getTunnelStatus } from "./cloudflare.js";
+import {
+  detectCloudflared,
+  getQuickTunnelStatus,
+  getTunnelStatus,
+  isCloudflareConnected
+} from "./cloudflare.js";
 import { getSecretSetting, getSetting } from "./settings.js";
 
 /**
@@ -49,6 +54,10 @@ export type ExposureSummary = {
     hasCloudflareTunnelId: boolean;
     /** Zone ID saved (where DNS records live). */
     hasCloudflareZoneId: boolean;
+    /** Browser-login tunnel connected (cert.pem present + tunnel provisioned). */
+    cloudflareConnected: boolean;
+    /** Human label for the connected login tunnel (its name), or null. */
+    cloudflareAccountLabel: string | null;
   };
 };
 
@@ -82,9 +91,15 @@ function derivePublicUrl(svc: ServiceRow, mode: ExposureMode): string | null {
 }
 
 export function getExposure(ctx: AppContext, serviceId: string): ExposureSummary {
+  // `domain` lives in proxy_routes, NOT on the services table — selecting it
+  // directly threw "no such column: domain" and 500'd every Go Public open.
   const svc = ctx.db
     .prepare(
-      "SELECT id, name, port, domain, status, tunnel_url, quick_tunnel_enabled, ssl_status FROM services WHERE id = ?"
+      `SELECT s.id, s.name, s.port, p.domain AS domain, s.status, s.tunnel_url,
+              s.quick_tunnel_enabled, s.ssl_status
+       FROM services s
+       LEFT JOIN proxy_routes p ON p.service_id = s.id
+       WHERE s.id = ?`
     )
     .get(serviceId) as ServiceRow | undefined;
   if (!svc) throw new Error("Service not found");
@@ -118,7 +133,9 @@ export function getExposure(ctx: AppContext, serviceId: string): ExposureSummary
     hasCloudflareApiToken: Boolean(getSecretSetting(ctx, "cloudflare_api_token")),
     hasCloudflareTunnelToken: Boolean(getSecretSetting(ctx, "cloudflare_tunnel_token")),
     hasCloudflareTunnelId: Boolean(getSetting(ctx, "cloudflare_tunnel_id")),
-    hasCloudflareZoneId: Boolean(getSetting(ctx, "cloudflare_zone_id"))
+    hasCloudflareZoneId: Boolean(getSetting(ctx, "cloudflare_zone_id")),
+    cloudflareConnected: isCloudflareConnected(ctx),
+    cloudflareAccountLabel: getSetting(ctx, "cloudflare_login_tunnel_name")
   };
 
   const mode = deriveMode(svc, quickStatus.running);

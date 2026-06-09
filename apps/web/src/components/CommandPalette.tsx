@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -33,7 +33,10 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  const resultsRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  const optionId = (i: number) => `command-option-${i}`;
 
   const commands: Command[] = [
     {
@@ -131,8 +134,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       }
       if (e.key === "Escape") setOpen(false);
     };
+    const openPalette = () => setOpen(true);
     window.addEventListener("keydown", down);
-    return () => window.removeEventListener("keydown", down);
+    window.addEventListener("survhub:open-command-palette", openPalette);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("survhub:open-command-palette", openPalette);
+    };
   }, []);
 
   useEffect(() => {
@@ -141,6 +149,12 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       setActiveIndex(0);
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const active = resultsRef.current?.querySelector<HTMLElement>(`#${optionId(activeIndex)}`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open]);
 
   const handleAction = (cmd: Command) => {
     cmd.action();
@@ -166,6 +180,10 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
               <Search size={20} className="text-muted" />
               <input
                 autoFocus
+                role="combobox"
+                aria-expanded
+                aria-controls="command-results-listbox"
+                aria-activedescendant={filtered.length ? optionId(activeIndex) : undefined}
                 placeholder="Search commands, services, or projects..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -188,12 +206,19 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
               </button>
             </div>
 
-            <div className="command-results">
+            <div
+              className="command-results"
+              id="command-results-listbox"
+              role="listbox"
+              ref={resultsRef}
+            >
               {filtered.map((cmd, i) => (
                 <div
                   key={cmd.id}
+                  id={optionId(i)}
                   className={`command-item ${i === activeIndex ? "active" : ""}`}
-                  role="button"
+                  role="option"
+                  aria-selected={i === activeIndex}
                   tabIndex={0}
                   aria-label={`${cmd.name}, ${cmd.category}`}
                   onMouseEnter={() => setActiveIndex(i)}
@@ -224,7 +249,7 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
               className="modal-footer"
               style={{ padding: "0.75rem 1.5rem", background: "rgba(0,0,0,0.2)" }}
             >
-              <span className="muted tiny">Tip: Jump quickly with ⌘K</span>
+              <span className="muted tiny">Tip: Jump quickly with Cmd K</span>
             </div>
           </motion.div>
 

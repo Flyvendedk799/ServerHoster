@@ -1,8 +1,17 @@
+import path from "node:path";
+import fs from "node:fs";
 import simpleGit from "simple-git";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "./deploy.js";
 import { insertLog, serializeError } from "../lib/core.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
+
+/** Two commit refs are "the same" if either is a prefix of the other (tolerates a
+ * short SHA stored on an old deployment row vs. a full SHA from the remote). */
+function commitsMatch(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
 
 export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
   const service = ctx.db
@@ -46,7 +55,25 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
        ORDER BY COALESCE(finished_at, created_at) DESC LIMIT 1`
     )
     .get(serviceId) as { commit_hash?: string } | undefined;
-  const latestCommitHash = latestDeploy?.commit_hash ?? null;
+  let latestCommitHash = latestDeploy?.commit_hash ?? null;
+
+  // No recorded successful-deploy commit (e.g. an adopted/already-running service,
+  // or a deploy that never persisted one) would otherwise make every poll report
+  // "update available" forever — comparing the remote against "none". The clone's
+  // checked-out HEAD is the code that's actually running, so use it as the
+  // deployed commit when no deployment row gives us one.
+  if (!latestCommitHash) {
+    try {
+      const cloneDir = path.join(ctx.config.projectsDir, serviceId);
+      if (fs.existsSync(path.join(cloneDir, ".git"))) {
+        latestCommitHash =
+          (await simpleGit(cloneDir).env(buildGitEnv(ctx) as Record<string, string>).revparse(["HEAD"])).trim() ||
+          null;
+      }
+    } catch {
+      /* no readable clone — fall through to the previous "update available" behavior */
+    }
+  }
 
   try {
     const git = simpleGit().env(buildGitEnv(ctx) as Record<string, string>);
@@ -61,8 +88,10 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
       repoUrl,
       latestCommitHash,
       remoteHash,
-      updateAvailable: Boolean(remoteHash && latestCommitHash !== remoteHash),
-      requiresRestart: Boolean(remoteHash && latestCommitHash !== remoteHash && service.status === "running"),
+      updateAvailable: Boolean(remoteHash && !commitsMatch(latestCommitHash, remoteHash)),
+      requiresRestart: Boolean(
+        remoteHash && !commitsMatch(latestCommitHash, remoteHash) && service.status === "running"
+      ),
       canCheck: Boolean(remoteHash),
       reason: remoteHash ? null : `Branch ${branch} was not found on the remote.`
     };
@@ -98,14 +127,23 @@ export async function getGithubSyncStatuses(
 export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
   const rows = ctx.db
     .prepare(
-      "SELECT id, github_repo_url, github_branch FROM services WHERE github_repo_url IS NOT NULL AND status != 'building' AND (github_auto_pull = 1 OR github_auto_pull IS NULL)"
+      "SELECT id, github_repo_url, github_branch, last_attempted_commit FROM services WHERE github_repo_url IS NOT NULL AND status != 'building' AND (github_auto_pull = 1 OR github_auto_pull IS NULL)"
     )
-    .all() as Array<{ id: string; github_repo_url: string; github_branch: string | null }>;
+    .all() as Array<{
+    id: string;
+    github_repo_url: string;
+    github_branch: string | null;
+    last_attempted_commit: string | null;
+  }>;
 
   const git = simpleGit().env(buildGitEnv(ctx) as Record<string, string>);
 
   for (const row of rows) {
     try {
+      // Skip if a deploy/start/stop is already in progress for this service —
+      // otherwise we'd race a git pull / install against it.
+      if (ctx.actionLocks.has(row.id)) continue;
+
       const branch = row.github_branch || "main";
       const authedUrl = injectGitCredentials(ctx, row.github_repo_url);
       const remotes = await git.listRemote(["--heads", authedUrl, branch]);
@@ -126,9 +164,23 @@ export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
         )
         .get(row.id) as { commit_hash?: string } | undefined;
 
+      // Trigger only when the remote moved to a commit we have not already tried
+      // (success OR failure) and have not already deployed successfully. Keying
+      // off last_attempted_commit is what stops a commit that keeps failing to
+      // build from being redeployed on every single tick, forever.
+      if (remoteHash === row.last_attempted_commit) continue;
       if (latestDeploy?.commit_hash === remoteHash) continue;
 
-      const previous = latestDeploy?.commit_hash ? latestDeploy.commit_hash.slice(0, 7) : "no baseline";
+      const previous = row.last_attempted_commit
+        ? row.last_attempted_commit.slice(0, 7)
+        : latestDeploy?.commit_hash
+          ? latestDeploy.commit_hash.slice(0, 7)
+          : "no baseline";
+      // Record the attempt BEFORE deploying so a failed build doesn't re-trigger
+      // next tick even if deployFromGit throws.
+      ctx.db
+        .prepare("UPDATE services SET last_attempted_commit = ? WHERE id = ?")
+        .run(remoteHash, row.id);
       insertLog(
         ctx,
         row.id,

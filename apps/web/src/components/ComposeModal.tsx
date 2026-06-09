@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
+import { useModalA11y } from "../lib/useModalA11y";
 
 type Props = {
   projects: Array<{ id: string; name: string }>;
@@ -12,6 +13,8 @@ export function ComposeModal({ projects, onClose, onImported }: Props) {
   const [projectId, setProjectId] = useState("");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useModalA11y(ref, { onClose, onSubmit: handleSubmit });
 
   async function handleSubmit() {
     if (!content.trim()) {
@@ -36,9 +39,17 @@ export function ComposeModal({ projects, onClose, onImported }: Props) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: "700px" }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        style={{ maxWidth: "700px" }}
+        onClick={(e) => e.stopPropagation()}
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compose-modal-title"
+      >
         <header className="modal-header">
-          <h3>Import Docker Compose</h3>
+          <h3 id="compose-modal-title">Import Docker Compose</h3>
           <p className="hint">Deploy a multi-service stack using standard YAML.</p>
         </header>
 

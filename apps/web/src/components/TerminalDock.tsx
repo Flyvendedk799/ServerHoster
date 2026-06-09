@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -6,7 +6,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { Bot, Copy, Download, Maximize2, Minimize2, Plug, Search, Terminal, Trash2, X } from "lucide-react";
 import { api } from "../lib/api";
-import { connectLogs } from "../lib/ws";
+import { connectLogs, type LiveSocket } from "../lib/ws";
 import { toast } from "../lib/toast";
 
 type DockService = {
@@ -119,7 +119,13 @@ function TerminalPane({ tab, active, onInput, onResize, search }: TerminalPanePr
       window.removeEventListener("resize", resize);
       term.dispose();
       termRef.current = null;
+      // On a genuine remount (session id change) replay the buffer from the
+      // start; without this the re-created xterm would stay blank.
+      writtenRef.current = 0;
     };
+    // onInput/onResize are stabilized via useCallback in the parent, so this
+    // effect only re-runs (disposing/recreating the xterm) when the session
+    // actually changes — not on every output message.
   }, [onInput, onResize, tab.session.id]);
 
   useEffect(() => {
@@ -157,7 +163,10 @@ export function TerminalDock() {
   const [allowMutations, setAllowMutations] = useState(false);
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<LiveSocket | null>(null);
+  // Mirror of tabs for the WS reopen handler (which can't read state directly).
+  const tabsRef = useRef<Tab[]>([]);
+  tabsRef.current = tabs;
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.session.id === activeId) ?? tabs[0],
@@ -210,6 +219,15 @@ export function TerminalDock() {
         );
       }
     });
+    // Re-attach every live session after a reconnect (the new socket otherwise
+    // wouldn't receive their output).
+    ws.onReopen(() => {
+      for (const t of tabsRef.current) {
+        if (t.status === "running") {
+          ws.send(JSON.stringify({ type: "terminal_attach", sessionId: t.session.id }));
+        }
+      }
+    });
     wsRef.current = ws;
     return () => ws.close();
   }, []);
@@ -231,14 +249,9 @@ export function TerminalDock() {
   }, []);
 
   async function attach(session: TerminalSession): Promise<void> {
-    const payload = JSON.stringify({ type: "terminal_attach", sessionId: session.id });
-    const ws = wsRef.current;
-    if (!ws) return;
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
-      return;
-    }
-    ws.addEventListener("open", () => ws.send(payload), { once: true });
+    // LiveSocket.send queues until the socket is open, so this is safe even when
+    // called before the connection has finished establishing.
+    wsRef.current?.send(JSON.stringify({ type: "terminal_attach", sessionId: session.id }));
   }
 
   async function openShell(service: DockService): Promise<void> {
@@ -340,13 +353,15 @@ export function TerminalDock() {
     }
   }
 
-  function sendInput(sessionId: string, data: string): void {
+  // Stable identities so TerminalPane's mount effect doesn't dispose/recreate the
+  // xterm on every render (which blanked the terminal on each output message).
+  const sendInput = useCallback((sessionId: string, data: string): void => {
     wsRef.current?.send(JSON.stringify({ type: "terminal_input", sessionId, data }));
-  }
+  }, []);
 
-  function sendResize(sessionId: string, rows: number, cols: number): void {
+  const sendResize = useCallback((sessionId: string, rows: number, cols: number): void => {
     wsRef.current?.send(JSON.stringify({ type: "terminal_resize", sessionId, rows, cols }));
-  }
+  }, []);
 
   function closeTab(sessionId: string): void {
     wsRef.current?.send(JSON.stringify({ type: "terminal_detach", sessionId }));
@@ -397,6 +412,10 @@ export function TerminalDock() {
             className={`terminal-tab ${activeTab?.session.id === tab.session.id ? "active" : ""}`}
             onClick={() => setActiveId(tab.session.id)}
           >
+            <span
+              className={`term-tab-dot is-${tab.status}`}
+              title={`Session ${tab.status}`}
+            />
             <Terminal size={14} />
             <span>{tab.session.title || tab.service.name}</span>
             <small>{tab.status}</small>
@@ -439,7 +458,7 @@ export function TerminalDock() {
           {tabs.length === 0 && !agentService && (
             <div className="terminal-empty">
               <Terminal size={28} />
-              <p>Open a service console or agent session from Apps.</p>
+              <p>Open a service console or agent session from Services.</p>
             </div>
           )}
           {tabs.map((tab) => (

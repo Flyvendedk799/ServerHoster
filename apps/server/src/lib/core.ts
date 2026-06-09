@@ -142,7 +142,9 @@ export async function runCommand(
   return new Promise((resolve) => {
     const child = spawn(command, { cwd, env, shell: true, detached: process.platform !== "win32" });
     let output = "";
+    let timedOut = false;
     const timeout = setTimeout(() => {
+      timedOut = true;
       try {
         if (process.platform === "win32") {
           child.kill("SIGTERM");
@@ -167,13 +169,144 @@ export async function runCommand(
     });
     child.on("close", (code) => {
       clearTimeout(timeout);
-      resolve({ code: code ?? 1, output: normalizeOutput(output) });
+      // A timeout-killed process can still race to exit 0 mid-write; force a
+      // non-zero (124) so a half-finished install never masquerades as success.
+      resolve({ code: timedOut ? 124 : (code ?? 1), output: normalizeOutput(output) });
     });
   });
 }
 
-export async function findFreePort(start = 3000, end = 3999): Promise<number> {
+/**
+ * Append text to a service's most recent deployment build_log. Lets a crash
+ * that happens AFTER a green build (e.g. the app exits immediately on start)
+ * surface its reason on the deployment screen instead of only the live logs.
+ */
+export function appendDeploymentLog(ctx: AppContext, serviceId: string, text: string): void {
+  const row = ctx.db
+    .prepare("SELECT id FROM deployments WHERE service_id = ? ORDER BY created_at DESC LIMIT 1")
+    .get(serviceId) as { id?: string } | undefined;
+  if (!row?.id) return;
+  ctx.db
+    .prepare("UPDATE deployments SET build_log = COALESCE(build_log, '') || ? WHERE id = ?")
+    .run(`\n[post-start ${nowIso()}]\n${text}\n`, row.id);
+}
+
+/**
+ * Build the base environment a spawned service/build/terminal child inherits.
+ * We deliberately do NOT spread the raw control-plane process.env: it carries
+ * SURVHUB_SECRET_KEY (the master key that decrypts EVERY service's secrets) plus
+ * operator tokens. Any deployed app — or an untrusted npm/pip/docker build it
+ * triggers — would otherwise read them, so one service could decrypt another's
+ * data. Strip all SURVHUB_* and the known operator-integration secrets; a
+ * service still gets its OWN env (layered on top by the caller).
+ */
+const STRIPPED_ENV_KEYS = new Set([
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_API_KEY",
+  "CF_API_TOKEN",
+  "CF_API_KEY",
+  "TUNNEL_TOKEN",
+  "TUNNEL_ORIGIN_CERT",
+  "NPM_TOKEN"
+]);
+/**
+ * Map a raw Docker-socket connection failure to a clear, actionable message, or
+ * null if it isn't one. When Colima/Docker Desktop is stopped, every dockerode
+ * call throws a bare `ECONNREFUSED …/docker.sock` with no statusCode, which would
+ * otherwise surface to the user as a cryptic 500. Returns the friendly text so
+ * the API can answer 503 with "start Docker and retry".
+ */
+export function dockerUnavailableMessage(error: unknown): string | null {
+  const e = error as { code?: string; address?: string; message?: string };
+  const code = e?.code;
+  const where = `${e?.address ?? ""} ${e?.message ?? ""}`;
+  if (
+    (code === "ECONNREFUSED" || code === "ENOENT" || code === "EACCES") &&
+    /docker\.sock|colima|\/var\/run\/docker/i.test(where)
+  ) {
+    return "Docker isn't reachable — the daemon appears to be stopped. Start it (e.g. `colima start`, or open Docker Desktop) and try again.";
+  }
+  return null;
+}
+
+export function sanitizedHostEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (k.startsWith("SURVHUB_")) continue; // control-plane only — never hand to children
+    if (STRIPPED_ENV_KEYS.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/** Ports already reserved by a service or database row (stopped ones included —
+ * a logical reservation, not just a live socket — so a freed-but-remembered port
+ * isn't re-handed to a second service). */
+export function dbReservedPorts(ctx: AppContext, excludeServiceId?: string): Set<number> {
+  const taken = new Set<number>();
+  for (const r of ctx.db
+    .prepare("SELECT port FROM services WHERE port IS NOT NULL AND id != ?")
+    .all(excludeServiceId ?? "") as Array<{ port: number }>)
+    taken.add(r.port);
+  for (const r of ctx.db.prepare("SELECT port FROM databases WHERE port IS NOT NULL").all() as Array<{
+    port: number;
+  }>)
+    taken.add(r.port);
+  return taken;
+}
+
+/** Reject (409) if `port` is already claimed by another service or a database. */
+export function assertPortAvailable(ctx: AppContext, port: number, excludeServiceId?: string): void {
+  const svc = ctx.db
+    .prepare("SELECT name FROM services WHERE port = ? AND id != ?")
+    .get(port, excludeServiceId ?? "") as { name?: string } | undefined;
+  const db = svc
+    ? undefined
+    : (ctx.db.prepare("SELECT name FROM databases WHERE port = ?").get(port) as { name?: string } | undefined);
+  const owner = svc ? `service "${svc.name ?? "?"}"` : db ? `database "${db.name ?? "?"}"` : null;
+  if (owner) {
+    const e = new Error(`Port ${port} is already used by ${owner}. Pick a different port.`) as Error & {
+      statusCode?: number;
+      code?: string;
+    };
+    e.statusCode = 409;
+    e.code = "PORT_IN_USE";
+    throw e;
+  }
+}
+
+/**
+ * Confine a service's working_dir to its own clone (projectsDir/<serviceId>).
+ * realpath defeats symlink tunnels; the trailing separator avoids the
+ * /projects/A vs /projects/Ax sibling-prefix bug. Without this a service could
+ * be pointed at another service's clone (or anywhere on disk).
+ */
+export function assertWithinServiceDir(ctx: AppContext, serviceId: string, dir: string): void {
+  const base = path.resolve(ctx.config.projectsDir, serviceId);
+  const real = (p: string): string => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const realBase = real(base);
+  const realTarget = real(path.resolve(dir));
+  if (realTarget !== realBase && !realTarget.startsWith(realBase + path.sep)) {
+    const e = new Error("working_dir must stay inside the service's own project directory.") as Error & {
+      statusCode?: number;
+    };
+    e.statusCode = 400;
+    throw e;
+  }
+}
+
+export async function findFreePort(start = 3000, end = 3999, skip?: Set<number>): Promise<number> {
   for (let port = start; port <= end; port++) {
+    if (skip?.has(port)) continue;
     const freeOnLoopback = await new Promise<boolean>((resolve) => {
       const server = net.createServer();
       server.once("error", () => resolve(false));

@@ -39,6 +39,8 @@ export type Exposure = {
     hasCloudflareTunnelToken: boolean;
     hasCloudflareTunnelId: boolean;
     hasCloudflareZoneId: boolean;
+    cloudflareConnected: boolean;
+    cloudflareAccountLabel: string | null;
   };
 };
 

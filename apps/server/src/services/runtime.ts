@@ -3,21 +3,30 @@ import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import {
+  appendDeploymentLog,
   broadcast,
-  nowIso,
   getService,
   getServiceEnv,
   insertLog,
+  sanitizedHostEnv,
   serializeError,
   updateServiceStatus
 } from "../lib/core.js";
-import type { AppContext } from "../types.js";
+import { nanoid } from "nanoid";
+import type { AppContext, RuntimeProcess } from "../types.js";
 import { createNotification } from "./notifications.js";
 
 const exec = promisify(execFile);
 import { buildConnectionString, getDatabase } from "./databases.js";
 
 type DockerRestartPolicy = "no" | "unless-stopped";
+
+/**
+ * How long a process must stay up before we clear its crash counter. A service
+ * that runs cleanly past this window earns a fresh set of restart attempts; one
+ * that keeps crashing faster than this exhausts max_restarts and gives up.
+ */
+const RESTART_STABILITY_MS = 30_000;
 
 /**
  * Merge project env, service env, and auto-injected DATABASE_URL.
@@ -37,6 +46,10 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
       .all(service.project_id) as Array<{ key: string; value: string }>;
     for (const r of rows) projectEnv[r.key] = r.value;
   }
+  // A project-wide PORT must never leak into individual services: each service
+  // has its own port column that the proxy and healthchecks target. A shared
+  // project PORT would force every service onto one port and break routing.
+  delete projectEnv.PORT;
 
   const serviceEnv = getServiceEnv(ctx, serviceId);
   const merged: Record<string, string> = { ...projectEnv };
@@ -48,7 +61,27 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
       merged.DATABASE_URL = buildConnectionString(db, host);
     }
   }
+
+  // Every service gets a persistent DATA_DIR that survives redeploys (the git
+  // clone is hard-reset to remote on every deploy, so data kept inside it —
+  // e.g. a SQLite file — gets wiped). Docker services see it at /data via a
+  // bind mount; process/static services get the host path directly. A service
+  // env var named DATA_DIR overrides this default.
+  if (!serviceEnv.DATA_DIR && !projectEnv.DATA_DIR) {
+    merged.DATA_DIR = service?.type === "docker" ? "/data" : serviceDataDirFor(ctx, serviceId);
+  }
   return { ...merged, ...serviceEnv };
+}
+
+/** Host path of a service's persistent data dir; created on first use. */
+export function serviceDataDirFor(ctx: AppContext, serviceId: string): string {
+  const dir = path.join(ctx.config.serviceDataDir, serviceId);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* surfaced when the service actually writes */
+  }
+  return dir;
 }
 
 async function pullImage(ctx: AppContext, image: string): Promise<void> {
@@ -114,32 +147,12 @@ async function getOrCreateContainer(
   const agentHomeHostPath = path.join(ctx.config.agentHomeDir, "services", serviceId, "docker-home");
   fs.mkdirSync(agentHomeHostPath, { recursive: true });
   const agentHomeBind = `${agentHomeHostPath}:/home/survhub-agent`;
+  // Persistent data: the host-side service-data dir mounts at /data so anything
+  // the container keeps there (SQLite, uploads) survives recreation/redeploys.
+  // DATA_DIR=/data is injected via getServiceEnvWithLinks.
+  const dataBind = `${serviceDataDirFor(ctx, serviceId)}:/data`;
   const extraHosts = process.platform === "linux" ? ["host.docker.internal:host-gateway"] : undefined;
-  try {
-    const existing = ctx.docker.getContainer(containerName);
-    const info = await existing.inspect();
-    const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
-    const mappedToRequestedPort =
-      !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
-    if (mappedToRequestedPort) {
-      await ensureDockerRestartPolicy(ctx, serviceId, existing, restartPolicyName, info);
-      return existing;
-    }
-    try {
-      await existing.stop({ t: 10 });
-    } catch {}
-    await existing.remove({ force: true });
-    insertLog(
-      ctx,
-      serviceId,
-      "info",
-      `Recreated Docker container to publish host port ${hostPort} to container port ${containerPort}.`
-    );
-  } catch {
-    // Container does not exist yet.
-  }
-
-  return ctx.docker.createContainer({
+  const createConfig = {
     Image: image,
     name: containerName,
     Cmd: command ? command.split(/\s+/) : undefined,
@@ -149,10 +162,68 @@ async function getOrCreateContainer(
     HostConfig: {
       PortBindings: exposedPort && hostPort ? { [exposedPort]: [{ HostPort: String(hostPort) }] } : undefined,
       RestartPolicy: { Name: restartPolicyName },
-      Binds: [agentHomeBind],
+      Binds: [agentHomeBind, dataBind],
       ExtraHosts: extraHosts
     }
-  });
+  };
+
+  try {
+    const existing = ctx.docker.getContainer(containerName);
+    const info = await existing.inspect();
+    const state = info.State?.Status;
+    // A container mid-removal or dead can't be (re)started — Docker answers 409
+    // "marked for removal" or 404 if it vanishes. Drop it and recreate fresh
+    // rather than returning a corpse the caller will fail to start.
+    if (state === "removing" || state === "dead") {
+      try {
+        await existing.remove({ force: true });
+      } catch {
+        /* already gone */
+      }
+    } else {
+      const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
+      const mappedToRequestedPort =
+        !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
+      // A pre-DATA_DIR container lacks the /data mount, but its env now claims
+      // DATA_DIR=/data — data written there would die with the container. Treat
+      // a missing data bind like a port mismatch: recreate.
+      const hasDataBind = (info.HostConfig?.Binds ?? []).includes(dataBind);
+      if (mappedToRequestedPort && hasDataBind) {
+        await ensureDockerRestartPolicy(ctx, serviceId, existing, restartPolicyName, info);
+        return existing;
+      }
+      try {
+        await existing.stop({ t: 10 });
+      } catch {}
+      await existing.remove({ force: true });
+      insertLog(
+        ctx,
+        serviceId,
+        "info",
+        hasDataBind
+          ? `Recreated Docker container to publish host port ${hostPort} to container port ${containerPort}.`
+          : "Recreated Docker container to attach the persistent /data mount."
+      );
+    }
+  } catch {
+    // Container does not exist yet.
+  }
+
+  try {
+    return await ctx.docker.createContainer(createConfig);
+  } catch (error) {
+    // A leftover container holding the name (e.g. one we couldn't inspect above)
+    // makes create 409 "name already in use" — force-remove it and retry once.
+    if (/already in use|name.*in use/i.test(serializeError(error))) {
+      try {
+        await ctx.docker.getContainer(containerName).remove({ force: true });
+      } catch {
+        /* already gone */
+      }
+      return await ctx.docker.createContainer(createConfig);
+    }
+    throw error;
+  }
 }
 
 async function waitForContainerReadiness(
@@ -206,6 +277,120 @@ async function hasLiveProcessGroup(processGroupPid: number | undefined): Promise
   }
 }
 
+/** Clear the persisted process-group id for a service. */
+function clearRuntimePgid(ctx: AppContext, serviceId: string): void {
+  try {
+    ctx.db.prepare("UPDATE services SET runtime_pgid = NULL WHERE id = ?").run(serviceId);
+  } catch {
+    /* column may not exist on a very old DB */
+  }
+}
+
+/** SIGKILL a persisted process group (a survivor not tracked in-memory). */
+function killPersistedPgid(ctx: AppContext, serviceId: string): void {
+  if (process.platform === "win32") return;
+  const row = ctx.db.prepare("SELECT runtime_pgid FROM services WHERE id = ?").get(serviceId) as
+    | { runtime_pgid?: number | null }
+    | undefined;
+  const pgid = row?.runtime_pgid;
+  if (!pgid) return;
+  try {
+    process.kill(-pgid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+}
+
+/** The process-group id of a pid (POSIX), or null if it can't be resolved. */
+async function pgidOf(pid: number): Promise<number | null> {
+  try {
+    const { stdout } = await exec("ps", ["-o", "pgid=", "-p", String(pid)], {
+      timeout: 1500,
+      maxBuffer: 1024 * 1024
+    });
+    const n = Number(stdout.trim());
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear a port the force-restart path needs — but ONLY by killing a process that
+ * belongs to THIS service's own process group (`ownPgid`). Killing whatever
+ * happens to LISTEN on the port (the old behaviour) meant force-restarting
+ * service A could SIGKILL service B, or an unrelated host daemon, that held A's
+ * recorded port. A holder we can't prove is ours is left alone with a warning.
+ */
+async function freeServicePort(
+  ctx: AppContext,
+  serviceId: string,
+  port: number | undefined,
+  ownPgid: number | null
+): Promise<void> {
+  if (!port || process.platform === "win32") return;
+  let stdout = "";
+  try {
+    ({ stdout } = await exec("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+      timeout: 2000,
+      maxBuffer: 1024 * 1024
+    }));
+  } catch {
+    return; // nothing listening / lsof unavailable
+  }
+  for (const pid of stdout.split(/\s+/).map((s) => Number(s.trim())).filter(Boolean)) {
+    if (pid === process.pid) continue; // never kill ourselves
+    const pgid = await pgidOf(pid);
+    if (ownPgid && pgid === ownPgid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    } else {
+      insertLog(
+        ctx,
+        serviceId,
+        "warn",
+        `Port ${port} is held by an unmanaged process (pid ${pid}); leaving it alone to avoid killing another service. Free it manually if the restart fails.`
+      );
+    }
+  }
+}
+
+/** Reject if `promise` hasn't settled within `ms`; clears its timer either way. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/**
+ * SIGKILL a runtime immediately — no SIGTERM grace period. Used by the
+ * force-stop path to recover a process that ignored or stalled on a graceful
+ * stop. Kills the whole process group when we have one, else the direct child.
+ */
+function killRuntimeProcessNow(runtime: {
+  process: { kill(signal?: NodeJS.Signals): boolean };
+  processGroupPid?: number;
+}): void {
+  if (process.platform !== "win32" && runtime.processGroupPid) {
+    try {
+      process.kill(-runtime.processGroupPid, "SIGKILL");
+      return;
+    } catch {
+      /* process group already exited — fall back to the direct child */
+    }
+  }
+  try {
+    runtime.process.kill("SIGKILL");
+  } catch {
+    /* process already exited */
+  }
+}
+
 function terminateRuntimeProcess(runtime: {
   process: { kill(signal?: NodeJS.Signals): boolean };
   processGroupPid?: number;
@@ -239,7 +424,15 @@ function terminateRuntimeProcess(runtime: {
   }
 }
 
-async function startProcessService(ctx: AppContext, serviceId: string): Promise<void> {
+async function startProcessService(
+  ctx: AppContext,
+  serviceId: string,
+  options: { resetRestartCount?: boolean } = {}
+): Promise<void> {
+  // resetRestartCount is true for explicit/user starts and false on the
+  // auto-restart path — otherwise the counter resets to 0 every crash cycle and
+  // max_restarts is never reached, producing an endless "attempt 1" loop.
+  const { resetRestartCount = true } = options;
   const service = getService(ctx, serviceId);
   if (ctx.runtimeProcesses.has(serviceId)) return;
   if (service.type !== "process" && service.type !== "static")
@@ -256,16 +449,47 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
   ctx.manuallyStopped.delete(serviceId);
   const serviceEnvFromLinks = getServiceEnvWithLinks(ctx, serviceId);
   const portEnv = service.port && !serviceEnvFromLinks.PORT ? { PORT: String(service.port) } : {};
+  // Nudge frameworks that read HOST (e.g. CRA, some Node servers) to bind all
+  // interfaces so the proxy/tunnel can reach them — without overriding an
+  // explicit service-level HOST.
+  const hostEnv = serviceEnvFromLinks.HOST ? {} : { HOST: "0.0.0.0" };
   const child = spawn(command, {
     cwd,
-    env: { ...process.env, ...portEnv, ...serviceEnvFromLinks },
+    // sanitizedHostEnv() omits the control-plane secrets (SURVHUB_SECRET_KEY et
+    // al.) so a deployed app can't read the master key that decrypts every other
+    // service's data. SURVHUB_SERVICE_ID marks the process group as ours so the
+    // port/pgid kills below can confirm ownership before SIGKILL.
+    env: {
+      ...sanitizedHostEnv(),
+      SURVHUB_SERVICE_ID: serviceId,
+      ...portEnv,
+      ...hostEnv,
+      ...serviceEnvFromLinks
+    },
     shell: true,
     detached: process.platform !== "win32"
   });
-  ctx.runtimeProcesses.set(serviceId, { process: child, serviceId, processGroupPid: child.pid });
-  ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
+  const instanceId = nanoid();
+  const runtime: RuntimeProcess = { process: child, serviceId, processGroupPid: child.pid, instanceId };
+  ctx.runtimeProcesses.set(serviceId, runtime);
+  // Persist the process-group id so a child that survives a ServerHoster restart
+  // (detached) can be adopted on boot instead of mis-shown as stopped.
+  ctx.db.prepare("UPDATE services SET runtime_pgid = ? WHERE id = ?").run(child.pid ?? null, serviceId);
+  if (resetRestartCount) {
+    ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
+  }
   updateServiceStatus(ctx, serviceId, "running");
   insertLog(ctx, serviceId, "info", `Started command: ${command}`);
+
+  // Once this instance has stayed up past the stability window, clear the crash
+  // counter so a later crash gets a fresh set of attempts. Guarded by instanceId
+  // so a process that was already replaced can't reset a newer instance's count.
+  runtime.stabilityTimer = setTimeout(() => {
+    const current = ctx.runtimeProcesses.get(serviceId);
+    if (current?.instanceId === instanceId) {
+      ctx.db.prepare("UPDATE services SET restart_count = 0 WHERE id = ?").run(serviceId);
+    }
+  }, RESTART_STABILITY_MS);
 
   // Auto-start quick tunnel if enabled (dynamic import avoids circular dependency)
   const qtRow = ctx.db
@@ -285,10 +509,30 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
       });
   }
 
-  child.stdout.on("data", (d) => insertLog(ctx, serviceId, "info", d.toString()));
-  child.stderr.on("data", (d) => insertLog(ctx, serviceId, "error", d.toString()));
+  // Buffer the tail of this instance's output so a crash-on-start (the
+  // better-sqlite3 / "Cannot find module" case) can surface its REASON on the
+  // deployment screen, not just the live logs.
+  let startupBuffer = "";
+  const captureStartup = (s: string) => {
+    startupBuffer = (startupBuffer + s).slice(-16384);
+  };
+  child.stdout.on("data", (d) => {
+    const s = d.toString();
+    captureStartup(s);
+    insertLog(ctx, serviceId, "info", s);
+  });
+  child.stderr.on("data", (d) => {
+    const s = d.toString();
+    captureStartup(s);
+    insertLog(ctx, serviceId, "error", s);
+  });
   child.on("exit", (code) => {
-    const runtime = ctx.runtimeProcesses.get(serviceId);
+    clearTimeout(runtime.stabilityTimer);
+    const current = ctx.runtimeProcesses.get(serviceId);
+    // Stale exit: a newer instance already replaced this one (e.g. via restart).
+    // Ignore it so a dead child can't flip the live instance's status or queue a
+    // duplicate restart.
+    if (current && current.instanceId !== instanceId) return;
     const cfg = ctx.db
       .prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?")
       .get(serviceId) as { auto_restart: number; restart_count: number; max_restarts: number } | undefined;
@@ -296,11 +540,21 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
     if (ctx.manuallyStopped.has(serviceId)) {
       ctx.runtimeProcesses.delete(serviceId);
       ctx.manuallyStopped.delete(serviceId);
+      clearRuntimePgid(ctx, serviceId); // dead → don't carry a stale pgid into the recycle window
       updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
       return;
     }
     setTimeout(() => {
       void (async () => {
+        // A stop issued during this 500ms window must win — don't resurrect a
+        // service the user just stopped.
+        if (ctx.manuallyStopped.has(serviceId)) {
+          ctx.runtimeProcesses.delete(serviceId);
+          ctx.manuallyStopped.delete(serviceId);
+          clearRuntimePgid(ctx, serviceId);
+          updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
+          return;
+        }
         const childRuntime = runtime ?? ctx.runtimeProcesses.get(serviceId);
         if ((code ?? 0) === 0 && (await hasLiveProcessGroup(childRuntime?.processGroupPid))) {
           updateServiceStatus(ctx, serviceId, "running", 0);
@@ -313,6 +567,18 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
           return;
         }
         ctx.runtimeProcesses.delete(serviceId);
+        // The launcher's group is gone (not adopted above); drop the stale pgid so
+        // a later kill can't hit a recycled one. A restart re-records a fresh pgid.
+        clearRuntimePgid(ctx, serviceId);
+        // On the FIRST failure of this deploy cycle, record why on the deployment
+        // so the user sees the crash reason on the deploy screen, not a silent loop.
+        if ((code ?? 0) !== 0 && cfg.restart_count === 0 && startupBuffer.trim()) {
+          appendDeploymentLog(
+            ctx,
+            serviceId,
+            `Service exited (code ${code}) shortly after start:\n${startupBuffer.slice(-2000)}`
+          );
+        }
         if (cfg.auto_restart && cfg.restart_count < cfg.max_restarts) {
           const nextCount = cfg.restart_count + 1;
           ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
@@ -333,7 +599,9 @@ async function startProcessService(ctx: AppContext, serviceId: string): Promise<
             serviceId
           });
           setTimeout(() => {
-            void withLock(ctx, serviceId, () => startProcessService(ctx, serviceId)).catch((error) => {
+            void withLock(ctx, serviceId, () =>
+              startProcessService(ctx, serviceId, { resetRestartCount: false })
+            ).catch((error) => {
               insertLog(ctx, serviceId, "error", `Restart failed: ${serializeError(error)}`);
               updateServiceStatus(ctx, serviceId, "crashed");
             });
@@ -378,6 +646,9 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   updateServiceStatus(ctx, serviceId, "starting");
   insertLog(ctx, serviceId, "info", `Starting Docker service with image ${image}`);
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", image, port });
+  // Mirror the process path: a (re)start clears any lingering stop intent so a
+  // prior force/stop doesn't leave a stale manuallyStopped entry for this id.
+  ctx.manuallyStopped.delete(serviceId);
 
   if (shouldPullImage(image)) {
     try {
@@ -395,7 +666,7 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
     insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
   }
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
-  const container = await getOrCreateContainer(
+  let container = await getOrCreateContainer(
     ctx,
     serviceId,
     image,
@@ -409,7 +680,32 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
     await container.start();
   } catch (error) {
     const msg = serializeError(error);
-    if (!msg.includes("already started")) throw error;
+    const sc = (error as { statusCode?: number }).statusCode;
+    if (msg.includes("already started")) {
+      // already running — fine
+    } else if (sc === 409 || sc === 404 || /marked for removal|no such container/i.test(msg)) {
+      // The container went bad between create and start (mid-removal / vanished).
+      // Force-remove any leftover by name, recreate a fresh one, and start it.
+      insertLog(ctx, serviceId, "warn", `Container could not be started (${msg}); recreating a fresh one.`);
+      try {
+        await ctx.docker.getContainer(`survhub-${serviceId}`).remove({ force: true });
+      } catch {
+        /* already gone */
+      }
+      container = await getOrCreateContainer(
+        ctx,
+        serviceId,
+        image,
+        command,
+        port,
+        containerPort,
+        envList,
+        restartPolicyName
+      );
+      await container.start();
+    } else {
+      throw error;
+    }
   }
   await waitForContainerReadiness(ctx, serviceId, container);
   updateServiceStatus(ctx, serviceId, "running");
@@ -468,6 +764,10 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
       terminateRuntimeProcess(runtime);
       ctx.runtimeProcesses.delete(serviceId);
     }
+    // Also kill an adopted survivor (tracked only via the persisted pgid, e.g.
+    // a detached child carried across a ServerHoster restart).
+    killPersistedPgid(ctx, serviceId);
+    clearRuntimePgid(ctx, serviceId);
   }
   updateServiceStatus(ctx, serviceId, "stopped", 0);
   insertLog(ctx, serviceId, "info", "Service stopped.");
@@ -553,6 +853,87 @@ export async function restartService(ctx: AppContext, serviceId: string): Promis
 }
 
 /**
+ * Hard-stop a service without waiting on graceful shutdown. Unlike
+ * {@link stopService} this SIGKILLs the process immediately and force-removes
+ * Docker containers, and every teardown step is time-bounded so a wedged
+ * process or unresponsive Docker daemon can't pin the service at "stopping".
+ * Internal bookkeeping is always cleared even if a teardown step fails.
+ */
+export async function forceStopService(ctx: AppContext, serviceId: string): Promise<void> {
+  const service = getService(ctx, serviceId);
+  ctx.manuallyStopped.add(serviceId);
+  updateServiceStatus(ctx, serviceId, "stopping");
+  insertLog(ctx, serviceId, "warn", "Force stop requested — killing service immediately.");
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "stopping" });
+
+  // Best-effort: tear down any quick tunnel (dynamic import avoids a cycle).
+  import("./cloudflare.js")
+    .then(({ stopQuickTunnel }) => {
+      try {
+        stopQuickTunnel(ctx, serviceId);
+      } catch {
+        /* ignore */
+      }
+    })
+    .catch(() => {
+      /* ignore */
+    });
+
+  if (service.type === "docker") {
+    const container = ctx.docker.getContainer(`survhub-${serviceId}`);
+    // force-remove SIGKILLs and removes the container in a single call.
+    try {
+      await withTimeout(container.remove({ force: true }), 12000, "Docker force-remove");
+    } catch (error) {
+      insertLog(ctx, serviceId, "warn", `Force-remove of container failed: ${serializeError(error)}`);
+    }
+  } else {
+    const runtime = ctx.runtimeProcesses.get(serviceId);
+    if (runtime) killRuntimeProcessNow(runtime);
+    // Capture our own process group BEFORE clearing it, so the port sweep can
+    // confirm any remaining port-holder is ours (and not another service) before
+    // SIGKILL. Kill our adopted survivor by its persisted pgid first.
+    const ownPgid =
+      (
+        ctx.db.prepare("SELECT runtime_pgid FROM services WHERE id = ?").get(serviceId) as
+          | { runtime_pgid?: number | null }
+          | undefined
+      )?.runtime_pgid ?? null;
+    killPersistedPgid(ctx, serviceId);
+    const port = Number(service.port ?? 0);
+    if (port) {
+      await freeServicePort(ctx, serviceId, port, ownPgid);
+      insertLog(ctx, serviceId, "info", `Checked port ${port} before restart.`);
+    }
+    clearRuntimePgid(ctx, serviceId);
+  }
+  ctx.runtimeProcesses.delete(serviceId);
+  updateServiceStatus(ctx, serviceId, "stopped", 0);
+  insertLog(ctx, serviceId, "info", "Service force-stopped.");
+}
+
+/**
+ * Recover a wedged service: break any stuck action lock, hard-kill the current
+ * runtime, then start it again. The lock is deliberately cleared first — the
+ * whole point of a force restart is to rescue a service stuck mid-transition
+ * (e.g. pinned at "stopping") where a held lock would otherwise reject every
+ * normal start/stop/restart with "Service action already in progress".
+ */
+export async function forceRestartService(ctx: AppContext, serviceId: string): Promise<void> {
+  // Validate existence up front so a bad id fails before we break the lock.
+  getService(ctx, serviceId);
+  if (ctx.actionLocks.delete(serviceId)) {
+    insertLog(ctx, serviceId, "warn", "Force restart cleared a stuck action lock.");
+  }
+  insertLog(ctx, serviceId, "info", "Force restart requested.");
+  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "queued", action: "restart" });
+  await withLock(ctx, serviceId, async () => {
+    await forceStopService(ctx, serviceId);
+    await startServiceRuntime(ctx, serviceId);
+  });
+}
+
+/**
  * Walk Docker and return service IDs whose `survhub-<id>` container is
  * currently running. Adoption-only: containers in any other state
  * ("exited", "paused", etc.) are excluded — those should sync as "stopped".
@@ -585,12 +966,14 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
   const adopted = await listLiveAdoptableContainers(ctx);
 
   const rows = ctx.db
-    .prepare("SELECT id, status, start_mode, stop_with_hoster FROM services")
+    .prepare("SELECT id, type, status, start_mode, stop_with_hoster, runtime_pgid FROM services")
     .all() as Array<{
     id: string;
+    type?: string;
     status: string;
     start_mode?: string;
     stop_with_hoster?: number;
+    runtime_pgid?: number | null;
   }>;
   for (const row of rows) {
     if (adopted.has(row.id)) {
@@ -612,6 +995,26 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
       }
       continue;
     }
+
+    // Adopt a surviving process/static child: spawned detached, it outlives a
+    // ServerHoster restart. If its process group is still alive, keep it marked
+    // running (don't mis-show it as stopped, and don't auto-start a duplicate
+    // that would collide on the port). stop/force-restart kill it via the
+    // persisted pgid.
+    if (
+      row.type !== "docker" &&
+      row.runtime_pgid &&
+      (await hasLiveProcessGroup(Number(row.runtime_pgid)))
+    ) {
+      if (row.status !== "running") {
+        updateServiceStatus(ctx, row.id, "running");
+        insertLog(ctx, row.id, "info", `Adopted surviving process (pgid ${row.runtime_pgid}) on boot.`);
+      }
+      continue;
+    }
+    // Its pgid (if any) is stale now.
+    clearRuntimePgid(ctx, row.id);
+
     if (row.status === "running") {
       updateServiceStatus(ctx, row.id, "stopped");
       insertLog(ctx, row.id, "warn", "Recovered from daemon restart. Service marked as stopped.");
@@ -671,24 +1074,48 @@ export function startContainerDriftLoop(ctx: AppContext): () => void {
 }
 
 export function startHealthcheckLoop(ctx: AppContext): () => void {
+  // Require several consecutive failures before restarting so a slow-booting or
+  // briefly-flapping app isn't killed on a single transient probe.
+  const FAILURE_THRESHOLD = 3;
+  const failures = new Map<string, number>();
   const interval = setInterval(() => {
     const rows = ctx.db
       .prepare(
         "SELECT id, status, port, healthcheck_path FROM services WHERE status = 'running' AND healthcheck_path IS NOT NULL AND healthcheck_path != ''"
       )
       .all() as Array<{ id: string; status: string; port?: number; healthcheck_path?: string }>;
+    // Forget services no longer eligible (stopped, healthcheck removed, etc.).
+    const eligible = new Set(rows.map((row) => row.id));
+    for (const id of [...failures.keys()]) if (!eligible.has(id)) failures.delete(id);
     for (const row of rows) {
       const port = Number(row.port ?? 0);
       if (!port) continue;
       const path = row.healthcheck_path?.startsWith("/")
         ? row.healthcheck_path
         : `/${row.healthcheck_path ?? ""}`;
-      fetch(`http://127.0.0.1:${port}${path}`)
+      // Bound the probe — Node's global fetch has no default timeout, so a
+      // half-open service (accepts the socket, never replies) would leave the
+      // promise pending forever and leak a socket every tick.
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        signal: AbortSignal.timeout(Math.min(10_000, ctx.config.healthcheckIntervalMs))
+      })
         .then((res) => {
           if (!res.ok) throw new Error(`Healthcheck status ${res.status}`);
+          failures.delete(row.id);
         })
         .catch((error) => {
-          insertLog(ctx, row.id, "warn", `Healthcheck failed: ${serializeError(error)}`);
+          const count = (failures.get(row.id) ?? 0) + 1;
+          failures.set(row.id, count);
+          insertLog(
+            ctx,
+            row.id,
+            "warn",
+            `Healthcheck failed (${count}/${FAILURE_THRESHOLD}): ${serializeError(error)}`
+          );
+          if (count < FAILURE_THRESHOLD) return;
+          // Don't fight an in-flight deploy/restart — its lock would just reject us.
+          if (ctx.actionLocks.has(row.id)) return;
+          failures.delete(row.id);
           void restartService(ctx, row.id).catch((err) =>
             insertLog(ctx, row.id, "error", `Healthcheck restart failed: ${serializeError(err)}`)
           );
@@ -698,11 +1125,25 @@ export function startHealthcheckLoop(ctx: AppContext): () => void {
   return () => clearInterval(interval);
 }
 
+// Per-instance guard (keyed by ctx, not module-global) — a single process can
+// build/tear down multiple apps (e.g. the test suite), and each must shut down
+// independently; only a repeated shutdown of the SAME ctx is a no-op.
+const shutDownCtxs = new WeakSet<AppContext>();
+
 export async function gracefulShutdown(ctx: AppContext): Promise<void> {
-  // Stop all quick tunnels first
+  // Both SIGINT and SIGTERM call this; without a guard a double signal runs the
+  // whole teardown twice (double app.close → ERR_SERVER_NOT_RUNNING). And if
+  // app.close()/a shutdown task hangs, force-exit so we never wedge on quit.
+  if (shutDownCtxs.has(ctx)) return;
+  shutDownCtxs.add(ctx);
+  const forceExit = setTimeout(() => process.exit(1), 15_000);
+  forceExit.unref();
+
+  // Stop all quick tunnels + the managed login tunnel first
   try {
-    const { stopAllQuickTunnels } = await import("./cloudflare.js");
+    const { stopAllQuickTunnels, stopManagedTunnel } = await import("./cloudflare.js");
     stopAllQuickTunnels();
+    stopManagedTunnel();
   } catch {
     /* ignore */
   }
@@ -729,4 +1170,5 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
     await task();
   }
   await ctx.app.close();
+  clearTimeout(forceExit);
 }

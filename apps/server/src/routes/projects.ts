@@ -7,6 +7,7 @@ import { nowIso, serializeError } from "../lib/core.js";
 import { restartService, startService, stopService } from "../services/runtime.js";
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
 import { reconcileGenericAppProjects } from "../services/projects.js";
+import { removeDatabase, type DatabaseRow } from "../services/databases.js";
 
 const projectSchema = z.object({
   name: z.string().min(1),
@@ -69,6 +70,45 @@ export function registerProjectRoutes(ctx: AppContext): void {
 
   ctx.app.delete("/projects/:id", async (req) => {
     const { id } = req.params as { id: string };
+
+    // Tear down every member's runtime BEFORE deleting rows. Raw row deletes
+    // alone would orphan each service's process/container and each database's
+    // container + volume, leaving them running and holding ports. Mirror the
+    // per-service and per-database DELETE handlers' teardown. Each is wrapped so
+    // one failure doesn't abort the rest of the cascade.
+    const memberServices = ctx.db
+      .prepare("SELECT id, type FROM services WHERE project_id = ?")
+      .all(id) as Array<{ id: string; type: string }>;
+    for (const svc of memberServices) {
+      try {
+        await stopService(ctx, svc.id);
+      } catch (error) {
+        ctx.app.log.warn(`Failed to stop service ${svc.id} during project ${id} delete: ${serializeError(error)}`);
+      }
+      // Force-remove any lingering docker container (matches per-service delete).
+      if (svc.type === "docker") {
+        try {
+          const container = ctx.docker.getContainer(`survhub-${svc.id}`);
+          await container.remove({ force: true });
+        } catch (error) {
+          ctx.app.log.warn(
+            `Failed to remove container survhub-${svc.id} during project ${id} delete: ${serializeError(error)}`
+          );
+        }
+      }
+    }
+
+    const memberDatabases = ctx.db
+      .prepare("SELECT * FROM databases WHERE project_id = ?")
+      .all(id) as DatabaseRow[];
+    for (const db of memberDatabases) {
+      try {
+        await removeDatabase(ctx, db);
+      } catch (error) {
+        ctx.app.log.warn(`Failed to remove database ${db.id} during project ${id} delete: ${serializeError(error)}`);
+      }
+    }
+
     ctx.db
       .prepare("DELETE FROM env_vars WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)")
       .run(id);
