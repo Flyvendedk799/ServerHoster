@@ -10,7 +10,9 @@ import {
   nodeVersionWarning,
   pythonEntryCommand,
   resolveBuildType,
-  resolveInstallCwd
+  resolveInstallCwd,
+  workspaceDepBuildCommand,
+  writeViteHostWrapper
 } from "./services/deploy.js";
 
 function tmpRoot(label: string): string {
@@ -74,6 +76,71 @@ test("resolveInstallCwd: pnpm-workspace member installs at the workspace root", 
     assert.equal(resolveInstallCwd(root, appDir), root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workspaceDepBuildCommand: pnpm member builds its dep closure first (^... selector)", () => {
+  // The DoceoMenter case: apps/web imports @scope/shared, whose package.json
+  // points types/main at dist/. The member's own `next build` does NOT build
+  // shared, so on a fresh clone shared/dist is missing and the build dies with
+  // "Cannot find module '@scope/shared'". We must build the dependency closure
+  // (excluding the member itself) at the workspace root, in topological order.
+  const root = tmpRoot("wsdep-pnpm");
+  try {
+    writeJson(root, "package.json", { name: "monorepo" });
+    fs.writeFileSync(path.join(root, "pnpm-workspace.yaml"), 'packages:\n  - "apps/*"\n');
+    const appDir = path.join(root, "apps", "web");
+    writeJson(appDir, "package.json", {
+      name: "@scope/web",
+      scripts: { build: "next build" },
+      dependencies: { "@scope/shared": "workspace:*" }
+    });
+    assert.equal(
+      workspaceDepBuildCommand("pnpm", appDir, root),
+      'pnpm --filter "@scope/web^..." run build'
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workspaceDepBuildCommand: pnpm member without a package name yields no prebuild", () => {
+  const root = tmpRoot("wsdep-noname");
+  try {
+    writeJson(root, "package.json", { name: "monorepo" });
+    fs.writeFileSync(path.join(root, "pnpm-workspace.yaml"), 'packages:\n  - "apps/*"\n');
+    const appDir = path.join(root, "apps", "web");
+    writeJson(appDir, "package.json", { scripts: { build: "next build" } });
+    assert.equal(workspaceDepBuildCommand("pnpm", appDir, root), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workspaceDepBuildCommand: npm/yarn defer to the repo root build script (or null)", () => {
+  // npm/yarn have no portable dependencies-only recursive build, so we lean on
+  // the author's root `build` script when present, and do nothing otherwise.
+  const withRootBuild = tmpRoot("wsdep-npm-rootbuild");
+  try {
+    writeJson(withRootBuild, "package.json", {
+      name: "monorepo",
+      workspaces: ["apps/*"],
+      scripts: { build: "npm run build --workspaces" }
+    });
+    const appDir = path.join(withRootBuild, "apps", "web");
+    writeJson(appDir, "package.json", { name: "web", scripts: { build: "next build" } });
+    assert.equal(workspaceDepBuildCommand("npm", appDir, withRootBuild), "npm run build");
+  } finally {
+    fs.rmSync(withRootBuild, { recursive: true, force: true });
+  }
+  const noRootBuild = tmpRoot("wsdep-npm-norootbuild");
+  try {
+    writeJson(noRootBuild, "package.json", { name: "monorepo", workspaces: ["apps/*"] });
+    const appDir = path.join(noRootBuild, "apps", "web");
+    writeJson(appDir, "package.json", { name: "web", scripts: { build: "next build" } });
+    assert.equal(workspaceDepBuildCommand("npm", appDir, noRootBuild), null);
+  } finally {
+    fs.rmSync(noRootBuild, { recursive: true, force: true });
   }
 });
 
@@ -242,6 +309,49 @@ test("detectNodeLaunchTarget: an app under uploads/ loses to the repo's own root
   }
 });
 
+test("detectNodeLaunchTarget: a Next.js member runs `next start` directly on $PORT", () => {
+  // The DoceoMenter start bug: a Next app launched via `<pm> run dev -- --host
+  // ... --port $PORT` dies because Next's CLI rejects those flags (the
+  // forwarded `--` makes them positional dirs) and the script hard-codes its
+  // own port. We must invoke `next` directly with -p/-H on the deploy port,
+  // serving the production build when a build script is present.
+  const root = tmpRoot("detect-next");
+  try {
+    writeJson(root, "package.json", { name: "monorepo" });
+    fs.writeFileSync(path.join(root, "pnpm-workspace.yaml"), 'packages:\n  - "apps/*"\n');
+    fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const appDir = path.join(root, "apps", "web");
+    writeJson(appDir, "package.json", {
+      name: "@scope/web",
+      scripts: { dev: "next dev -p 3000", build: "next build", start: "next start -p 3000" },
+      dependencies: { next: "14.2.18" }
+    });
+    const target = detectNodeLaunchTarget(root, "web");
+    assert.equal(path.resolve(target.workingDir), path.resolve(appDir));
+    assert.equal(target.kind, "web");
+    assert.equal(target.command, "pnpm exec next start -p $PORT -H 0.0.0.0");
+    // No forwarded `--`, no hard-coded port leaking through.
+    assert.doesNotMatch(target.command, /--\s|run (dev|start)/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detectNodeLaunchTarget: a Next.js app with no build script falls back to `next dev`", () => {
+  const root = tmpRoot("detect-next-nobuild");
+  try {
+    writeJson(root, "package.json", {
+      name: "next-app",
+      scripts: { dev: "next dev" },
+      dependencies: { next: "14.2.18" }
+    });
+    const target = detectNodeLaunchTarget(root, "next-app");
+    assert.equal(target.command, "npx next dev -p $PORT -H 0.0.0.0");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("detectNodeLaunchTarget: picks the nested vite app as a web launch target", () => {
   const root = tmpRoot("detect-nested");
   try {
@@ -251,9 +361,57 @@ test("detectNodeLaunchTarget: picks the nested vite app as a web launch target",
     const target = detectNodeLaunchTarget(root, "stellar-shimmer-folio");
     assert.equal(path.resolve(target.workingDir), path.resolve(appDir));
     assert.equal(target.kind, "web");
-    // Nested standalone app with no lockfile → npm, and the dev command binds host/port.
-    assert.match(target.command, /npm run dev .*--host 0\.0\.0\.0 --port \$PORT/);
+    // Nested standalone app with no lockfile → npm; Vite runs directly against
+    // the generated wrapper config that allows the proxied host.
+    assert.equal(target.command, "npx vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("detectNodeLaunchTarget: a pnpm Vite app launches via the host-wrapper config", () => {
+  // The Havekongen case: a Lovable Vite export served behind the domain proxy.
+  // Vite ≥5.4's host check would reject the proxied Host header, so we run vite
+  // against a generated wrapper config that allows all hosts.
+  const root = tmpRoot("detect-vite-pnpm");
+  try {
+    writeJson(root, "package.json", {
+      name: "vite_react_shadcn_ts",
+      scripts: { dev: "vite", build: "vite build" },
+      devDependencies: { vite: "^5.4.19" }
+    });
+    fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const target = detectNodeLaunchTarget(root, "vite_react_shadcn_ts");
+    assert.equal(target.kind, "web");
+    assert.equal(target.command, "pnpm exec vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writeViteHostWrapper: emits a config that loads the user's config and allows hosts", () => {
+  const dir = tmpRoot("vite-wrapper");
+  try {
+    fs.writeFileSync(path.join(dir, "vite.config.ts"), "export default {}\n");
+    writeViteHostWrapper(dir);
+    const wrapper = fs.readFileSync(path.join(dir, ".survhub-vite.config.mjs"), "utf8");
+    assert.match(wrapper, /allowedHosts: true/);
+    assert.match(wrapper, /loadConfigFromFile/);
+    assert.match(wrapper, /vite\.config\.ts/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeViteHostWrapper: works with no user vite config (empty base)", () => {
+  const dir = tmpRoot("vite-wrapper-noconfig");
+  try {
+    writeViteHostWrapper(dir);
+    const wrapper = fs.readFileSync(path.join(dir, ".survhub-vite.config.mjs"), "utf8");
+    assert.match(wrapper, /allowedHosts: true/);
+    assert.match(wrapper, /const base = \{\};/);
+    assert.doesNotMatch(wrapper, /loadConfigFromFile\(env/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -105,9 +105,134 @@ function packageRunCommand(pm: NodePackageManager, script: string): string {
   return `npm run ${script}`;
 }
 
+/**
+ * Command that builds a workspace member's dependency CLOSURE — its sibling
+ * workspace packages, transitively — without building the member itself, in
+ * topological order, run from the workspace root.
+ *
+ * A member's own build (e.g. `next build`) resolves sibling packages from their
+ * compiled output (the `dist/` a `tsc` build emits, which their package.json
+ * `main`/`types` point at). The member build does NOT build those siblings, so
+ * on a fresh clone their `dist/` is missing and the build dies with
+ * "Cannot find module '@scope/shared'". Building the closure first guarantees
+ * every sibling it imports has emitted before the member builds.
+ *
+ * pnpm expresses this precisely with the `<name>^...` selector (dependencies of
+ * the package, excluding it); it's a safe no-op (exit 0) when the member has no
+ * workspace deps. npm/yarn/bun have no portable dependencies-only recursive
+ * build, so defer to the repo's own root `build` script when it defines one —
+ * the author orchestrates the graph there. Returns null when there is nothing
+ * appropriate to run, leaving the member's own build to run alone.
+ */
+export function workspaceDepBuildCommand(
+  pm: NodePackageManager,
+  memberDir: string,
+  projectPath: string
+): string | null {
+  if (pm === "pnpm") {
+    const name = readPackageJson(path.join(memberDir, "package.json"))?.name;
+    if (typeof name === "string" && name.length > 0) {
+      return `pnpm --filter ${JSON.stringify(`${name}^...`)} run build`;
+    }
+    return null;
+  }
+  const rootScripts = readPackageJson(path.join(projectPath, "package.json"))?.scripts ?? {};
+  return typeof rootScripts.build === "string" ? packageRunCommand(pm, "build") : null;
+}
+
 function packageDevCommand(pm: NodePackageManager, kind: NodeLaunchKind): string {
   const base = packageRunCommand(pm, "dev");
   return kind === "web" ? `${base} -- --host 0.0.0.0 --port $PORT` : base;
+}
+
+/** Run a locally-installed bin directly (not via an npm script). */
+function packageExec(pm: NodePackageManager, command: string): string {
+  if (pm === "pnpm") return `pnpm exec ${command}`;
+  if (pm === "yarn") return `yarn exec ${command}`;
+  if (pm === "bun") return `bunx ${command}`;
+  return `npx ${command}`;
+}
+
+/**
+ * Launch command for a Next.js app on the deploy port.
+ *
+ * We invoke `next` DIRECTLY rather than through the repo's `start`/`dev` script
+ * for two reasons: (1) `<pm> run <script> -- <flags>` forwards a literal `--`,
+ * which Next reads as end-of-options so appended `-p`/`-H` become bogus
+ * positional directories ("Invalid project directory: …/--host"); and (2) those
+ * scripts routinely hard-code their own port (e.g. `next dev -p 3000`), which
+ * ignores the port ServerHoster assigned. When a build script exists we serve
+ * the production build with `next start` (the build phase ran `next build`);
+ * otherwise fall back to `next dev`. `-H 0.0.0.0` binds all interfaces for the
+ * proxy.
+ */
+function nextLaunchCommand(pm: NodePackageManager, hasBuild: boolean): string {
+  const sub = hasBuild ? "start" : "dev";
+  return packageExec(pm, `next ${sub} -p $PORT -H 0.0.0.0`);
+}
+
+// Generated config that ServerHoster writes into a Vite app's directory at
+// deploy time so the dev server accepts the proxied Host header.
+const VITE_HOST_WRAPPER = ".survhub-vite.config.mjs";
+const VITE_CONFIG_NAMES = [
+  "vite.config.ts",
+  "vite.config.js",
+  "vite.config.mjs",
+  "vite.config.mts",
+  "vite.config.cjs",
+  "vite.config.cts"
+];
+
+function findViteConfig(dir: string): string | null {
+  return VITE_CONFIG_NAMES.find((name) => fs.existsSync(path.join(dir, name))) ?? null;
+}
+
+/**
+ * Launch command for a Vite app on the deploy port.
+ *
+ * Vite ≥5.4 added a Host-header check (DNS-rebinding protection) that rejects
+ * requests arriving through ServerHoster's domain proxy/tunnel with
+ * "Blocked request. This host is not allowed." Vite 5.x exposes no
+ * `--allowedHosts` CLI flag, and editing the repo's vite config doesn't survive
+ * the deploy's reset-to-origin. So we run `vite` directly against a generated
+ * wrapper config (written by writeViteHostWrapper) that loads the user's real
+ * config and merges `allowedHosts: true` — safe because the proxy is the only
+ * ingress to the dev server.
+ */
+function viteLaunchCommand(pm: NodePackageManager): string {
+  return packageExec(pm, `vite --host 0.0.0.0 --port $PORT --config ${VITE_HOST_WRAPPER}`);
+}
+
+/**
+ * Write the wrapper config that lets a Vite dev server accept the proxied Host
+ * header. Loads the user's real config (whatever its extension) via Vite's own
+ * loader and merges `allowedHosts: true`. Rewritten on every deploy, so it
+ * tracks config renames and survives the reset-to-origin that wipes it.
+ */
+export function writeViteHostWrapper(dir: string): void {
+  const original = findViteConfig(dir);
+  const loadBase = original
+    ? `const loaded = await loadConfigFromFile(env, path.join(dir, ${JSON.stringify(original)}), dir);
+  const base = loaded?.config ?? {};`
+    : `const base = {};`;
+  const contents = `// Generated by ServerHoster — do not edit. Lets the Vite dev server accept the
+// Host header forwarded by the domain proxy/tunnel (the only ingress here), which
+// Vite's DNS-rebinding guard would otherwise reject as "host not allowed".
+import { loadConfigFromFile, mergeConfig } from "vite";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const dir = path.dirname(fileURLToPath(import.meta.url));
+
+export default async (env) => {
+  ${loadBase}
+  return mergeConfig(base, {
+    server: { allowedHosts: true },
+    preview: { allowedHosts: true }
+  });
+};
+`;
+  fs.writeFileSync(path.join(dir, VITE_HOST_WRAPPER), contents);
 }
 
 function staticServeCommand(): string {
@@ -628,7 +753,23 @@ export function detectNodeLaunchTarget(
       kind = "web";
       command = packageDevCommand(pm, "web");
       reason = `VitePress package ${rel}`;
-    } else if (deps.vite || deps.next || deps.astro || deps.nuxt || deps["@sveltejs/kit"]) {
+    } else if (deps.next) {
+      // Next.js needs its own launch command — its CLI rejects the Vite-style
+      // `--host/--port` flags, and going through the repo's npm script breaks on
+      // a forwarded `--` plus a hard-coded port. See nextLaunchCommand().
+      score = 70;
+      kind = "web";
+      command = nextLaunchCommand(pm, hasBuild);
+      reason = `Next.js package ${rel}`;
+    } else if (deps.vite) {
+      // Vite needs its own launch command: a generated wrapper config that
+      // allows the proxied Host header (Vite 5.x has no --allowedHosts flag).
+      // See viteLaunchCommand() / writeViteHostWrapper().
+      score = 70;
+      kind = "web";
+      command = viteLaunchCommand(pm);
+      reason = `Vite package ${rel}`;
+    } else if (deps.astro || deps.nuxt || deps["@sveltejs/kit"]) {
       score = 70;
       kind = "web";
       command = packageDevCommand(pm, "web");
@@ -782,6 +923,17 @@ export async function runBuildPipeline(
       if (install.code !== 0) return { status: "failed", buildLog, artifactPath };
     }
 
+    // A Vite launch command runs against a generated wrapper config that allows
+    // the proxied Host header — write it now (before the service starts), and
+    // rewrite it every deploy so it survives the reset-to-origin and tracks any
+    // rename of the user's own vite config.
+    if (nodeTarget.command.includes(VITE_HOST_WRAPPER)) {
+      writeViteHostWrapper(buildCwd);
+      const msg = `Wrote ${VITE_HOST_WRAPPER} so the Vite dev server accepts the proxied host.\n`;
+      buildLog += msg;
+      if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stdout");
+    }
+
     if (nodeTarget.skipBuild) {
       const msg = `\nSkipping package build for ${nodeTarget.reason}; the launch command performs its own development build.\n`;
       buildLog += msg;
@@ -791,6 +943,27 @@ export async function runBuildPipeline(
 
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
+
+    // When the launch target is a workspace member, build its workspace-
+    // dependency closure first (run at the workspace root, in topological
+    // order) so every sibling package it imports has emitted its dist/ before
+    // the member's own build resolves them. Skipped for the repo root itself
+    // and for non-workspace nested apps.
+    const isWorkspaceMember =
+      isWorkspaceRoot(projectPath) && path.resolve(buildCwd) !== path.resolve(projectPath);
+    if (isWorkspaceMember) {
+      const depBuildCommand = workspaceDepBuildCommand(packageManager, buildCwd, projectPath);
+      if (depBuildCommand) {
+        if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${depBuildCommand}\n`, "stdout");
+        const depBuild = await runCommand(depBuildCommand, projectPath, env, {
+          onChunk: stream,
+          timeoutMs: NODE_INSTALL_TIMEOUT_MS
+        });
+        buildLog += `\n$ ${depBuildCommand}\n${depBuild.output}\n`;
+        if (depBuild.code !== 0) return { status: "failed", buildLog, artifactPath };
+      }
+    }
+
     if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${buildCommand}\n`, "stdout");
     const build = await runCommand(buildCommand, buildCwd, env, {
       onChunk: stream,
