@@ -443,6 +443,46 @@ function writeGeminiMcpConfig(hostHome: string, mcpUrl: string, token: string): 
   fs.writeFileSync(settingsPath, JSON.stringify({ ...current, mcpServers }, null, 2), { mode: 0o600 });
 }
 
+/**
+ * Derive the password for a profile's isolated macOS keychain. Deterministic
+ * (HMAC over the profile id with the control-plane secret) so sessions can
+ * always unlock the keychain without storing or displaying the password.
+ */
+export function keychainPasswordForProfile(secretKey: string, profileId: string): string {
+  return crypto.createHmac("sha256", secretKey).update(`agent-keychain:${profileId}`).digest("hex");
+}
+
+/**
+ * Shell snippet that gives a HOME-isolated agent session a working macOS
+ * keychain. Claude Code stores subscription OAuth credentials exclusively in
+ * the Keychain on macOS (no file fallback), and with HOME pointed at the
+ * isolated agent home there is no default keychain — `claude auth login`
+ * fails with "A keychain cannot be found". Creating a per-profile keychain
+ * inside the agent home scopes the default-keychain preference to that HOME
+ * (verified: the real user keychain and prefs are untouched). Steps are
+ * chained with `;` so a hiccup surfaces in the provider command instead of
+ * silently aborting the session.
+ */
+export function darwinKeychainBootstrap(): string {
+  return [
+    'mkdir -p "$HOME/Library/Keychains"',
+    'KC="$HOME/Library/Keychains/login.keychain-db"',
+    '[ -f "$KC" ] || security create-keychain -p "$SURVHUB_AGENT_KEYCHAIN_PASSWORD" "$KC" >/dev/null 2>&1',
+    'security default-keychain -d user -s "$KC" >/dev/null 2>&1 || true',
+    'security unlock-keychain -p "$SURVHUB_AGENT_KEYCHAIN_PASSWORD" "$KC" >/dev/null 2>&1 || true',
+    'security set-keychain-settings "$KC" >/dev/null 2>&1 || true'
+  ].join("; ");
+}
+
+function needsDarwinKeychain(providerId: string, target: TerminalTarget, kind: string): boolean {
+  return (
+    providerId === "claude" &&
+    target === "host" &&
+    process.platform === "darwin" &&
+    (kind === "agent-auth" || kind === "agent-run")
+  );
+}
+
 async function createAgentSession(
   ctx: AppContext,
   serviceId: string,
@@ -462,23 +502,30 @@ async function createAgentSession(
     target === "docker"
       ? dockerAgentEnv(runtimeHome, profile.auth_mode === "managed" ? secrets : {})
       : agentPathEnv(runtimeHome, profile.auth_mode === "managed" ? secrets : {});
+  const workspace = target === "docker" ? "container default workdir" : service.working_dir || process.cwd();
+  if (needsDarwinKeychain(provider.id, target, kind)) {
+    env.SURVHUB_AGENT_KEYCHAIN_PASSWORD = keychainPasswordForProfile(ctx.config.secretKey, profileId);
+  }
 
   let command = "";
   let title = provider.name;
   if (kind === "agent-install") {
     command = `${diagnosticsHeader(`ServerHoster ${provider.name} install`, [
       "This runs inside the service context with an isolated agent home.",
-      `Agent home: ${runtimeHome}`
+      `Agent home: ${runtimeHome}`,
+      `Workspace: ${workspace}`
     ])}${provider.installCommand()}`;
     title = `${provider.name} Install`;
     ctx.db
       .prepare("UPDATE agent_profiles SET install_status = ?, updated_at = ? WHERE id = ?")
       .run("installing", nowIso(), profileId);
   } else if (kind === "agent-auth") {
+    const bootstrap = needsDarwinKeychain(provider.id, target, kind) ? `${darwinKeychainBootstrap()}; ` : "";
     command = `${diagnosticsHeader(`ServerHoster ${provider.name} authentication`, [
       "Credentials are stored in this profile's isolated home unless managed secrets are enabled.",
-      profile.auth_mode === "managed" ? `Managed secret env: ${provider.managedSecretKey}` : "CLI auth mode"
-    ])}${provider.authCommand(profile.auth_mode)}`;
+      profile.auth_mode === "managed" ? `Managed secret env: ${provider.managedSecretKey}` : "CLI auth mode",
+      `Workspace: ${workspace}`
+    ])}${bootstrap}${provider.authCommand(profile.auth_mode)}`;
     title = `${provider.name} Auth`;
     ctx.db
       .prepare("UPDATE agent_profiles SET auth_status = ?, updated_at = ? WHERE id = ?")
@@ -488,10 +535,12 @@ async function createAgentSession(
     const mcpUrl = `${defaultMcpBaseUrl(ctx, target)}/mcp/${token.id}`;
     if (provider.id === "gemini") writeGeminiMcpConfig(hostHome, mcpUrl, token.token);
     if (provider.id === "codex") env.SERVERHOSTER_MCP_TOKEN = token.token;
+    const bootstrap = needsDarwinKeychain(provider.id, target, kind) ? `${darwinKeychainBootstrap()}; ` : "";
     command = `${diagnosticsHeader(`ServerHoster ${provider.name} agent`, [
       `MCP: ${mcpUrl}`,
-      `Service actions: ${allowMutations ? "enabled for this run" : "read-only"}`
-    ])}${provider.runCommand(mcpUrl, token.token)}`;
+      `Service actions: ${allowMutations ? "enabled for this run" : "read-only"}`,
+      `Workspace: ${workspace}`
+    ])}${bootstrap}${provider.runCommand(mcpUrl, token.token)}`;
     title = `${provider.name} Agent`;
   }
 
