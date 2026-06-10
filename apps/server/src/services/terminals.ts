@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import { spawn as spawnPty } from "node-pty";
@@ -11,6 +12,47 @@ import { getService, nowIso, sanitizedHostEnv, serializeError } from "../lib/cor
 import { getServiceEnvWithLinks } from "./runtime.js";
 
 const exec = promisify(execFile);
+
+/**
+ * Restore the execute bit on files that must be runnable. npm's tarball unpack
+ * can strip it from packaged binaries — observed with node-pty 1.1.0's
+ * prebuilt `spawn-helper` on macOS, which makes every pty.spawn die with the
+ * opaque "posix_spawnp failed." Returns the paths it fixed.
+ */
+export function ensureExecutable(paths: string[]): string[] {
+  const fixed: string[] = [];
+  for (const file of paths) {
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || (stat.mode & 0o111) !== 0) continue;
+      fs.chmodSync(file, stat.mode | 0o755);
+      fixed.push(file);
+    } catch {
+      // Missing path (other platform's prebuild) — nothing to fix.
+    }
+  }
+  return fixed;
+}
+
+function healPtySpawnHelper(): void {
+  if (process.platform === "win32") return;
+  try {
+    const require = createRequire(import.meta.url);
+    const ptyRoot = path.dirname(require.resolve("node-pty/package.json"));
+    const helpers = [
+      path.join(ptyRoot, "prebuilds", `${process.platform}-${process.arch}`, "spawn-helper"),
+      path.join(ptyRoot, "build", "Release", "spawn-helper")
+    ];
+    const fixed = ensureExecutable(helpers);
+    for (const file of fixed) {
+      console.warn(`[terminals] restored execute permission on ${file} (pty spawns would fail)`);
+    }
+  } catch {
+    // node-pty unresolvable — terminals are broken anyway and will surface it.
+  }
+}
+
+healPtySpawnHelper();
 
 export type TerminalTarget = "host" | "docker";
 export type TerminalKind = "shell" | "agent-install" | "agent-auth" | "agent-run";
