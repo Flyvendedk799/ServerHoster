@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { API_BASE_URL, api } from "../lib/api";
 import { toast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
+import { confirmDialog } from "../lib/confirm";
+import { listResources, unlinkResource, type ManagedResourceDetail } from "../lib/resources";
 
 type Service = {
   id: string;
@@ -79,6 +81,8 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
   const [otherServices, setOtherServices] = useState<AllService[]>([]);
   const [githubStatus, setGithubStatus] = useState<GithubStatus | null>(null);
   const [syncStatus, setSyncStatus] = useState<GithubSyncStatus | null>(null);
+  const [linkedResources, setLinkedResources] = useState<ManagedResourceDetail[]>([]);
+  const [unlinkBusyId, setUnlinkBusyId] = useState<string | null>(null);
   const [webhookUrl, setWebhookUrl] = useState(`${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
   const webhookLooksLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(webhookUrl);
   const ref = useRef<HTMLDivElement>(null);
@@ -94,7 +98,43 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
         setDatabases(dbs);
       })
       .catch(() => undefined);
+    void loadLinkedResources();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [service.id, service.project_id]);
+
+  async function loadLinkedResources(): Promise<void> {
+    try {
+      const rows = await listResources({ silent: true });
+      setLinkedResources(
+        rows.filter((resource) =>
+          resource.links.some((link) => link.service_id === service.id && link.active)
+        )
+      );
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  async function unlinkFromResource(resource: ManagedResourceDetail): Promise<void> {
+    const ok = await confirmDialog({
+      title: `Unlink "${resource.name}"?`,
+      message: `Removes the active link between ${service.name} and this ${resource.profile} resource. Its injected env (e.g. SUPABASE_URL) disappears on the next service start. The resource itself keeps running.`,
+      danger: true,
+      confirmLabel: "Unlink"
+    });
+    if (!ok) return;
+    setUnlinkBusyId(resource.id);
+    try {
+      await unlinkResource(resource.id, service.id);
+      toast.success(`Unlinked ${resource.name}`);
+      await loadLinkedResources();
+      onUpdated();
+    } catch {
+      /* toasted */
+    } finally {
+      setUnlinkBusyId(null);
+    }
+  }
 
   useEffect(() => {
     if (!service.github_repo_url) return;
@@ -288,6 +328,39 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
             </select>
           </div>
 
+          {linkedResources.length > 0 && (
+            <div className="form-group">
+              <label>Linked Resources</label>
+              <div className="linked-resource-list">
+                {linkedResources.map((resource) => (
+                  <div key={resource.id} className="linked-resource-row">
+                    <div>
+                      <strong>{resource.name}</strong>
+                      <span className="hint">
+                        {resource.profile} · {resource.status}
+                        {typeof resource.config.api_url === "string" && resource.config.api_url
+                          ? ` · ${resource.config.api_url}`
+                          : ""}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost small"
+                      disabled={unlinkBusyId === resource.id}
+                      onClick={() => void unlinkFromResource(resource)}
+                    >
+                      {unlinkBusyId === resource.id ? "Unlinking…" : "Unlink"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="hint">
+                Resource links inject system-managed env (Supabase URLs/keys). Manage stacks on the Databases
+                page.
+              </p>
+            </div>
+          )}
+
           <div className="form-group">
             <label>Dependencies (Start Priority)</label>
             <div className="row wrap" style={{ gap: "0.5rem", marginTop: "0.25rem" }}>
@@ -413,6 +486,10 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
           .github-sync-box { border-top: 1px solid var(--border-default); padding-top: 1rem; margin-top: 1rem; }
           .github-sync-meta { display: grid; gap: 0.25rem; margin: 0.5rem 0 0.75rem; }
           .github-sync-meta code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-light); }
+          .linked-resource-list { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.25rem; }
+          .linked-resource-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.7rem; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-sunken); }
+          .linked-resource-row strong { display: block; font-size: 0.82rem; }
+          .linked-resource-row .hint { margin: 0; }
         `
           }}
         />

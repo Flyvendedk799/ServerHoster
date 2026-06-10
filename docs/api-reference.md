@@ -96,6 +96,39 @@ Deployment row columns: `id`, `service_id`, `commit_hash`, `status` (`running`/`
 | `POST`   | `/databases/:id/seed`          | `{ sql }`                                                                | Pipe SQL into the container                         |
 | `POST`   | `/databases/link`              | `{ serviceId, databaseId: string \| null }`                              | Link/unlink a service to auto-inject `DATABASE_URL` |
 
+## Resources (dependency-aware provisioning)
+
+Managed resources are local backend stacks — a local Supabase stack, a managed Postgres/MySQL/Mongo container, Redis — provisioned per service based on a dependency scan of its repo. Registered profiles: `supabase`, `postgres`, `mysql`, `mongo`, `redis`, `manual` (`redis` is detect/plan-only — its provisioning stays on `/databases` for now). `postgres`, `mysql`, and `mongo` provision through the same primitive as `POST /databases` — the container is a first-class legacy database too — and inject `DATABASE_URL` into the linked service. Resource secrets are stored AES-256-GCM encrypted; responses only ever contain masked `value_preview`s — the service-role key, JWT secret, and internal DB URL are **never** returned by any route.
+
+| Method   | Path                                      | Body                                                                                                   | Description                                                                                    |
+| -------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `GET`    | `/resources/profiles`                     |                                                                                                        | Registered profile ids + labels                                                                |
+| `GET`    | `/resources/scans`                        |                                                                                                        | Latest persisted dependency scan per service                                                   |
+| `GET`    | `/resources/scans/:serviceId`             |                                                                                                        | Latest scan for one service (errors if never scanned)                                          |
+| `POST`   | `/resources/scans/:serviceId/run`         |                                                                                                        | Re-scan the working dir; returns `{ scan, plans, recommended }`                                |
+| `POST`   | `/resources/provision`                    | `{ serviceId, profile, mode?, restart?, name?, secrets?, disabledSecrets?, serveFunctions?, config? }` | Provision via the profile; long-running, progress streams over WS                              |
+| `GET`    | `/resources`                              |                                                                                                        | List resources with secret previews + service links                                            |
+| `GET`    | `/resources/:id`                          |                                                                                                        | Resource detail (config redacted, env values masked)                                           |
+| `POST`   | `/resources/:id/start`                    |                                                                                                        | Start — Supabase via CLI (whole stack; start/restart re-reads `supabase status` and re-records ports/URLs/keys), Postgres/MySQL/Mongo act on the backing container |
+| `POST`   | `/resources/:id/stop`                     |                                                                                                        | Stop                                                                                           |
+| `POST`   | `/resources/:id/restart`                  |                                                                                                        | Restart                                                                                        |
+| `DELETE` | `/resources/:id`                          |                                                                                                        | Remove stack + generated files; warns linked services, returns `{ ok, strandedServices }`      |
+| `GET`    | `/resources/:id/logs?tail=500&source=all` |                                                                                                        | Container logs + `supabase functions serve` output; `source=containers\|functions\|all`        |
+| `GET`    | `/resources/:id/env-requirements`         |                                                                                                        | Per-function + aggregate secret states with referencing source files                           |
+| `POST`   | `/resources/:id/secrets`                  | `{ secrets?, disable?, enable? }`                                                                      | Upsert/disable secrets; rewrites the function env file and restarts a live serve process       |
+| `POST`   | `/resources/:id/link`                     | `{ serviceId, envMap? }`                                                                               | Link (or re-link) to a service so env injection activates                                      |
+| `POST`   | `/resources/:id/unlink`                   | `{ serviceId }`                                                                                        | Deactivate a link; env injection stops immediately                                             |
+| `GET`    | `/resources/:id/bootstrap/plan`           |                                                                                                        | Introspect the local DB (role enums, profile/org tables, triggers) + ordered operation preview |
+| `POST`   | `/resources/:id/bootstrap`                | `{ email, password, fullName?, role?, makePlatformAdmin?, organization? }`                             | Create the first local user/admin/org via the local Auth admin API                             |
+
+**Provisioning modes** (`mode`, Supabase): `schema-only` (default — `supabase migration up`, never runs seeds, never imports hosted data), `schema-and-seed` (`supabase db reset`, re-applies migrations then runs `supabase/seed.sql`), `empty` (skip migrations). `config.init=true` is the explicit confirmation to run `supabase init` when the repo has no `supabase/config.toml`.
+
+**Env injection**: a linked Supabase resource injects `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and (non-static services only) `SUPABASE_SERVICE_ROLE_KEY`, plus `APP_URL` when the service has a URL. Precedence: project env → active resource links → legacy linked `DATABASE_URL` → `DATA_DIR` → service env (service env always wins). The same merged env is used at build and runtime, so static/Vite services with a repo are redeployed on provision (baked `VITE_*`) while process/docker services are restarted.
+
+**Secret states** (env-requirements + `POST /resources/:id/secrets`): `generated` (created by LocalSURV), `provided` (user-pasted), `missing-optional` (function runs degraded), `disabled` (intentionally off locally), `missing-required`. Missing optional secrets never fail provisioning — the affected functions are marked `degraded` and the logs name the missing key plus the files referencing it.
+
+**Bootstrap safety**: refuses any non-local target (`127.0.0.1` / `localhost` / `host.docker.internal` / `::1` only), is idempotent for an existing email (promotes the existing user) and an existing org slug (reuses it, with warnings), and returns `{ user_id, user_existed, profile, platform_admin, organization, membership, warnings }`. The password is used only for the local Auth admin call — never stored, never logged.
+
 ## Proxy routes
 
 | Method   | Path                                 | Body                                | Description                      |
@@ -172,18 +205,20 @@ Host-based routing: any incoming request whose `Host` header matches a `proxy_ro
 
 Events streamed to all authenticated subscribers:
 
-| `type`                | Shape                                                  | When                                                               |
-| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------ |
-| `log`                 | `{ serviceId, level, message, timestamp }`             | New log line from a service                                        |
-| `service_status`      | `{ serviceId, status, lastExitCode }`                  | Status transition                                                  |
-| `build_log`           | `{ serviceId, deploymentId, line, stream, timestamp }` | Live build output chunk                                            |
-| `build_progress`      | `{ serviceId, deploymentId, phase }`                   | Phase transitions: cloning → installing → building → done / failed |
-| `deployment_started`  | `{ serviceId, deploymentId, branch, trigger }`         | New deployment row created                                         |
-| `deployment_finished` | `{ serviceId, deploymentId, status, durationMs }`      | Deployment row finalized                                           |
-| `metrics_sample`      | `{ serviceId, cpu, memoryMb, timestamp }`              | Metrics collector recorded a sample                                |
-| `notification`        | `{ notification: { … } }`                              | New notification created                                           |
-| `tunnel_log`          | `{ line, timestamp }`                                  | Line from managed `cloudflared`                                    |
-| `tunnel_status`       | `{ running, pid?, reason? }`                           | Cloudflare Tunnel state change                                     |
+| `type`                  | Shape                                                  | When                                                                                                                 |
+| ----------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `log`                   | `{ serviceId, level, message, timestamp }`             | New log line from a service                                                                                          |
+| `service_status`        | `{ serviceId, status, lastExitCode }`                  | Status transition                                                                                                    |
+| `build_log`             | `{ serviceId, deploymentId, line, stream, timestamp }` | Live build output chunk                                                                                              |
+| `build_progress`        | `{ serviceId, deploymentId, phase }`                   | Phase transitions: cloning → installing → building → done / failed                                                   |
+| `deployment_started`    | `{ serviceId, deploymentId, branch, trigger }`         | New deployment row created                                                                                           |
+| `deployment_finished`   | `{ serviceId, deploymentId, status, durationMs }`      | Deployment row finalized                                                                                             |
+| `metrics_sample`        | `{ serviceId, cpu, memoryMb, timestamp }`              | Metrics collector recorded a sample                                                                                  |
+| `notification`          | `{ notification: { … } }`                              | New notification created                                                                                             |
+| `tunnel_log`            | `{ line, timestamp }`                                  | Line from managed `cloudflared`                                                                                      |
+| `tunnel_status`         | `{ running, pid?, reason? }`                           | Cloudflare Tunnel state change                                                                                       |
+| `resource_status`       | `{ resourceId, status, profile }`                      | Managed resource transition (provisioning → running / failed / removed)                                              |
+| `resource_provisioning` | `{ resourceId, step, message }`                        | Provisioning progress: preflight → init → start → status → migrate → functions → restart → bootstrap → done / failed |
 
 ## Example `curl`
 

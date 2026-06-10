@@ -218,6 +218,128 @@
       "type": "file_contains",
       "path": "docs/readiness-checklist.md",
       "patterns": ["Readiness Scorecard"]
+    },
+    {
+      "id": "seq10.resource_schema",
+      "sequence": 10,
+      "required": true,
+      "description": "Generic resource layer tables exist in the control-plane schema migrations.",
+      "type": "file_contains",
+      "path": "apps/server/src/db.ts",
+      "patterns": ["managed_resources", "resource_secrets", "service_resource_links", "dependency_scans"]
+    },
+    {
+      "id": "seq10.encrypted_secrets",
+      "sequence": 10,
+      "required": true,
+      "description": "Resource secrets are stored encrypted with preview-only API exposure.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/secrets.ts",
+      "patterns": ["encryptSecret", "value_preview"]
+    },
+    {
+      "id": "seq10.dependency_scan",
+      "sequence": 10,
+      "required": true,
+      "description": "Dependency scan recommends a profile, persists snapshots, and ranks Supabase above plain Postgres.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/scan.ts",
+      "patterns": ["runDependencyScan", "pickRecommended"]
+    },
+    {
+      "id": "seq10.supabase_cli",
+      "sequence": 10,
+      "required": true,
+      "description": "Supabase CLI orchestration is isolated with a fixture-tested status parser.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/supabaseCli.ts",
+      "patterns": ["checkSupabaseCli", "parseSupabaseStatus"]
+    },
+    {
+      "id": "seq10.resource_routes",
+      "sequence": 10,
+      "required": true,
+      "description": "/resources/* routes cover provisioning, env-requirements, secrets, and bootstrap.",
+      "type": "file_contains",
+      "path": "apps/server/src/routes/resources.ts",
+      "patterns": [
+        "/resources/provision",
+        "/resources/:id/env-requirements",
+        "/resources/:id/secrets",
+        "/resources/:id/bootstrap"
+      ]
+    },
+    {
+      "id": "seq10.runtime_env",
+      "sequence": 10,
+      "required": true,
+      "description": "Resource env injection is wired into the shared runtime/deploy env merge.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/runtime.ts",
+      "patterns": ["getResourceEnvForService"]
+    },
+    {
+      "id": "seq10.bootstrap_local_only",
+      "sequence": 10,
+      "required": true,
+      "description": "Bootstrap refuses non-local Supabase targets.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/bootstrap.ts",
+      "patterns": ["LOCAL_HOSTS", "Bootstrap refused"]
+    },
+    {
+      "id": "seq10.docs_flow",
+      "sequence": 10,
+      "required": true,
+      "description": "Getting-started documents the dependency-aware Supabase flow.",
+      "type": "file_contains",
+      "path": "docs/getting-started.md",
+      "patterns": ["Add Local Supabase", "supabase/tap/supabase"]
+    },
+    {
+      "id": "seq10.docs_api",
+      "sequence": 10,
+      "required": true,
+      "description": "API reference documents the /resources/* surface and WS provisioning events.",
+      "type": "file_contains",
+      "path": "docs/api-reference.md",
+      "patterns": ["/resources/provision", "resource_provisioning"]
+    },
+    {
+      "id": "seq10.docs_troubleshooting",
+      "sequence": 10,
+      "required": true,
+      "description": "Troubleshooting covers Supabase CLI missing, Docker, migrations, degraded functions, and bootstrap reachability.",
+      "type": "file_contains",
+      "path": "docs/troubleshooting.md",
+      "patterns": ["Supabase CLI missing", "degraded", "Bootstrap can't reach the local database"]
+    },
+    {
+      "id": "seq10.docs_schema",
+      "sequence": 10,
+      "required": true,
+      "description": "Configuration reference documents the resource tables and env precedence.",
+      "type": "file_contains",
+      "path": "docs/configuration.md",
+      "patterns": ["managed_resources", "resource_secrets", "active resource links"]
+    },
+    {
+      "id": "seq10.mysql_mongo_profiles",
+      "sequence": 10,
+      "required": true,
+      "description": "MySQL and Mongo resource profiles are registered with the dependency scanner.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/scan.ts",
+      "patterns": ["profiles/mysql.js", "profiles/mongo.js"]
+    },
+    {
+      "id": "seq10.supabase_restart_reparse",
+      "sequence": 10,
+      "required": true,
+      "description": "Supabase start/restart re-parses `supabase status` and re-persists ports/URLs/keys via the shared helper.",
+      "type": "file_contains",
+      "path": "apps/server/src/services/resources/profiles/supabase.ts",
+      "patterns": ["persistSupabaseStackInfo", "never go stale"]
     }
   ]
 }

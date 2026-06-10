@@ -32,6 +32,18 @@ import {
 
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
+import {
+  hostedSupabaseChosen,
+  isNonLocalUrl,
+  listResources,
+  listResourceScans,
+  runResourceScan,
+  setHostedSupabaseChosen,
+  type DependencyScan,
+  type ManagedResourceDetail,
+  type ResourceProfileId
+} from "../lib/resources";
+import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
 import { ServiceSettingsModal } from "../components/ServiceSettingsModal";
 import { GitHubDeployModal } from "../components/GitHubDeployModal";
 import { CreateServiceModal } from "../components/CreateServiceModal";
@@ -97,7 +109,15 @@ function gitSourceLabel(source: string | null | undefined): string {
 function extractDeployError(buildLog?: string): string | null {
   if (!buildLog) return null;
   const m = buildLog.match(/Deploy failed:\s*(.+)/);
-  const line = (m ? m[1] : buildLog.trim().split("\n").filter((l) => l.trim()).pop() ?? "").trim();
+  const line = (
+    m
+      ? m[1]
+      : (buildLog
+          .trim()
+          .split("\n")
+          .filter((l) => l.trim())
+          .pop() ?? "")
+  ).trim();
   if (!line) return null;
   return line.length > 140 ? `${line.slice(0, 137)}…` : line;
 }
@@ -232,6 +252,17 @@ export function ServicesPage() {
   const [githubSyncStatuses, setGithubSyncStatuses] = useState<Record<string, GithubSyncStatus>>({});
   const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
   const [forceRestartingId, setForceRestartingId] = useState<string | null>(null);
+  const [scans, setScans] = useState<Map<string, DependencyScan>>(new Map());
+  const [resources, setResources] = useState<ManagedResourceDetail[]>([]);
+  const [provisionTarget, setProvisionTarget] = useState<{
+    service: Service;
+    profile?: ResourceProfileId;
+  } | null>(null);
+  const [rescanningId, setRescanningId] = useState<string | null>(null);
+  /** Services whose service-level env points at a non-local (hosted) Supabase. */
+  const [hostedEnvServices, setHostedEnvServices] = useState<Set<string>>(new Set());
+  /** Bump to re-evaluate the client-side "use hosted Supabase" choices. */
+  const [, setHostedChoiceVersion] = useState(0);
 
   async function load(): Promise<void> {
     try {
@@ -256,6 +287,15 @@ export function ServicesPage() {
         silent: true
       })
         .then((rows) => setEnvRequirements(new Map(rows.map((r) => [r.service_id, r.requirements]))))
+        .catch(() => undefined);
+      listResourceScans({ silent: true })
+        .then((rows) => {
+          setScans(new Map(rows.map((scan) => [scan.service_id, scan])));
+          void detectHostedSupabaseEnv(rows);
+        })
+        .catch(() => undefined);
+      listResources({ silent: true })
+        .then(setResources)
         .catch(() => undefined);
       const logPairs = await Promise.all(
         serviceData.slice(0, 20).map(async (service) => {
@@ -294,6 +334,88 @@ export function ServicesPage() {
     } catch {
       setGithubSyncStatuses({});
     }
+  }
+
+  /**
+   * Spec "Notifications": flag services whose service-level SUPABASE_URL /
+   * VITE_SUPABASE_URL points at a non-local host while a local Supabase is
+   * available (high/medium-confidence scan). Only those services' env rows
+   * are fetched, silently and best-effort.
+   */
+  async function detectHostedSupabaseEnv(rows: DependencyScan[]): Promise<void> {
+    const candidates = rows.filter(
+      (scan) => scan.profile === "supabase" && (scan.confidence === "high" || scan.confidence === "medium")
+    );
+    if (candidates.length === 0) {
+      setHostedEnvServices(new Set());
+      return;
+    }
+    const flagged = new Set<string>();
+    await Promise.all(
+      candidates.slice(0, 25).map(async (scan) => {
+        try {
+          const env = await api<Array<{ key: string; value: string; is_secret: number }>>(
+            `/services/${scan.service_id}/env`,
+            { silent: true }
+          );
+          const hosted = env.some(
+            (row) =>
+              ["SUPABASE_URL", "VITE_SUPABASE_URL"].includes(row.key) &&
+              !row.is_secret &&
+              isNonLocalUrl(row.value)
+          );
+          if (hosted) flagged.add(scan.service_id);
+        } catch {
+          /* best-effort */
+        }
+      })
+    );
+    setHostedEnvServices(flagged);
+  }
+
+  /** The active supabase resource linked to a service, when one exists. */
+  function serviceSupabaseResource(serviceId: string): ManagedResourceDetail | null {
+    return (
+      resources.find(
+        (resource) =>
+          resource.profile === "supabase" &&
+          resource.links.some((link) => link.service_id === serviceId && link.active)
+      ) ?? null
+    );
+  }
+
+  /** Latest scan when it recommends supabase with usable confidence. */
+  function supabaseScan(serviceId: string): DependencyScan | null {
+    const scan = scans.get(serviceId);
+    if (!scan || scan.profile !== "supabase") return null;
+    if (scan.confidence !== "high" && scan.confidence !== "medium") return null;
+    return scan;
+  }
+
+  async function rescanService(service: Service): Promise<void> {
+    setRescanningId(service.id);
+    try {
+      const result = await runResourceScan(service.id, { silent: true });
+      setScans((prev) => new Map(prev).set(service.id, result.scan));
+      toast.success(
+        result.recommended
+          ? `Detected ${result.recommended.profile} (${result.recommended.confidence} confidence)`
+          : "No backend dependency detected"
+      );
+      void detectHostedSupabaseEnv([result.scan]);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Dependency scan failed");
+    } finally {
+      setRescanningId(null);
+    }
+  }
+
+  function chooseHostedSupabase(service: Service): void {
+    setHostedSupabaseChosen(service.id, true);
+    setHostedChoiceVersion((v) => v + 1);
+    toast.info(
+      `${service.name} keeps its hosted Supabase env. You can provision a local stack later from this card or the Databases page.`
+    );
   }
 
   useEffect(() => {
@@ -339,6 +461,11 @@ export function ServicesPage() {
             });
           }
         }
+        void load();
+      }
+      if (typed.type === "resource_status") {
+        // A resource finished provisioning / changed state / was removed —
+        // refresh cards so prompts and status chips stay honest.
         void load();
       }
       if (typed.type === "service_lifecycle") {
@@ -567,6 +694,7 @@ export function ServicesPage() {
 
   function databaseServiceForStack(stack: ServiceStack): Service | null {
     return (
+      stack.services.find((service) => supabaseScan(service.id) && !serviceSupabaseResource(service.id)) ??
       stack.services.find((service) => embeddedDbs.has(service.id)) ??
       stack.services.find((service) => {
         const orphan = orphans.get(service.id);
@@ -581,6 +709,10 @@ export function ServicesPage() {
   function openDatabaseFlowForStack(stack: ServiceStack): void {
     const service = databaseServiceForStack(stack);
     if (!service) return;
+    if (supabaseScan(service.id) && !serviceSupabaseResource(service.id)) {
+      setProvisionTarget({ service, profile: "supabase" });
+      return;
+    }
     const embedded = embeddedDbs.get(service.id);
     if (embedded) {
       setPromoteTarget(embedded);
@@ -592,6 +724,7 @@ export function ServicesPage() {
   function databaseActionLabel(stack: ServiceStack): string {
     const service = databaseServiceForStack(stack);
     if (!service) return "Add database";
+    if (supabaseScan(service.id) && !serviceSupabaseResource(service.id)) return "Add Local Supabase";
     return embeddedDbs.has(service.id) ? "Promote data" : "Add database";
   }
 
@@ -672,10 +805,7 @@ export function ServicesPage() {
    * hatch. Grounded in the status strings this page actually emits:
    * running / starting / stopping / stopped / crashed / building / error.
    */
-  function lifecycleDisabledReason(
-    status: string,
-    action: "start" | "stop" | "restart"
-  ): string | null {
+  function lifecycleDisabledReason(status: string, action: "start" | "stop" | "restart"): string | null {
     if (action === "start") {
       if (status === "running") return "Already running";
       if (status === "starting") return "Already starting";
@@ -726,8 +856,7 @@ export function ServicesPage() {
     operation: ServiceOperation | undefined,
     status: string
   ): { activeIndex: number; failed: boolean } {
-    const failed =
-      operation?.status === "error" || status === "crashed" || status === "error";
+    const failed = operation?.status === "error" || status === "crashed" || status === "error";
     // A finished, healthy runtime: every step settled, nothing in-flight.
     if (operation?.status === "success" || status === "running") {
       return { activeIndex: LAUNCH_STAGES.length, failed };
@@ -803,9 +932,7 @@ export function ServicesPage() {
   function stackActionInFlight(stack: ServiceStack, action: "start" | "stop" | "restart"): boolean {
     return stack.services.some((service) => {
       const op = operations[service.id];
-      return (
-        op?.action === action && (op.status === "queued" || op.status === "active")
-      );
+      return op?.action === action && (op.status === "queued" || op.status === "active");
     });
   }
 
@@ -1255,8 +1382,8 @@ export function ServicesPage() {
             <AlertTriangle size={48} />
             <h3>Couldn't load your services</h3>
             <p>
-              We couldn't reach the LocalSURV runtime to fetch your services. Check that it's running,
-              then try again.
+              We couldn't reach the LocalSURV runtime to fetch your services. Check that it's running, then
+              try again.
             </p>
             <button className="primary" onClick={() => void load()}>
               <RotateCw size={16} /> Retry
@@ -1267,8 +1394,8 @@ export function ServicesPage() {
             <Search size={40} className="text-muted" />
             <h3>No services match</h3>
             <p className="muted small">
-              No services match your current search or environment filter. Try a different query or
-              clear the filters to see everything.
+              No services match your current search or environment filter. Try a different query or clear the
+              filters to see everything.
             </p>
             <button className="ghost" onClick={clearFilters}>
               <XCircle size={16} /> Clear filters
@@ -1474,6 +1601,24 @@ export function ServicesPage() {
                               <span>{db.container_status?.state ?? "stopped"}</span>
                             </Link>
                           ))}
+                          {stack.services
+                            .map((service) => serviceSupabaseResource(service.id))
+                            .filter(
+                              (resource, index, list): resource is ManagedResourceDetail =>
+                                resource !== null && list.indexOf(resource) === index
+                            )
+                            .map((resource) => (
+                              <Link
+                                key={resource.id}
+                                to="/databases"
+                                className={`resource-node database ${resource.status}`}
+                                data-tooltip="Local Supabase stack — manage it on the Databases page"
+                              >
+                                <Zap size={16} />
+                                <strong>Supabase</strong>
+                                <span>{resource.status}</span>
+                              </Link>
+                            ))}
                         </div>
                         {stack.databases.length > 0 && (
                           <div className="stack-database-rail">
@@ -1642,6 +1787,116 @@ export function ServicesPage() {
                                       )}
 
                                       {(() => {
+                                        // Dependency-aware prompt (Database-Tracker Phase 6):
+                                        // linked stack chip > Supabase prompt > Postgres/SQLite
+                                        // prompt > nothing.
+                                        const linkedSupabase = serviceSupabaseResource(service.id);
+                                        if (linkedSupabase) {
+                                          return (
+                                            <div className="res-linked-chip-row">
+                                              <Link
+                                                to="/databases"
+                                                className={`res-linked-chip ${linkedSupabase.status}`}
+                                                data-tooltip="Open the stack console on the Databases page"
+                                              >
+                                                <DatabaseIcon size={12} />
+                                                Local Supabase · {linkedSupabase.status}
+                                              </Link>
+                                            </div>
+                                          );
+                                        }
+                                        const sbScan = supabaseScan(service.id);
+                                        if (sbScan && hostedSupabaseChosen(service.id)) {
+                                          return (
+                                            <div className="res-linked-chip-row">
+                                              <button
+                                                type="button"
+                                                className="res-linked-chip hosted"
+                                                onClick={() => {
+                                                  setHostedSupabaseChosen(service.id, false);
+                                                  setHostedChoiceVersion((v) => v + 1);
+                                                }}
+                                                data-tooltip="You chose hosted Supabase for this app. Click to reconsider the local stack."
+                                              >
+                                                Hosted Supabase (chosen)
+                                              </button>
+                                            </div>
+                                          );
+                                        }
+                                        if (sbScan) {
+                                          const otherDrivers = Array.from(
+                                            new Set(
+                                              (orphans.get(service.id)?.code_signals ?? [])
+                                                .map((s) => s.driver)
+                                                .filter((d) => !/supabase/i.test(d))
+                                            )
+                                          );
+                                          return (
+                                            <div className="res-supabase-banner">
+                                              <DatabaseIcon size={14} />
+                                              <div className="res-supabase-text">
+                                                <strong>Supabase app detected</strong>
+                                                <span>
+                                                  Run a local Supabase stack from this repo's migrations. No
+                                                  hosted data will be copied.
+                                                </span>
+                                                {hostedEnvServices.has(service.id) && (
+                                                  <span className="res-hosted-note">
+                                                    <AlertTriangle size={11} /> This app currently points at
+                                                    hosted Supabase — a local stack is available.
+                                                  </span>
+                                                )}
+                                                {otherDrivers.length > 0 && (
+                                                  <span className="muted tiny">
+                                                    Also detected: {otherDrivers.slice(0, 4).join(", ")}
+                                                    {otherDrivers.length > 4 ? "…" : ""}
+                                                  </span>
+                                                )}
+                                                <span className="res-supabase-actions">
+                                                  <button
+                                                    className="ghost tiny"
+                                                    onClick={() =>
+                                                      setProvisionTarget({ service, profile: "supabase" })
+                                                    }
+                                                  >
+                                                    Review requirements
+                                                  </button>
+                                                  <button
+                                                    className="ghost tiny"
+                                                    onClick={() => chooseHostedSupabase(service)}
+                                                  >
+                                                    Use hosted Supabase
+                                                  </button>
+                                                  <button
+                                                    className="ghost tiny"
+                                                    onClick={() => void quickAddDatabase(service)}
+                                                  >
+                                                    Use plain Postgres anyway
+                                                  </button>
+                                                  <button
+                                                    className="ghost tiny"
+                                                    disabled={rescanningId === service.id}
+                                                    onClick={() => void rescanService(service)}
+                                                  >
+                                                    {rescanningId === service.id ? (
+                                                      <Loader2 size={11} className="animate-spin" />
+                                                    ) : (
+                                                      "Rescan"
+                                                    )}
+                                                  </button>
+                                                </span>
+                                              </div>
+                                              <button
+                                                className="primary xsmall"
+                                                onClick={() =>
+                                                  setProvisionTarget({ service, profile: "supabase" })
+                                                }
+                                              >
+                                                Add Local Supabase
+                                              </button>
+                                            </div>
+                                          );
+                                        }
                                         const orphan = orphans.get(service.id);
                                         const embedded = embeddedDbs.get(service.id);
                                         const isFrontend =
@@ -1667,8 +1922,7 @@ export function ServicesPage() {
                                         const detail = embedded
                                           ? `${embedded.file_path} won't survive container recreates.`
                                           : `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "…" : ""}. Add Postgres so data persists.`;
-                                        const dataDir =
-                                          service.data_dir_container ?? service.data_dir;
+                                        const dataDir = service.data_dir_container ?? service.data_dir;
                                         return (
                                           <div className="db-suggest-banner">
                                             <DatabaseIcon size={14} />
@@ -1749,58 +2003,58 @@ export function ServicesPage() {
                                       {(() => {
                                         const launch = launchPanelState(op, service.status);
                                         return (
-                                      <div
-                                        className={`launch-panel ${op?.status ?? service.status}${
-                                          launch.failed ? " error crashed" : ""
-                                        }`}
-                                      >
-                                        <div className="launch-panel-head">
-                                          <div className="row">
-                                            {operationIcon(op, service.status)}
-                                            <span className="tiny uppercase font-bold">
-                                              {op?.stage ?? service.status}
-                                            </span>
-                                          </div>
-                                          {url && service.status === "running" && (
-                                            <a
-                                              className="tiny link"
-                                              href={url}
-                                              target="_blank"
-                                              rel="noreferrer"
-                                            >
-                                              Open live app
-                                            </a>
-                                          )}
-                                        </div>
-                                        <p className="launch-message">{operationLabel(op, service)}</p>
-                                        <div className="launch-steps">
-                                          {LAUNCH_STAGES.map((stage, index) => {
-                                            const complete = index < launch.activeIndex;
-                                            const active = index === launch.activeIndex;
-                                            return (
-                                              <span
-                                                key={stage}
-                                                className={`launch-step${complete ? " complete" : ""}${
-                                                  active ? " active" : ""
-                                                }`}
-                                              />
-                                            );
-                                          })}
-                                        </div>
-                                        {recent.length > 0 && (
-                                          <div className="mini-log">
-                                            {recent.slice(0, 3).map((log, index) => (
-                                              <div
-                                                key={`${log.timestamp ?? index}-${index}`}
-                                                className={`mini-log-line ${log.level ?? "info"}`}
-                                              >
-                                                <span>{log.level ?? "info"}</span>
-                                                <p>{log.message}</p>
+                                          <div
+                                            className={`launch-panel ${op?.status ?? service.status}${
+                                              launch.failed ? " error crashed" : ""
+                                            }`}
+                                          >
+                                            <div className="launch-panel-head">
+                                              <div className="row">
+                                                {operationIcon(op, service.status)}
+                                                <span className="tiny uppercase font-bold">
+                                                  {op?.stage ?? service.status}
+                                                </span>
                                               </div>
-                                            ))}
+                                              {url && service.status === "running" && (
+                                                <a
+                                                  className="tiny link"
+                                                  href={url}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                >
+                                                  Open live app
+                                                </a>
+                                              )}
+                                            </div>
+                                            <p className="launch-message">{operationLabel(op, service)}</p>
+                                            <div className="launch-steps">
+                                              {LAUNCH_STAGES.map((stage, index) => {
+                                                const complete = index < launch.activeIndex;
+                                                const active = index === launch.activeIndex;
+                                                return (
+                                                  <span
+                                                    key={stage}
+                                                    className={`launch-step${complete ? " complete" : ""}${
+                                                      active ? " active" : ""
+                                                    }`}
+                                                  />
+                                                );
+                                              })}
+                                            </div>
+                                            {recent.length > 0 && (
+                                              <div className="mini-log">
+                                                {recent.slice(0, 3).map((log, index) => (
+                                                  <div
+                                                    key={`${log.timestamp ?? index}-${index}`}
+                                                    className={`mini-log-line ${log.level ?? "info"}`}
+                                                  >
+                                                    <span>{log.level ?? "info"}</span>
+                                                    <p>{log.message}</p>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
                                           </div>
-                                        )}
-                                      </div>
                                         );
                                       })()}
                                     </div>
@@ -1812,10 +2066,7 @@ export function ServicesPage() {
                                             service.status,
                                             "start"
                                           );
-                                          const stopReason = lifecycleDisabledReason(
-                                            service.status,
-                                            "stop"
-                                          );
+                                          const stopReason = lifecycleDisabledReason(service.status, "stop");
                                           const restartReason = lifecycleDisabledReason(
                                             service.status,
                                             "restart"
@@ -1829,8 +2080,7 @@ export function ServicesPage() {
                                                 disabled={actionBusy || Boolean(startReason)}
                                                 aria-label={`Start ${service.name}`}
                                                 data-tooltip={
-                                                  startReason ??
-                                                  "Start service and stream launch progress"
+                                                  startReason ?? "Start service and stream launch progress"
                                                 }
                                                 title={startReason ?? undefined}
                                                 onClick={() => serviceAction(service.id, "start")}
@@ -1846,8 +2096,7 @@ export function ServicesPage() {
                                                 disabled={actionBusy || Boolean(stopReason)}
                                                 aria-label={`Stop ${service.name}`}
                                                 data-tooltip={
-                                                  stopReason ??
-                                                  "Stop service and show shutdown progress"
+                                                  stopReason ?? "Stop service and show shutdown progress"
                                                 }
                                                 title={stopReason ?? undefined}
                                                 onClick={() => serviceAction(service.id, "stop")}
@@ -1863,8 +2112,7 @@ export function ServicesPage() {
                                                 disabled={actionBusy || Boolean(restartReason)}
                                                 aria-label={`Restart ${service.name}`}
                                                 data-tooltip={
-                                                  restartReason ??
-                                                  "Restart service with live progress"
+                                                  restartReason ?? "Restart service with live progress"
                                                 }
                                                 title={restartReason ?? undefined}
                                                 onClick={() => serviceAction(service.id, "restart")}
@@ -2033,6 +2281,15 @@ export function ServicesPage() {
         />
       )}
       {goPublicId && <GoPublicWizard serviceId={goPublicId} onClose={() => setGoPublicId(null)} />}
+      {provisionTarget && (
+        <ResourceProvisionModal
+          serviceId={provisionTarget.service.id}
+          serviceName={provisionTarget.service.name}
+          profile={provisionTarget.profile}
+          onClose={() => setProvisionTarget(null)}
+          onProvisioned={() => void load()}
+        />
+      )}
       {promoteTarget && (
         <PromoteEmbeddedDbModal
           embedded={promoteTarget}

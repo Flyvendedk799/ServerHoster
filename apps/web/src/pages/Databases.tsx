@@ -6,6 +6,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
 import { PromoteEmbeddedDbModal, type EmbeddedDb } from "../components/PromoteEmbeddedDbModal";
 import { TransferDatabaseModal } from "../components/TransferDatabaseModal";
+import { ResourceStacks } from "../components/ResourceStacks";
 import { SqlFileInput } from "../components/SqlFileInput";
 import { CardSkeleton } from "../components/ui/Skeleton";
 import {
@@ -441,6 +442,9 @@ export function DatabasesPage() {
         </div>
       </section>
 
+      {/* Rich stacks (local Supabase) — never rendered as plain databases. */}
+      <ResourceStacks services={services} />
+
       {(embedded.length > 0 || orphans.length > 0) && (
         <section className="embedded-section">
           <header className="embedded-header">
@@ -602,10 +606,7 @@ export function DatabasesPage() {
                           const inFlight = backingUpId === row.id;
                           if (!stale) {
                             return (
-                              <span
-                                className="db-stat-chip"
-                                data-tooltip="Most recent backup snapshot"
-                              >
+                              <span className="db-stat-chip" data-tooltip="Most recent backup snapshot">
                                 <FileClock size={11} /> backup{" "}
                                 {fmtRelative(row.stats?.last_backup_at ?? null)}
                               </span>

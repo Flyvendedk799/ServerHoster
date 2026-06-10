@@ -51,6 +51,37 @@ Check in order:
 - **Image pull failed** — Check build log for "no matching manifest" or auth errors. For private registries, log in on the host with `docker login`; SURVHub uses the daemon's credential helpers transparently.
 - **Port already mapped** — Docker rejects container starts when the host port is in use. Change the service port.
 
+## Local Supabase provisioning fails
+
+**Symptoms:** `POST /resources/provision` errors, resource status flips to `failed`, the `resource_provisioning` event stream ends with `failed`.
+
+The failed resource row is **kept** with the error retained in its config so you can diagnose it — fix the cause, delete the resource, and re-provision. The stack is stopped best-effort on failure.
+
+- **Supabase CLI missing** — Preflight fails with "Supabase CLI not found". Install it with `brew install supabase/tap/supabase` (macOS/Linuxbrew) or see [Supabase's CLI guide](https://supabase.com/docs/guides/local-development/cli/getting-started), then retry. Other resource profiles (plain Postgres, Redis) are unaffected.
+- **Docker unavailable** — Preflight pings the Docker daemon before touching the CLI. Same fix as any Docker failure: start Docker Desktop / `systemctl start docker` and check the system health card.
+- **No `supabase/config.toml`** — Provisioning refuses unless you explicitly confirm initialization (`config.init=true`, the "Initialize" option in the modal), which runs `supabase init` in the service working dir.
+- **Migration failure** — `supabase migration up` output is included in the error. Migrations run against the **local** stack only (state is recorded in `supabase_migrations.schema_migrations`); fix the offending SQL in `supabase/migrations` and re-provision. Note "schema only" means "run migrations" — migration files that contain reference/bootstrap inserts will still insert those rows.
+- **First start is slow** — `supabase start` pulls the entire stack's images on first run; the timeout is deliberately generous (15 min). Subsequent starts are fast.
+
+## Edge Function marked degraded
+
+**Symptoms:** `GET /resources/:id/env-requirements` shows a function with `status: "degraded"`, function logs contain `[functions] <name>: missing secret KEY (missing-optional) — referenced by <files>`.
+
+This is by design: missing optional/external secrets (`OPENAI_API_KEY`, `RESEND_API_KEY`, any `*_API_KEY`/`*_SECRET`/`*_TOKEN`) never fail provisioning. The log line names the exact missing key and the files referencing it. Either:
+
+- **Provide the key** — `POST /resources/:id/secrets` with `{ "secrets": { "KEY": "value" } }` (or paste it in the UI). The function env file is rewritten and a live `supabase functions serve` process is restarted automatically.
+- **Disable it locally** — `{ "disable": ["KEY"] }` marks the feature intentionally off; the function shows `disabled` instead of `degraded`.
+
+A `missing-required` state (an auto-generated key that should exist, like `SUPABASE_SERVICE_ROLE_KEY`) means the stack didn't report it — check `supabase status` in the service working dir and re-provision.
+
+## Bootstrap can't reach the local database
+
+**Symptoms:** `GET /resources/:id/bootstrap/plan` returns 502, or the request is rejected with `Bootstrap refused: … points at non-local host`.
+
+- **Stack not running** — Bootstrap introspects the live local Postgres. Start the resource (`POST /resources/:id/start`) and confirm containers are up with `docker ps` or `supabase status` in the working dir.
+- **Non-local URL refusal is intentional** — Bootstrap only ever targets `127.0.0.1` / `localhost` / `host.docker.internal` / `::1`. It will never run against a hosted Supabase project; that's a safety guarantee, not a bug.
+- **502 with the stack up** — The DB connection details were captured from `supabase status` at provision time. If you've changed ports in `supabase/config.toml` since, restart the resource (`POST /resources/:id/restart`) — start/restart re-runs `supabase status` and re-records the ports, URLs, and keys (and rewrites the function env file + restarts a live `functions serve` process so Edge Functions pick up the refreshed values too).
+
 ## WebSocket disconnects / empty dashboard
 
 - **Auth token expired** — Log out and log back in. Sessions default to 12h.

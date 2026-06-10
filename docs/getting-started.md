@@ -6,7 +6,8 @@ From `git clone` to a live service on your own hardware in about five minutes.
 
 - **Node.js 20 or later** (`node --version`)
 - **Git** (`git --version`)
-- **Docker** — required for Docker-typed services and managed databases. Not strictly required if you only run Node/Python process services.
+- **Docker** — required for Docker-typed services, managed databases, and local Supabase stacks. Not strictly required if you only run Node/Python process services.
+- **Supabase CLI** — only needed for the local Supabase flow (step 9): `brew install supabase/tap/supabase`, or see [Supabase's install guide](https://supabase.com/docs/guides/local-development/cli/getting-started)
 - **A port you control** — 80/443 if you want Let's Encrypt HTTP-01, or nothing exposed if you're using Cloudflare Tunnel.
 
 ## 2. Clone and install
@@ -91,7 +92,34 @@ If you don't want to open ports 80/443 on your router:
 5. Click **Start** — LocalSURV will spawn `cloudflared tunnel run` as a managed child process, with auto-restart and a live tail of its output
 6. Any domain you add to a service will now auto-register as a CNAME in Cloudflare and an ingress rule in the tunnel
 
-## 9. (Optional) Add a database
+## 9. (Optional) Add a database or local backend stack
+
+LocalSURV is **dependency-aware**: it scans a service's repo for the backend it actually uses and offers the right local resource, instead of assuming every app wants a plain `DATABASE_URL`.
+
+The scan detects:
+
+- **Supabase** — `@supabase/supabase-js` in `package.json`, `supabase/config.toml`, `supabase/migrations`, `supabase/functions`, `VITE_SUPABASE_*` env keys → offers **Add Local Supabase**
+- **Postgres** — `pg` / Prisma / Drizzle drivers → offers **Add Postgres**
+- **MySQL** — `mysql` / `mysql2` (and pymysql, go-sql-driver, …) drivers → offers a managed MySQL container with `DATABASE_URL` injection
+- **MongoDB** — `mongodb` / `mongoose` (and pymongo, mongo-driver, …) drivers → offers a managed Mongo container with `DATABASE_URL` injection
+- **Redis** — redis client packages → offers managed Redis
+- Nothing detected → pick a provisioning profile manually
+
+A Supabase app that also carries `pg`/Prisma deps is still recommended Supabase — it's never mislabeled as plain Postgres.
+
+### The Supabase path
+
+Prerequisites: **Docker** running, plus the **Supabase CLI** — `brew install supabase/tap/supabase` (or see [Supabase's CLI guide](https://supabase.com/docs/guides/local-development/cli/getting-started)).
+
+1. **Detect** — the service card shows "Supabase detected" after a scan (`POST /resources/scans/:serviceId/run`)
+2. **Add Local Supabase** — LocalSURV runs `supabase start` from the service's working directory and parses `supabase status` for the API/Studio/DB URLs, keys, and ports
+3. **Schema only** (the default) — applies `supabase/migrations` via `supabase migration up`. **No hosted data is ever copied** — no Auth users, no storage files, no rows. Pick "Schema + seed" explicitly if you want `supabase/seed.sql` to run
+4. **Secrets** — generated keys (anon, service-role, JWT) are stored encrypted; optional external provider keys (`OPENAI_API_KEY`, `RESEND_API_KEY`, …) referenced by Edge Functions can be pasted in or disabled locally — missing ones just mark the affected function _degraded_, never fail provisioning
+5. **Bootstrap** — create the first local user (and optionally platform admin + organization) from a preview built by introspecting the local database's actual schema — no manual SQL
+
+The service is then linked and gets `VITE_SUPABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, etc. injected at build and runtime — static/Vite builds are redeployed automatically since `VITE_*` is baked at build time.
+
+### Plain databases
 
 Go to **Databases → Create database**:
 

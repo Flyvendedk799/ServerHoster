@@ -13,7 +13,9 @@ import { encryptSecret } from "../security.js";
 import {
   buildConnectionString,
   containerAction,
+  containerNameForDatabase,
   createBackup,
+  createManagedDatabase,
   getContainerLogs,
   getContainerStatus,
   getDatabase,
@@ -49,20 +51,6 @@ const linkSchema = z.object({ serviceId: z.string(), databaseId: z.string().null
 const seedSchema = z.object({ sql: z.string().min(1) });
 const restoreSchema = z.object({ backupId: z.string() });
 
-const DATABASE_INTERNAL_PORT: Record<"postgres" | "mysql" | "redis" | "mongo", number> = {
-  postgres: 5432,
-  mysql: 3306,
-  redis: 6379,
-  mongo: 27017
-};
-
-const DATABASE_DATA_PATH: Record<"postgres" | "mysql" | "redis" | "mongo", string> = {
-  postgres: "/var/lib/postgresql/data",
-  mysql: "/var/lib/mysql",
-  redis: "/data",
-  mongo: "/data/db"
-};
-
 const promoteSchema = z.object({
   mode: z.enum(["managed", "external"]),
   // managed mode: spin up a new Postgres for this service
@@ -95,13 +83,6 @@ const transferSchema = z.object({
       { message: "externalUrl must be a valid URL" }
     )
 });
-
-async function pullImage(ctx: AppContext, image: string): Promise<void> {
-  const stream = await ctx.docker.pull(image);
-  await new Promise<void>((resolve, reject) => {
-    ctx.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve()));
-  });
-}
 
 export function registerDatabaseRoutes(ctx: AppContext): void {
   ctx.app.get("/databases", async () => {
@@ -143,102 +124,15 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
     // Reject up front if the requested host port is already claimed by another
     // service or database — avoids a doomed container create + a port clash.
     assertPortAvailable(ctx, p.port);
-    const id = nanoid();
-    const imageMap: Record<string, string> = {
-      postgres: "postgres:16",
-      mysql: "mysql:8",
-      redis: "redis:7",
-      mongo: "mongo:8"
-    };
-
-    const username =
-      p.username ??
-      (p.engine === "postgres"
-        ? "postgres"
-        : p.engine === "mysql"
-          ? "root"
-          : p.engine === "mongo"
-            ? "admin"
-            : "");
-    const password = p.password ?? "survhub";
-    const databaseName =
-      p.databaseName ??
-      (p.engine === "postgres"
-        ? "postgres"
-        : p.engine === "mysql"
-          ? p.name.replace(/-/g, "_")
-          : p.engine === "mongo"
-            ? "admin"
-            : "");
-
-    const envMap: Record<string, string[]> = {
-      postgres: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
-      mysql: [`MYSQL_ROOT_PASSWORD=${password}`, `MYSQL_DATABASE=${databaseName}`],
-      redis: [],
-      mongo: [`MONGO_INITDB_ROOT_USERNAME=${username}`, `MONGO_INITDB_ROOT_PASSWORD=${password}`]
-    };
-
-    const containerName = `survhub-db-${id.slice(0, 8)}`;
-    const internalPort = DATABASE_INTERNAL_PORT[p.engine];
-    let containerId = "";
-    try {
-      await pullImage(ctx, imageMap[p.engine]);
-      const container = await ctx.docker.createContainer({
-        Image: imageMap[p.engine],
-        name: containerName,
-        Env: envMap[p.engine],
-        ExposedPorts: { [`${internalPort}/tcp`]: {} },
-        HostConfig: {
-          PortBindings: { [`${internalPort}/tcp`]: [{ HostPort: String(p.port) }] },
-          RestartPolicy: { Name: "unless-stopped" },
-          // Key the named volume on the unique DB id, NOT (engine, name): two
-          // databases sharing a user-facing name across projects must never
-          // mount the same data + credentials (silent cross-project bleed).
-          // Mirrors the id-scoped pattern the promote path already uses.
-          Binds: [`survhub_db_${id}:${DATABASE_DATA_PATH[p.engine]}`]
-        }
-      });
-      await container.start();
-      containerId = container.id;
-    } catch (error) {
-      throw new Error(
-        `Database container create/start failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-
-    const row: DatabaseRow = {
-      id,
-      project_id: p.projectId,
+    return createManagedDatabase(ctx, {
+      projectId: p.projectId,
       name: p.name,
       engine: p.engine,
       port: p.port,
-      container_id: containerId,
-      connection_string: "",
-      username,
-      password,
-      database_name: databaseName,
-      created_at: nowIso()
-    };
-    row.connection_string = buildConnectionString(row);
-
-    ctx.db
-      .prepare(
-        "INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, username, password, database_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      )
-      .run(
-        row.id,
-        row.project_id,
-        row.name,
-        row.engine,
-        row.port,
-        row.container_id,
-        row.connection_string,
-        row.username,
-        row.password,
-        row.database_name,
-        row.created_at
-      );
-    return row;
+      username: p.username,
+      password: p.password,
+      databaseName: p.databaseName
+    });
   });
 
   ctx.app.post("/databases/:id/start", async (req) => {
@@ -438,69 +332,30 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
           "SELECT * FROM databases WHERE project_id = ? AND engine = 'postgres' AND name = ? ORDER BY created_at DESC LIMIT 1"
         )
         .get(service.project_id, `${service.name}-db`) as DatabaseRow | undefined);
-    let containerName = row?.container_id || (row ? `survhub-db-${row.id.slice(0, 8)}` : "");
+    let containerName = row?.container_id || (row ? containerNameForDatabase(row) : "");
     if (!row) {
-      const id = nanoid();
       // Skip ports already reserved by any service/database row so a freed-but-
       // remembered port isn't re-handed to this managed Postgres.
       const port = await findFreePort(54320, 54420, dbReservedPorts(ctx));
-      const username = "postgres";
-      const password = nanoid(16);
       const databaseName = (p.databaseName ?? service.name).replace(/[^a-zA-Z0-9_]/g, "_") || "appdb";
-      containerName = `survhub-db-${id.slice(0, 8)}`;
-      let containerId = "";
       try {
-        await pullImage(ctx, "postgres:16");
-        const container = await ctx.docker.createContainer({
-          Image: "postgres:16",
-          name: containerName,
-          Env: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
-          ExposedPorts: { [`${DATABASE_INTERNAL_PORT.postgres}/tcp`]: {} },
-          HostConfig: {
-            PortBindings: { [`${DATABASE_INTERNAL_PORT.postgres}/tcp`]: [{ HostPort: String(port) }] },
-            RestartPolicy: { Name: "unless-stopped" },
-            Binds: [`survhub_postgres_promote_${id.slice(0, 8)}:${DATABASE_DATA_PATH.postgres}`]
-          }
+        // Compatibility wrapper: the actual container + row creation lives in
+        // the shared primitive used by POST /databases and the postgres profile.
+        row = await createManagedDatabase(ctx, {
+          projectId: service.project_id,
+          name: `${service.name}-db`,
+          engine: "postgres",
+          port,
+          username: "postgres",
+          password: nanoid(16),
+          databaseName
         });
-        await container.start();
-        containerId = container.id;
       } catch (error) {
         throw new Error(
           `Failed to provision managed Postgres: ${error instanceof Error ? error.message : String(error)}`
         );
       }
-
-      row = {
-        id,
-        project_id: service.project_id,
-        name: `${service.name}-db`,
-        engine: "postgres",
-        port,
-        container_id: containerId,
-        connection_string: "",
-        username,
-        password,
-        database_name: databaseName,
-        created_at: nowIso()
-      };
-      row.connection_string = buildConnectionString(row);
-      ctx.db
-        .prepare(
-          "INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, username, password, database_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        .run(
-          row.id,
-          row.project_id,
-          row.name,
-          row.engine,
-          row.port,
-          row.container_id,
-          row.connection_string,
-          row.username,
-          row.password,
-          row.database_name,
-          row.created_at
-        );
+      containerName = row.container_id || containerNameForDatabase(row);
     }
 
     // Postgres needs a moment after first start before it accepts connections.

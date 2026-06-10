@@ -366,7 +366,57 @@ const migrations = [
   // child spawned detached (which survives a ServerHoster restart) can be
   // ADOPTED on boot — otherwise it shows as "stopped" while still live, and a
   // force-restart spawns a second instance that collides on the port.
-  "ALTER TABLE services ADD COLUMN runtime_pgid INTEGER"
+  "ALTER TABLE services ADD COLUMN runtime_pgid INTEGER",
+  // Generic resource layer (Database-Tracker Phase 1) — managed resources are
+  // provisioned local dependencies (Postgres, Supabase stacks, Redis, …)
+  // described by a resource profile. `databases` + `services.linked_database_id`
+  // stay untouched for backward compatibility.
+  `CREATE TABLE IF NOT EXISTS managed_resources (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    name TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    ports_json TEXT NOT NULL DEFAULT '{}',
+    containers_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  // resource_secrets.value is ALWAYS stored AES-256-GCM encrypted (same path
+  // as env_vars secrets); API responses only ever expose a masked preview.
+  `CREATE TABLE IF NOT EXISTS resource_secrets (
+    id TEXT PRIMARY KEY,
+    resource_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    is_generated INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(resource_id, key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS service_resource_links (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    env_map_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, resource_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS dependency_scans (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    profile TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    signals_json TEXT NOT NULL,
+    env_requirements_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_managed_resources_project ON managed_resources(project_id)",
+  "CREATE INDEX IF NOT EXISTS idx_service_resource_links_service ON service_resource_links(service_id)",
+  "CREATE INDEX IF NOT EXISTS idx_dependency_scans_service ON dependency_scans(service_id, created_at DESC)"
 ];
 
 for (const statement of migrations) {

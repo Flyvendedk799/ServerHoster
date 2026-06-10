@@ -18,6 +18,7 @@ import { createNotification } from "./notifications.js";
 
 const exec = promisify(execFile);
 import { buildConnectionString, getDatabase } from "./databases.js";
+import { getResourceEnvForService } from "./resources/runtimeEnv.js";
 
 type DockerRestartPolicy = "no" | "unless-stopped";
 
@@ -29,10 +30,12 @@ type DockerRestartPolicy = "no" | "unless-stopped";
 const RESTART_STABILITY_MS = 30_000;
 
 /**
- * Merge project env, service env, and auto-injected DATABASE_URL.
- * Precedence (low → high): project env → linked database URL → service env.
- * Service-level values always win so users can override project defaults
- * and the DATABASE_URL auto-injection.
+ * Merge project env, resource env, service env, and auto-injected DATABASE_URL.
+ * Precedence (low → high):
+ *   project env → active resource links → legacy linked DATABASE_URL → DATA_DIR → service env.
+ * Service-level values always win so users can override project defaults,
+ * system-managed resource env, and the DATABASE_URL auto-injection. Used by
+ * both runtime and deploy — keep it the single env merge path.
  */
 export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
   const service = ctx.db
@@ -52,7 +55,10 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
   delete projectEnv.PORT;
 
   const serviceEnv = getServiceEnv(ctx, serviceId);
-  const merged: Record<string, string> = { ...projectEnv };
+  // System-managed env from linked managed resources (local Supabase, managed
+  // Postgres, …). Overrides project env, never service env.
+  const resourceEnv = getResourceEnvForService(ctx, serviceId);
+  const merged: Record<string, string> = { ...projectEnv, ...resourceEnv };
 
   if (service?.linked_database_id && !serviceEnv.DATABASE_URL) {
     const db = getDatabase(ctx, service.linked_database_id);
@@ -67,7 +73,7 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
   // e.g. a SQLite file — gets wiped). Docker services see it at /data via a
   // bind mount; process/static services get the host path directly. A service
   // env var named DATA_DIR overrides this default.
-  if (!serviceEnv.DATA_DIR && !projectEnv.DATA_DIR) {
+  if (!serviceEnv.DATA_DIR && !merged.DATA_DIR) {
     merged.DATA_DIR = service?.type === "docker" ? "/data" : serviceDataDirFor(ctx, serviceId);
   }
   return { ...merged, ...serviceEnv };
@@ -183,7 +189,8 @@ async function getOrCreateContainer(
     } else {
       const bindings = exposedPort ? info.HostConfig?.PortBindings?.[exposedPort] : undefined;
       const mappedToRequestedPort =
-        !hostPort || bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
+        !hostPort ||
+        bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
       // A pre-DATA_DIR container lacks the /data mount, but its env now claims
       // DATA_DIR=/data — data written there would die with the container. Treat
       // a missing data bind like a port mismatch: recreate.
@@ -338,7 +345,10 @@ async function freeServicePort(
   } catch {
     return; // nothing listening / lsof unavailable
   }
-  for (const pid of stdout.split(/\s+/).map((s) => Number(s.trim())).filter(Boolean)) {
+  for (const pid of stdout
+    .split(/\s+/)
+    .map((s) => Number(s.trim()))
+    .filter(Boolean)) {
     if (pid === process.pid) continue; // never kill ourselves
     const pgid = await pgidOf(pid);
     if (ownPgid && pgid === ownPgid) {
@@ -1001,11 +1011,7 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
     // running (don't mis-show it as stopped, and don't auto-start a duplicate
     // that would collide on the port). stop/force-restart kill it via the
     // persisted pgid.
-    if (
-      row.type !== "docker" &&
-      row.runtime_pgid &&
-      (await hasLiveProcessGroup(Number(row.runtime_pgid)))
-    ) {
+    if (row.type !== "docker" && row.runtime_pgid && (await hasLiveProcessGroup(Number(row.runtime_pgid)))) {
       if (row.status !== "running") {
         updateServiceStatus(ctx, row.id, "running");
         insertLog(ctx, row.id, "info", `Adopted surviving process (pgid ${row.runtime_pgid}) on boot.`);

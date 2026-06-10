@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-05-06T22:37:25.328Z",
+  "generatedAt": "2026-06-10T06:24:22.274Z",
   "sequences": [
     {
       "sequence": 0,
@@ -12,14 +12,14 @@
           "sequence": 0,
           "required": true,
           "status": "pass",
-          "message": "docs/readiness-checklist.md present (5710b)"
+          "message": "docs/readiness-checklist.md present (7717b)"
         },
         {
           "id": "seq0.gates",
           "sequence": 0,
           "required": true,
           "status": "pass",
-          "message": "ops/release-gates.json present (7509b)"
+          "message": "ops/release-gates.json present (12198b)"
         },
         {
           "id": "seq0.verify_script",
@@ -248,11 +248,110 @@
           "message": "docs/readiness-checklist.md contains all required substrings"
         }
       ]
+    },
+    {
+      "sequence": 10,
+      "total": 13,
+      "pass": 13,
+      "fail": 0,
+      "gates": [
+        {
+          "id": "seq10.resource_schema",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/db.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.encrypted_secrets",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/secrets.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.dependency_scan",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/scan.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.supabase_cli",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/supabaseCli.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.resource_routes",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/routes/resources.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.runtime_env",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/runtime.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.bootstrap_local_only",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/bootstrap.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.docs_flow",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "docs/getting-started.md contains all required substrings"
+        },
+        {
+          "id": "seq10.docs_api",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "docs/api-reference.md contains all required substrings"
+        },
+        {
+          "id": "seq10.docs_troubleshooting",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "docs/troubleshooting.md contains all required substrings"
+        },
+        {
+          "id": "seq10.docs_schema",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "docs/configuration.md contains all required substrings"
+        },
+        {
+          "id": "seq10.mysql_mongo_profiles",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/scan.ts contains all required substrings"
+        },
+        {
+          "id": "seq10.supabase_restart_reparse",
+          "sequence": 10,
+          "required": true,
+          "status": "pass",
+          "message": "apps/server/src/services/resources/profiles/supabase.ts contains all required substrings"
+        }
+      ]
     }
   ],
   "overall": {
-    "total": 24,
-    "pass": 24,
+    "total": 37,
+    "pass": 37,
     "fail": 0,
     "skipped": 0,
     "failedRequired": []

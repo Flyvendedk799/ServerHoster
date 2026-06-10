@@ -35,6 +35,7 @@ const API_PREFIXES = [
   "/projects",
   "/services",
   "/databases",
+  "/resources",
   "/deployments",
   "/proxy",
   "/settings",

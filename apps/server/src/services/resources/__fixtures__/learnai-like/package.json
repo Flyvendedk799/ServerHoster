@@ -1,0 +1,24 @@
+{
+  "name": "learnai-like",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "@tanstack/react-query": "^5.56.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react-swc": "^3.5.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.4.1"
+  }
+}

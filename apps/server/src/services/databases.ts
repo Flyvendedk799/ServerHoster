@@ -53,6 +53,148 @@ export function getDatabase(ctx: AppContext, id: string): DatabaseRow | null {
   return (ctx.db.prepare("SELECT * FROM databases WHERE id = ?").get(id) as DatabaseRow | undefined) ?? null;
 }
 
+// ---- Primitive database creation (shared by /databases routes + resource profiles)
+
+export const DATABASE_INTERNAL_PORT: Record<DatabaseRow["engine"], number> = {
+  postgres: 5432,
+  mysql: 3306,
+  redis: 6379,
+  mongo: 27017
+};
+
+export const DATABASE_DATA_PATH: Record<DatabaseRow["engine"], string> = {
+  postgres: "/var/lib/postgresql/data",
+  mysql: "/var/lib/mysql",
+  redis: "/data",
+  mongo: "/data/db"
+};
+
+const DATABASE_IMAGE: Record<DatabaseRow["engine"], string> = {
+  postgres: "postgres:16",
+  mysql: "mysql:8",
+  redis: "redis:7",
+  mongo: "mongo:8"
+};
+
+async function pullDatabaseImage(ctx: AppContext, image: string): Promise<void> {
+  const stream = await ctx.docker.pull(image);
+  await new Promise<void>((resolve, reject) => {
+    ctx.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+export type CreateManagedDatabaseInput = {
+  projectId: string;
+  name: string;
+  engine: DatabaseRow["engine"];
+  port: number;
+  username?: string;
+  password?: string;
+  databaseName?: string;
+};
+
+/**
+ * The single primitive-DB creation path (Database-Tracker Phase 3): pulls the
+ * engine image, creates + starts the container with an id-scoped named volume,
+ * and inserts the `databases` row. Used by POST /databases, the embedded-SQLite
+ * promote flow, and the postgres resource profile — keep it the only place a
+ * managed database container is born. Port availability is the caller's
+ * responsibility (route-level assertPortAvailable / findFreePort).
+ */
+export async function createManagedDatabase(
+  ctx: AppContext,
+  input: CreateManagedDatabaseInput
+): Promise<DatabaseRow> {
+  const id = nanoid();
+  const username =
+    input.username ??
+    (input.engine === "postgres"
+      ? "postgres"
+      : input.engine === "mysql"
+        ? "root"
+        : input.engine === "mongo"
+          ? "admin"
+          : "");
+  const password = input.password ?? "survhub";
+  const databaseName =
+    input.databaseName ??
+    (input.engine === "postgres"
+      ? "postgres"
+      : input.engine === "mysql"
+        ? input.name.replace(/-/g, "_")
+        : input.engine === "mongo"
+          ? "admin"
+          : "");
+
+  const envMap: Record<DatabaseRow["engine"], string[]> = {
+    postgres: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
+    mysql: [`MYSQL_ROOT_PASSWORD=${password}`, `MYSQL_DATABASE=${databaseName}`],
+    redis: [],
+    mongo: [`MONGO_INITDB_ROOT_USERNAME=${username}`, `MONGO_INITDB_ROOT_PASSWORD=${password}`]
+  };
+
+  const containerName = `survhub-db-${id.slice(0, 8)}`;
+  const internalPort = DATABASE_INTERNAL_PORT[input.engine];
+  let containerId = "";
+  try {
+    await pullDatabaseImage(ctx, DATABASE_IMAGE[input.engine]);
+    const container = await ctx.docker.createContainer({
+      Image: DATABASE_IMAGE[input.engine],
+      name: containerName,
+      Env: envMap[input.engine],
+      ExposedPorts: { [`${internalPort}/tcp`]: {} },
+      HostConfig: {
+        PortBindings: { [`${internalPort}/tcp`]: [{ HostPort: String(input.port) }] },
+        RestartPolicy: { Name: "unless-stopped" },
+        // Key the named volume on the unique DB id, NOT (engine, name): two
+        // databases sharing a user-facing name across projects must never
+        // mount the same data + credentials (silent cross-project bleed).
+        Binds: [`survhub_db_${id}:${DATABASE_DATA_PATH[input.engine]}`]
+      }
+    });
+    await container.start();
+    containerId = container.id;
+  } catch (error) {
+    throw new Error(
+      `Database container create/start failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  const row: DatabaseRow = {
+    id,
+    project_id: input.projectId,
+    name: input.name,
+    engine: input.engine,
+    port: input.port,
+    container_id: containerId,
+    connection_string: "",
+    username,
+    password,
+    database_name: databaseName,
+    created_at: nowIso()
+  };
+  row.connection_string = buildConnectionString(row);
+
+  ctx.db
+    .prepare(
+      "INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, username, password, database_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .run(
+      row.id,
+      row.project_id,
+      row.name,
+      row.engine,
+      row.port,
+      row.container_id,
+      row.connection_string,
+      row.username,
+      row.password,
+      row.database_name,
+      row.created_at
+    );
+  return row;
+}
+
 export function containerNameForDatabase(db: DatabaseRow): string {
   return `survhub-db-${db.id.slice(0, 8)}`;
 }

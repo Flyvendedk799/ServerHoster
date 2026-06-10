@@ -18,6 +18,7 @@ import { registerOpsRoutes } from "./routes/ops.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerServiceRoutes } from "./routes/services.js";
 import { registerDatabaseRoutes } from "./routes/databases.js";
+import { registerResourceRoutes } from "./routes/resources.js";
 import { registerProxyRoutes } from "./routes/proxy.js";
 import { registerDeploymentRoutes } from "./routes/deployments.js";
 import { registerBackupRoutes } from "./routes/backup.js";
@@ -230,6 +231,7 @@ export async function buildApp(): Promise<AppContext> {
   registerProjectRoutes(ctx);
   registerServiceRoutes(ctx);
   registerDatabaseRoutes(ctx);
+  registerResourceRoutes(ctx);
   registerProxyRoutes(ctx);
   registerDeploymentRoutes(ctx);
   registerBackupRoutes(ctx);
@@ -356,6 +358,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/projects",
     "/services",
     "/databases",
+    "/resources",
     "/deployments",
     "/proxy",
     "/settings",
