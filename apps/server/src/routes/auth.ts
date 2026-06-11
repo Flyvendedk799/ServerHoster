@@ -46,6 +46,7 @@ const API_PREFIXES = [
   "/ops",
   "/github",
   "/webhooks",
+  "/saas",
   "/migrations",
   "/backup",
   "/agents",
@@ -92,6 +93,10 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // Webhooks authenticate via HMAC signature (verified inside the route),
     // not via Bearer token. Skipping the auth gate here is intentional.
     if (path.startsWith("/webhooks/")) return;
+    // SaaS domain routes accept the dedicated machine token (for a hosted
+    // app's edge functions) in addition to dashboard sessions; both are
+    // validated inside routes/saasDomains.ts.
+    if (path === "/saas" || path.startsWith("/saas/")) return;
     // MCP sessions use short-lived per-agent bearer tokens, validated inside
     // the MCP route instead of dashboard session tokens.
     if (path.startsWith("/mcp/")) return;

@@ -5,6 +5,18 @@ import path from "node:path";
 const root = path.resolve(process.cwd());
 const port = Number(process.env.PORT || process.argv[2] || 8080);
 
+// COOP/COEP cross-origin isolation is required for SharedArrayBuffer (Godot web
+// exports) but BREAKS ordinary SPAs: `require-corp` blocks cross-origin images,
+// fonts and scripts that don't send a CORP header. Only emit the isolation
+// headers when the directory actually looks like a Godot export (.pck present).
+const crossOriginIsolate = (() => {
+  try {
+    return fs.readdirSync(root).some((name) => name.endsWith(".pck"));
+  } catch {
+    return false;
+  }
+})();
+
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -37,9 +49,11 @@ http
       filePath = path.join(root, "index.html");
     }
 
-    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-    res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
-    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    if (crossOriginIsolate) {
+      res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+      res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    }
 
     if (!fs.existsSync(filePath)) {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

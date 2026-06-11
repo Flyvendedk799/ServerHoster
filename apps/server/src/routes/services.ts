@@ -71,7 +71,8 @@ const directDeploySchema = z.object({
   startAfterDeploy: z.boolean().default(false),
   domain: z.string().optional(),
   autoPull: z.boolean().default(true),
-  enableQuickTunnel: z.boolean().default(false)
+  enableQuickTunnel: z.boolean().default(false),
+  serveBuiltDist: z.boolean().default(false)
 });
 
 const localDeploySchema = z.object({
@@ -583,6 +584,23 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM logs WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(id);
 
+    // Tear down any SaaS tenant custom hostnames bound to this service (best
+    // effort on the Cloudflare side; local rows must go regardless so the
+    // ingress rewrite below drops their hostnames).
+    const saasRows = ctx.db.prepare("SELECT id FROM saas_domains WHERE service_id = ?").all(id) as Array<{
+      id: string;
+    }>;
+    if (saasRows.length > 0) {
+      const { deleteSaasDomain } = await import("../services/saasDomains.js");
+      for (const row of saasRows) {
+        try {
+          await deleteSaasDomain(ctx, row.id);
+        } catch {
+          ctx.db.prepare("DELETE FROM saas_domains WHERE id = ?").run(row.id);
+        }
+      }
+    }
+
     // Rewrite the login tunnel's config.yml now that this service's route is
     // gone, so its hostname stops being served (a stale ingress entry can
     // otherwise shadow another service's domain). The token-based cleanup above
@@ -705,7 +723,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
     stopWithHoster: z.boolean().optional(),
     dependsOn: z.array(z.string()).optional(),
     environment: z.enum(["production", "staging", "development"]).optional(),
-    linkedDatabaseId: z.string().nullable().optional()
+    linkedDatabaseId: z.string().nullable().optional(),
+    serveBuiltDist: z.boolean().optional()
   });
 
   ctx.app.patch("/services/:id", async (req, reply) => {
@@ -797,6 +816,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     }
     if (p.linkedDatabaseId !== undefined) {
       ctx.db.prepare("UPDATE services SET linked_database_id = ? WHERE id = ?").run(p.linkedDatabaseId, id);
+    }
+    if (p.serveBuiltDist !== undefined) {
+      ctx.db
+        .prepare("UPDATE services SET serve_built_dist = ? WHERE id = ?")
+        .run(p.serveBuiltDist ? 1 : 0, id);
     }
 
     const finalPort = p.port !== undefined ? p.port : service.port;
@@ -1097,8 +1121,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         `INSERT INTO services (
       id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
       auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, github_repo_url, github_branch, github_auto_pull,
-      quick_tunnel_enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      quick_tunnel_enabled, serve_built_dist
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         serviceId,
@@ -1120,7 +1144,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         p.repoUrl,
         p.branch,
         p.autoPull ? 1 : 0,
-        p.enableQuickTunnel ? 1 : 0
+        p.enableQuickTunnel ? 1 : 0,
+        p.serveBuiltDist ? 1 : 0
       );
 
     const deployment = await deployFromGit(ctx, serviceId, p.repoUrl, p.branch);

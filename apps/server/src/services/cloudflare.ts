@@ -193,7 +193,11 @@ export function buildIngressConfig(
   routes: Array<{ domain: string; port: number }>
 ): string {
   const ingressLines = routes
-    .map((r) => `  - hostname: ${r.domain}\n    service: http://localhost:${r.port}`)
+    .map((r) => {
+      // A bare `*` starts a YAML alias — wildcard hostnames must be quoted.
+      const host = r.domain.includes("*") ? JSON.stringify(r.domain) : r.domain;
+      return `  - hostname: ${host}\n    service: http://localhost:${r.port}`;
+    })
     .join("\n");
   return (
     `tunnel: ${tunnelId}\n` +
@@ -569,7 +573,7 @@ function requireApiToken(ctx: AppContext): string {
   return t;
 }
 
-async function cf<T>(ctx: AppContext, endpoint: string, init: RequestInit = {}): Promise<T> {
+export async function cf<T>(ctx: AppContext, endpoint: string, init: RequestInit = {}): Promise<T> {
   const token = requireApiToken(ctx);
   const res = await fetch(`https://api.cloudflare.com/client/v4${endpoint}`, {
     ...init,
@@ -934,11 +938,18 @@ export function ensureNamedTunnel(ctx: AppContext): { tunnelId: string; credsPat
   return { tunnelId, credsPath };
 }
 
-/** Read all bound (domain → port) routes and write config.yml; returns the path. */
-export function writeIngressConfig(ctx: AppContext): string {
-  const tunnelId = getSetting(ctx, "cloudflare_login_tunnel_id");
-  const credsPath = getSetting(ctx, "cloudflare_login_creds_path");
-  if (!tunnelId || !credsPath) throw new Error("Login tunnel not provisioned.");
+/**
+ * Every hostname the tunnel must serve, as (domain → local port) pairs:
+ *   - proxy_routes: the operator's own bound domains (one per service)
+ *   - saas_domains: tenant-owned custom hostnames (Cloudflare for SaaS) routed
+ *     to their service's port — traffic arrives through the fallback origin
+ *     with the ORIGINAL tenant Host header, so each needs its own ingress rule
+ *   - the SaaS fallback origin itself → the designated SaaS service (covers
+ *     edge configurations that rewrite Host to the fallback origin)
+ *   - the optional public API hostname → the control-plane port, so external
+ *     callers (e.g. a hosted app's edge functions) can reach the /saas API
+ */
+export function collectIngressRoutes(ctx: AppContext): Array<{ domain: string; port: number }> {
   const routes = ctx.db
     .prepare(
       `SELECT pr.domain AS domain, COALESCE(pr.target_port, s.port) AS port
@@ -947,6 +958,45 @@ export function writeIngressConfig(ctx: AppContext): string {
        WHERE pr.domain IS NOT NULL AND COALESCE(pr.target_port, s.port) IS NOT NULL`
     )
     .all() as Array<{ domain: string; port: number }>;
+  const saasRoutes = ctx.db
+    .prepare(
+      `SELECT sd.hostname AS domain, s.port AS port
+       FROM saas_domains sd
+       JOIN services s ON s.id = sd.service_id
+       WHERE s.port IS NOT NULL`
+    )
+    .all() as Array<{ domain: string; port: number }>;
+  const seen = new Set(routes.map((r) => r.domain));
+  for (const r of saasRoutes) {
+    if (!seen.has(r.domain)) {
+      routes.push(r);
+      seen.add(r.domain);
+    }
+  }
+  const fallbackOrigin = getSetting(ctx, "saas_fallback_origin");
+  const fallbackServiceId = getSetting(ctx, "saas_fallback_service_id");
+  if (fallbackOrigin && fallbackServiceId && !seen.has(fallbackOrigin)) {
+    const svc = ctx.db.prepare("SELECT port FROM services WHERE id = ?").get(fallbackServiceId) as
+      | { port?: number }
+      | undefined;
+    if (svc?.port) {
+      routes.push({ domain: fallbackOrigin, port: svc.port });
+      seen.add(fallbackOrigin);
+    }
+  }
+  const apiHostname = getSetting(ctx, "saas_api_hostname");
+  if (apiHostname && !seen.has(apiHostname)) {
+    routes.push({ domain: apiHostname, port: ctx.config.apiPort });
+  }
+  return routes;
+}
+
+/** Read all bound (domain → port) routes and write config.yml; returns the path. */
+export function writeIngressConfig(ctx: AppContext): string {
+  const tunnelId = getSetting(ctx, "cloudflare_login_tunnel_id");
+  const credsPath = getSetting(ctx, "cloudflare_login_creds_path");
+  if (!tunnelId || !credsPath) throw new Error("Login tunnel not provisioned.");
+  const routes = collectIngressRoutes(ctx);
   const file = configPath(ctx);
   fs.writeFileSync(file, buildIngressConfig(tunnelId, credsPath, routes), { encoding: "utf8" });
   return file;
@@ -1155,10 +1205,8 @@ export function unbindDomainViaLogin(ctx: AppContext, serviceId: string): { ok: 
     ctx.db.prepare("UPDATE services SET ssl_status = 'none', updated_at = ? WHERE id = ?").run(nowIso(), serviceId);
     setSystemEnv(ctx, serviceId, "PUBLIC_URL", null);
   })();
-  const remaining = ctx.db
-    .prepare("SELECT COUNT(*) AS n FROM proxy_routes WHERE domain IS NOT NULL")
-    .get() as { n: number };
-  if (remaining.n > 0) runManagedTunnel(ctx);
+  const remaining = collectIngressRoutes(ctx).length;
+  if (remaining > 0) runManagedTunnel(ctx);
   else stopManagedTunnel();
   broadcast(ctx, { type: "exposure_changed", serviceId });
   return { ok: true };
@@ -1186,11 +1234,7 @@ export function disconnectCloudflare(ctx: AppContext): { ok: true } {
  */
 export function refreshLoginIngress(ctx: AppContext): void {
   if (!isCloudflareConnected(ctx)) return;
-  const remaining = (
-    ctx.db.prepare("SELECT COUNT(*) AS n FROM proxy_routes WHERE domain IS NOT NULL").get() as {
-      n: number;
-    }
-  ).n;
+  const remaining = collectIngressRoutes(ctx).length;
   if (remaining > 0) {
     writeIngressConfig(ctx);
     runManagedTunnel(ctx);
@@ -1211,12 +1255,7 @@ export function reconcileLoginTunnelOnBoot(ctx: AppContext): void {
   // before it could restore (otherwise the user boots up "disconnected").
   for (const p of certBackupCandidates(ctx)) reclaimOrphanedCert(p);
   if (!isCloudflareConnected(ctx)) return;
-  const routes = (
-    ctx.db.prepare("SELECT COUNT(*) AS n FROM proxy_routes WHERE domain IS NOT NULL").get() as {
-      n: number;
-    }
-  ).n;
-  if (routes <= 0) return;
+  if (collectIngressRoutes(ctx).length <= 0) return;
   try {
     runManagedTunnel(ctx);
     insertLog(ctx, "system", "info", "Re-started the Cloudflare login tunnel connector on boot.");

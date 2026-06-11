@@ -416,7 +416,33 @@ const migrations = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_managed_resources_project ON managed_resources(project_id)",
   "CREATE INDEX IF NOT EXISTS idx_service_resource_links_service ON service_resource_links(service_id)",
-  "CREATE INDEX IF NOT EXISTS idx_dependency_scans_service ON dependency_scans(service_id, created_at DESC)"
+  "CREATE INDEX IF NOT EXISTS idx_dependency_scans_service ON dependency_scans(service_id, created_at DESC)",
+  // SaaS tenant domains — hostnames OWNED BY END USERS of a hosted multi-tenant
+  // app (e.g. a blog platform's customers), registered as Cloudflare for SaaS
+  // custom hostnames. Distinct from proxy_routes, which holds the operator's own
+  // zone-resident domains; the two are unioned into the tunnel ingress.
+  `CREATE TABLE IF NOT EXISTS saas_domains (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    hostname TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending_dns',
+    ssl_status TEXT NOT NULL DEFAULT 'none',
+    mode TEXT NOT NULL DEFAULT 'custom_hostname',
+    cf_custom_hostname_id TEXT,
+    cname_target TEXT,
+    verification_txt_name TEXT,
+    verification_txt_value TEXT,
+    failure_reason TEXT,
+    last_checked_at TEXT,
+    verified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_saas_domains_service ON saas_domains(service_id, created_at DESC)",
+  // Opt-in production mode for built SPAs: after a successful build, serve the
+  // emitted dist/ with the static server instead of launching the framework dev
+  // server. Per-service so existing dev-server deployments keep their behavior.
+  "ALTER TABLE services ADD COLUMN serve_built_dist INTEGER NOT NULL DEFAULT 0"
 ];
 
 for (const statement of migrations) {

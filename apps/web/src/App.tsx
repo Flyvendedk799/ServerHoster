@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Database,
   Activity,
+  Globe,
   Terminal,
   Bell,
   Settings,
@@ -25,6 +26,7 @@ import { DatabasesPage } from "./pages/Databases";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
+import { DomainsPage } from "./pages/Domains";
 import { SettingsPage } from "./pages/Settings";
 import { NotificationsPage } from "./pages/Notifications";
 import { LoginPage } from "./pages/Login";
@@ -115,6 +117,7 @@ const routeLabels: Record<string, string> = {
   projects: "Projects",
   databases: "Databases",
   proxy: "Edge Ingress",
+  domains: "SaaS Domains",
   deployments: "Deployments",
   notifications: "Alerts",
   settings: "Settings",
@@ -308,6 +311,15 @@ export function App() {
             {!collapsed && <span>Edge Ingress</span>}
           </NavLink>
           <NavLink
+            to="/domains"
+            aria-label="SaaS Domains"
+            title={collapsed ? "SaaS Domains" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Globe size={16} />
+            {!collapsed && <span>SaaS Domains</span>}
+          </NavLink>
+          <NavLink
             to="/deployments"
             aria-label="Deployments"
             title={collapsed ? "Deployments" : undefined}
@@ -433,6 +445,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <ProxyPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/domains"
+                  element={
+                    <ProtectedRoute>
+                      <DomainsPage />
                     </ProtectedRoute>
                   }
                 />

@@ -75,6 +75,15 @@ test("buildIngressConfig: zero routes → only the 404 catch-all", () => {
   assert.doesNotMatch(cfg, /hostname:/);
 });
 
+test("buildIngressConfig: wildcard hostnames are quoted (bare * is a YAML alias)", () => {
+  const cfg = buildIngressConfig("tid", "/c.json", [
+    { domain: "*.example.com", port: 3000 },
+    { domain: "plain.example.com", port: 4000 }
+  ]);
+  assert.match(cfg, /- hostname: "\*\.example\.com"\n {4}service: http:\/\/localhost:3000/);
+  assert.match(cfg, /- hostname: plain\.example\.com\n {4}service: http:\/\/localhost:4000/);
+});
+
 test("CF_LOGIN_URL_RE captures the dash.cloudflare.com/argotunnel URL", () => {
   const line =
     "Please open the following URL: https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin.cloudflareaccess.org%2Fabc123";

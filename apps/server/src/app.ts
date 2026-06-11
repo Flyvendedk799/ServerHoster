@@ -26,6 +26,7 @@ import { registerMigrationRoutes } from "./routes/migrations.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerCloudflareRoutes } from "./routes/cloudflare.js";
+import { registerSaasDomainRoutes } from "./routes/saasDomains.js";
 import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
@@ -239,6 +240,7 @@ export async function buildApp(): Promise<AppContext> {
   registerWebhookRoutes(ctx);
   registerSettingsRoutes(ctx);
   registerCloudflareRoutes(ctx);
+  registerSaasDomainRoutes(ctx);
   registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
   registerTerminalRoutes(ctx);
@@ -369,6 +371,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/ops",
     "/github",
     "/webhooks",
+    "/saas",
     "/migrations",
     "/backup",
     "/agents",

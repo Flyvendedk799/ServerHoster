@@ -5121,3 +5121,123 @@ a.list-row:hover .row-chevron,
     flex-direction: column;
   }
 }
+
+/* ── SaaS Domains page ─────────────────────────────────────────────── */
+.domains-page .dom-missing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+.domains-page .dom-missing-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+.domains-page .dom-missing-item svg {
+  color: var(--danger);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.domains-page .dom-token-reveal {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--border-glow);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+}
+.domains-page .dom-token-value {
+  display: block;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.25);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  word-break: break-all;
+  user-select: all;
+}
+.domains-page .dom-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid currentColor;
+}
+.domains-page .dom-status-pending { color: var(--warning, #d97706); }
+.domains-page .dom-status-progress { color: var(--accent); }
+.domains-page .dom-status-active { color: var(--success); }
+.domains-page .dom-status-failed { color: var(--danger); }
+.domains-page .dom-mode {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+}
+.domains-page .dom-dns-box {
+  margin-top: 0.85rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.domains-page .dom-dns-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  min-width: 0;
+}
+.domains-page .dom-dns-type {
+  flex-shrink: 0;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: rgba(127, 127, 127, 0.15);
+}
+.domains-page .dom-dns-host {
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.domains-page .dom-dns-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  cursor: pointer;
+}
+.domains-page .dom-spin {
+  animation: dom-spin 0.9s linear infinite;
+}
+@keyframes dom-spin {
+  to { transform: rotate(360deg); }
+}
+.domains-page .text-danger { color: var(--danger) !important; }
+.domains-page .font-bold { font-weight: 700; }
+.domains-page .uppercase { text-transform: uppercase; letter-spacing: 0.05em; }
+.domains-page .tiny { font-size: 0.7rem; }
+.domains-page .with-icon { padding-left: 2.5rem !important; }
+.domains-page .pr-overlap { position: relative; }
+.domains-page .icon-overlay { position: absolute; left: 0.75rem; top: 12px; pointer-events: none; z-index: 1; }

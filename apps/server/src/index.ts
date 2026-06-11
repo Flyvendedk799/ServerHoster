@@ -72,9 +72,17 @@ wss.on("connection", (ws: WebSocket, req) => {
 const domainProxy = httpProxy.createProxyServer({});
 const port80 = http.createServer((req, res) => {
   const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
-  const route = ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
+  let route = ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
     | { target_port?: number }
     | undefined;
+  if (!route?.target_port) {
+    // SaaS tenant custom hostnames route to their owning service's port.
+    route = ctx.db
+      .prepare(
+        "SELECT s.port AS target_port FROM saas_domains sd JOIN services s ON s.id = sd.service_id WHERE sd.hostname = ?"
+      )
+      .get(host) as { target_port?: number } | undefined;
+  }
   if (!route?.target_port) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("No service mapped to this domain\n");

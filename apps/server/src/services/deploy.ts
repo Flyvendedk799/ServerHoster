@@ -1072,6 +1072,30 @@ export async function runBuildPipeline(
   return { status: "success", buildLog, artifactPath };
 }
 
+/**
+ * Whether this deploy should flip to serving the built dist/ statically: the
+ * service opted in (`serve_built_dist`), the build is a node SPA, and the
+ * pipeline actually emitted a dist directory with an entry index.html. Builds
+ * that emit no dist (e.g. an API server) keep their normal launch command.
+ */
+function shouldServeBuiltDist(
+  ctx: AppContext,
+  serviceId: string,
+  buildType: string,
+  projectPath: string,
+  artifactPath: string
+): boolean {
+  if (buildType !== "node") return false;
+  const row = ctx.db.prepare("SELECT serve_built_dist FROM services WHERE id = ?").get(serviceId) as
+    | { serve_built_dist?: number }
+    | undefined;
+  if (!row?.serve_built_dist) return false;
+  return (
+    path.resolve(artifactPath) !== path.resolve(projectPath) &&
+    fs.existsSync(path.join(artifactPath, "index.html"))
+  );
+}
+
 export function deployFromGit(
   ctx: AppContext,
   serviceId: string,
@@ -1189,6 +1213,20 @@ async function deployFromGitLocked(
             "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
           )
           .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+      } else if (shouldServeBuiltDist(ctx, serviceId, buildType, targetPath, artifactPath)) {
+        // Opted-in production mode: serve the freshly built dist/ statically
+        // instead of launching the framework dev server.
+        ctx.db
+          .prepare(
+            "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+          )
+          .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+        emitBuildLog(
+          ctx,
+          serviceId,
+          deploymentId,
+          `serve_built_dist is enabled — serving ${path.relative(targetPath, artifactPath)} with the static server (SPA fallback) instead of the dev server.\n`
+        );
       } else {
         ctx.db
           .prepare(
@@ -1379,7 +1417,12 @@ export async function deployFromLocalPath(
     status = result.status;
     buildLog += result.buildLog;
     artifactPath = result.artifactPath;
-    if (status === "success" && (buildType === "godot" || buildType === "static")) {
+    if (
+      status === "success" &&
+      (buildType === "godot" ||
+        buildType === "static" ||
+        shouldServeBuiltDist(ctx, serviceId, buildType, localPath, artifactPath))
+    ) {
       ctx.db
         .prepare(
           "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
