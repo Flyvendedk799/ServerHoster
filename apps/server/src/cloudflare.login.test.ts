@@ -84,6 +84,17 @@ test("buildIngressConfig: wildcard hostnames are quoted (bare * is a YAML alias)
   assert.match(cfg, /- hostname: plain\.example\.com\n {4}service: http:\/\/localhost:4000/);
 });
 
+test("buildIngressConfig: exact hostnames precede wildcards (first-match routing)", () => {
+  const cfg = buildIngressConfig("tid", "/c.json", [
+    { domain: "*.example.com", port: 3000 },
+    { domain: "api.example.com", port: 5000 }
+  ]);
+  const wildcardIdx = cfg.indexOf('"*.example.com"');
+  const exactIdx = cfg.indexOf("api.example.com");
+  assert.ok(exactIdx >= 0 && wildcardIdx >= 0);
+  assert.ok(exactIdx < wildcardIdx, "exact rule must come before the wildcard rule");
+});
+
 test("CF_LOGIN_URL_RE captures the dash.cloudflare.com/argotunnel URL", () => {
   const line =
     "Please open the following URL: https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin.cloudflareaccess.org%2Fabc123";

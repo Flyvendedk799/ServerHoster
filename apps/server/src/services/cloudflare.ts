@@ -192,7 +192,13 @@ export function buildIngressConfig(
   credsPath: string,
   routes: Array<{ domain: string; port: number }>
 ): string {
-  const ingressLines = routes
+  // cloudflared matches ingress rules FIRST-MATCH, so exact hostnames must
+  // precede wildcards — otherwise `*.zone` swallows `api.zone`. Stable sort
+  // keeps the relative order within each group.
+  const ordered = [...routes].sort(
+    (a, b) => Number(a.domain.includes("*")) - Number(b.domain.includes("*"))
+  );
+  const ingressLines = ordered
     .map((r) => {
       // A bare `*` starts a YAML alias — wildcard hostnames must be quoted.
       const host = r.domain.includes("*") ? JSON.stringify(r.domain) : r.domain;
@@ -1108,21 +1114,21 @@ export function parseRoutedFqdn(routeOutput: string): string | null {
   return fqdn ?? null;
 }
 
-export function bindDomainViaLogin(
+/**
+ * Create (or verify) the DNS route for `domain` through the LOGIN tunnel via
+ * `cloudflared tunnel route dns` — the cert-based path that needs no API
+ * token. Throws DNS_CONFLICT / ZONE_MISSING / CF_WRONG_ZONE with actionable
+ * messages. Shared by the per-service bind and SaaS own-zone registration.
+ */
+export function routeDnsViaLogin(
   ctx: AppContext,
-  serviceId: string,
   domain: string,
   opts: { overwriteDns?: boolean } = {}
-): { ok: true; domain: string; public_url: string } {
+): void {
   const detected = detectCloudflared(ctx);
   if (!detected.binary) throw new Error("cloudflared binary not found.");
   const tunnelId = getSetting(ctx, "cloudflare_login_tunnel_id");
   if (!tunnelId) throw new Error("Not connected to Cloudflare.");
-  const service = ctx.db.prepare("SELECT id, port FROM services WHERE id = ?").get(serviceId) as
-    | { id: string; port?: number }
-    | undefined;
-  if (!service) throw new Error("Service not found");
-  if (!service.port) throw new Error("Service has no port assigned");
 
   const flag = opts.overwriteDns ? " --overwrite-dns" : "";
   let routeOutput = "";
@@ -1175,6 +1181,21 @@ export function bindDomainViaLogin(
     err.meta = { authorizedZone, requestedDomain: domain };
     throw err;
   }
+}
+
+export function bindDomainViaLogin(
+  ctx: AppContext,
+  serviceId: string,
+  domain: string,
+  opts: { overwriteDns?: boolean } = {}
+): { ok: true; domain: string; public_url: string } {
+  const service = ctx.db.prepare("SELECT id, port FROM services WHERE id = ?").get(serviceId) as
+    | { id: string; port?: number }
+    | undefined;
+  if (!service) throw new Error("Service not found");
+  if (!service.port) throw new Error("Service has no port assigned");
+
+  routeDnsViaLogin(ctx, domain, opts);
 
   ctx.db.transaction(() => {
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(serviceId);

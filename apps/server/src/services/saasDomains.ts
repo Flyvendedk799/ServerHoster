@@ -7,6 +7,7 @@ import {
   isCloudflareConnected,
   refreshLoginIngress,
   removeTunnelIngress,
+  routeDnsViaLogin,
   upsertTunnelIngress
 } from "./cloudflare.js";
 
@@ -89,6 +90,8 @@ async function resolveZoneName(ctx: AppContext): Promise<string> {
 
 export type SaasConfigStatus = {
   ready: boolean;
+  /** Cloudflare for SaaS (tenant custom hostnames) needs the API token + zone. */
+  tenantDomainsReady: boolean;
   missing: string[];
   apiTokenConfigured: boolean;
   zoneId: string | null;
@@ -106,13 +109,20 @@ export function getSaasConfigStatus(ctx: AppContext): SaasConfigStatus {
   const apiTokenConfigured = Boolean(getSecretSetting(ctx, "cloudflare_api_token"));
   const zoneId = getSetting(ctx, "cloudflare_zone_id");
   const tunnelId = resolveTunnelId(ctx);
+  const loginConnected = isCloudflareConnected(ctx);
+  const apiCreds = apiTokenConfigured && Boolean(zoneId);
   const missing: string[] = [];
-  if (!apiTokenConfigured) missing.push("cloudflare_api_token");
-  if (!zoneId) missing.push("cloudflare_zone_id");
+  // The browser-login tunnel alone covers OWN-ZONE domains; the API token +
+  // zone id are additionally needed for tenant custom hostnames.
+  if (!apiCreds && !loginConnected) {
+    if (!apiTokenConfigured) missing.push("cloudflare_api_token");
+    if (!zoneId) missing.push("cloudflare_zone_id");
+  }
   if (!tunnelId) missing.push("cloudflare_tunnel");
   const count = ctx.db.prepare("SELECT COUNT(*) AS n FROM saas_domains").get() as { n: number };
   return {
     ready: missing.length === 0,
+    tenantDomainsReady: apiCreds,
     missing,
     apiTokenConfigured,
     zoneId,
@@ -258,6 +268,57 @@ export async function registerSaasDomain(
     | undefined;
   if (proxyOwner) {
     throw httpError(`${hostname} is already bound as an operator domain (Edge Ingress)`, 409, "DOMAIN_IN_USE");
+  }
+
+  // Login-only mode: no API token/zone configured, but the browser-login
+  // tunnel is connected. `cloudflared tunnel route dns` can bind any hostname
+  // in a zone the login cert covers — exactly the own-zone case. Tenant
+  // custom hostnames (foreign zones) still need Cloudflare for SaaS.
+  const apiCreds = Boolean(getSecretSetting(ctx, "cloudflare_api_token") && getSetting(ctx, "cloudflare_zone_id"));
+  if (!apiCreds) {
+    if (!isCloudflareConnected(ctx)) {
+      throw httpError(
+        "Cloudflare is not configured — connect Cloudflare (browser login) or save an API token + zone id.",
+        422,
+        "SAAS_NOT_CONFIGURED"
+      );
+    }
+    try {
+      routeDnsViaLogin(ctx, hostname, { overwriteDns: false });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "ZONE_MISSING" || code === "CF_WRONG_ZONE") {
+        throw httpError(
+          `${hostname} is not in a Cloudflare zone your login covers. Tenant-owned custom domains need a Cloudflare API token + zone id (Cloudflare for SaaS) — save them under Settings → Cloudflare.`,
+          422,
+          "TENANT_DOMAINS_NEED_API_TOKEN"
+        );
+      }
+      throw error;
+    }
+    const loginNow = nowIso();
+    const loginRow: SaasDomainRow = {
+      id: existing?.id ?? nanoid(),
+      service_id: serviceId,
+      hostname,
+      status: "active",
+      ssl_status: "active",
+      mode: "own_zone",
+      cf_custom_hostname_id: null,
+      cname_target: null,
+      target_port: explicitPort ?? null,
+      verification_txt_name: null,
+      verification_txt_value: null,
+      failure_reason: null,
+      last_checked_at: loginNow,
+      verified_at: loginNow,
+      created_at: loginNow,
+      updated_at: loginNow
+    };
+    upsertDomainRow(ctx, loginRow, Boolean(existing));
+    await applyIngress(ctx, hostname, targetPort);
+    broadcast(ctx, { type: "saas_domains_changed", serviceId });
+    return { domain: getDomainRow(ctx, loginRow.id), dns_records: [] };
   }
 
   const zoneName = await resolveZoneName(ctx);

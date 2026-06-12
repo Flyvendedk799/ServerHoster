@@ -40,6 +40,7 @@ type SaasDomain = {
 
 type SaasConfig = {
   ready: boolean;
+  tenantDomainsReady: boolean;
   missing: string[];
   apiTokenConfigured: boolean;
   zoneId: string | null;
@@ -284,6 +285,14 @@ export function DomainsPage() {
               </div>
             ))}
           </div>
+        )}
+        {config?.ready && !config.tenantDomainsReady && (
+          <p className="tiny muted" style={{ marginTop: "0.75rem" }}>
+            Connected via browser login — domains in your own Cloudflare zones bind instantly.
+            To accept <strong>tenant-owned</strong> custom domains (Cloudflare for SaaS), also save a
+            Cloudflare API token (Zone DNS Edit + SSL and Certificates Edit) and the Zone ID under
+            Settings → Cloudflare.
+          </p>
         )}
 
         <div className="form-row" style={{ marginTop: "1rem" }}>
