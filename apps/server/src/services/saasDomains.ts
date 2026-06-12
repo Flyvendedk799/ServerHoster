@@ -35,6 +35,7 @@ export type SaasDomainRow = {
   mode: string;
   cf_custom_hostname_id: string | null;
   cname_target: string | null;
+  target_port: number | null;
   verification_txt_name: string | null;
   verification_txt_value: string | null;
   failure_reason: string | null;
@@ -223,7 +224,11 @@ export function listSaasDomains(ctx: AppContext, serviceId: string): SaasDomainR
 export async function registerSaasDomain(
   ctx: AppContext,
   serviceId: string,
-  rawHostname: string
+  rawHostname: string,
+  // Explicit local target port for this hostname (defaults to the service's
+  // own port). Lets an own-zone hostname front a sidecar listener — e.g. the
+  // local Supabase stack's API gateway — that isn't a ServerHoster service.
+  explicitPort?: number
 ): Promise<{ domain: SaasDomainRow; dns_records: Array<Record<string, string>> }> {
   const hostname = normalizeHostname(rawHostname);
   // Wildcards are supported ONLY inside the operator's own zone (e.g.
@@ -239,7 +244,8 @@ export async function registerSaasDomain(
     | { id: string; name: string; port?: number }
     | undefined;
   if (!service) throw httpError("Service not found", 404, "SERVICE_NOT_FOUND");
-  if (!service.port) throw httpError("Service has no port assigned", 422, "NO_PORT");
+  const targetPort = explicitPort ?? service.port;
+  if (!targetPort) throw httpError("Service has no port assigned", 422, "NO_PORT");
 
   const existing = ctx.db.prepare("SELECT id, service_id FROM saas_domains WHERE hostname = ?").get(hostname) as
     | { id: string; service_id: string }
@@ -278,6 +284,7 @@ export async function registerSaasDomain(
       mode: "own_zone",
       cf_custom_hostname_id: null,
       cname_target: null,
+      target_port: explicitPort ?? null,
       verification_txt_name: null,
       verification_txt_value: null,
       failure_reason: null,
@@ -287,7 +294,7 @@ export async function registerSaasDomain(
       updated_at: now
     };
     upsertDomainRow(ctx, row, Boolean(existing));
-    await applyIngress(ctx, hostname, service.port);
+    await applyIngress(ctx, hostname, targetPort);
     broadcast(ctx, { type: "saas_domains_changed", serviceId });
     return { domain: getDomainRow(ctx, row.id), dns_records: [] };
   }
@@ -329,6 +336,7 @@ export async function registerSaasDomain(
     mode: "custom_hostname",
     cf_custom_hostname_id: ch.id,
     cname_target: fallbackOrigin,
+    target_port: explicitPort ?? null,
     verification_txt_name: ch.ownership_verification?.name ?? null,
     verification_txt_value: ch.ownership_verification?.value ?? null,
     failure_reason: null,
@@ -338,7 +346,7 @@ export async function registerSaasDomain(
     updated_at: now
   };
   upsertDomainRow(ctx, row, Boolean(existing));
-  await applyIngress(ctx, hostname, service.port);
+  await applyIngress(ctx, hostname, targetPort);
   broadcast(ctx, { type: "saas_domains_changed", serviceId });
 
   const dnsRecords: Array<Record<string, string>> = [
@@ -360,7 +368,7 @@ function upsertDomainRow(ctx: AppContext, row: SaasDomainRow, exists: boolean): 
     ctx.db
       .prepare(
         `UPDATE saas_domains SET service_id = ?, status = ?, ssl_status = ?, mode = ?,
-         cf_custom_hostname_id = ?, cname_target = ?, verification_txt_name = ?, verification_txt_value = ?,
+         cf_custom_hostname_id = ?, cname_target = ?, target_port = ?, verification_txt_name = ?, verification_txt_value = ?,
          failure_reason = ?, last_checked_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`
       )
       .run(
@@ -370,6 +378,7 @@ function upsertDomainRow(ctx: AppContext, row: SaasDomainRow, exists: boolean): 
         row.mode,
         row.cf_custom_hostname_id,
         row.cname_target,
+        row.target_port,
         row.verification_txt_name,
         row.verification_txt_value,
         row.failure_reason,
@@ -383,10 +392,10 @@ function upsertDomainRow(ctx: AppContext, row: SaasDomainRow, exists: boolean): 
   ctx.db
     .prepare(
       `INSERT INTO saas_domains (
-        id, service_id, hostname, status, ssl_status, mode, cf_custom_hostname_id, cname_target,
+        id, service_id, hostname, status, ssl_status, mode, cf_custom_hostname_id, cname_target, target_port,
         verification_txt_name, verification_txt_value, failure_reason, last_checked_at, verified_at,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       row.id,
@@ -397,6 +406,7 @@ function upsertDomainRow(ctx: AppContext, row: SaasDomainRow, exists: boolean): 
       row.mode,
       row.cf_custom_hostname_id,
       row.cname_target,
+      row.target_port,
       row.verification_txt_name,
       row.verification_txt_value,
       row.failure_reason,

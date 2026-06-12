@@ -13,6 +13,16 @@ import {
 const ctx = await buildApp();
 const server = await ctx.app.listen({ port: ctx.config.apiPort, host: ctx.config.host });
 
+// Restart previously-running local Supabase stacks + their function serve
+// processes (both die with us). Lives in the entrypoint — NOT buildApp — so
+// test apps never spin up real stacks. Fire-and-forget: `supabase start` can
+// take minutes when images need pulling and must not block API readiness.
+void import("./services/resources/profiles/supabase.js")
+  .then(({ reconcileSupabaseResourcesOnBoot }) => reconcileSupabaseResourcesOnBoot(ctx))
+  .catch((err) => {
+    ctx.app.log.error({ err }, "reconcileSupabaseResourcesOnBoot failed");
+  });
+
 const wss = new WebSocketServer({ server: ctx.app.server, path: ctx.config.webSocketPath });
 wss.on("connection", (ws: WebSocket, req) => {
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -76,10 +86,11 @@ const port80 = http.createServer((req, res) => {
     | { target_port?: number }
     | undefined;
   if (!route?.target_port) {
-    // SaaS tenant custom hostnames route to their owning service's port.
+    // SaaS tenant custom hostnames route to their owning service's port
+    // (or an explicit per-route target port).
     route = ctx.db
       .prepare(
-        "SELECT s.port AS target_port FROM saas_domains sd JOIN services s ON s.id = sd.service_id WHERE sd.hostname = ?"
+        "SELECT COALESCE(sd.target_port, s.port) AS target_port FROM saas_domains sd JOIN services s ON s.id = sd.service_id WHERE sd.hostname = ?"
       )
       .get(host) as { target_port?: number } | undefined;
   }

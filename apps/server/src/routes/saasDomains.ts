@@ -13,7 +13,11 @@ import {
   verifySaasDomain
 } from "../services/saasDomains.js";
 
-const registerSchema = z.object({ hostname: z.string().min(1) });
+const registerSchema = z.object({
+  hostname: z.string().min(1),
+  /** Explicit local target port (defaults to the service's port). */
+  port: z.number().int().min(1).max(65535).optional()
+});
 const configSchema = z.object({
   fallbackOrigin: z.string().min(1).optional(),
   fallbackServiceId: z.string().min(1).optional(),
@@ -132,7 +136,7 @@ export function registerSaasDomainRoutes(ctx: AppContext): void {
     stampActor(req);
     const { serviceId } = req.params as { serviceId: string };
     const p = registerSchema.parse(req.body);
-    return registerSaasDomain(ctx, serviceId, p.hostname);
+    return registerSaasDomain(ctx, serviceId, p.hostname, p.port);
   });
 
   ctx.app.post("/saas/domains/:domainId/verify", async (req) => {

@@ -455,7 +455,13 @@ export async function supabaseResourceAction(
 
 async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promise<ManagedResourceRow> {
   const service = getFullServiceRow(ctx, input.serviceId);
-  const workdir = service.working_dir ?? "";
+  // config.workdir override: services deployed in static-dist mode point their
+  // working_dir at the built artifact (dist/), but the Supabase project files
+  // (config.toml, migrations, functions) live at the clone root — the caller
+  // passes that root explicitly.
+  const workdirOverride =
+    typeof input.config?.workdir === "string" && input.config.workdir ? input.config.workdir : null;
+  const workdir = workdirOverride ?? service.working_dir ?? "";
   const mode = input.mode ?? "schema-only";
 
   // 1. Resource row first — even preflight failures leave a diagnosable row.
@@ -622,6 +628,34 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
     emitResourceStatus(ctx, resource.id, "failed");
     emitProvisionStep(ctx, resource.id, "failed", serializeError(error));
     throw error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/**
+ * Boot reconcile: bring previously-running local Supabase stacks (and their
+ * edge-function serve processes) back up after a ServerHoster restart. The
+ * serve child dies with us, and the CLI's containers may be stopped after a
+ * host reboot — without this, a hosted app's backend silently stays down
+ * until someone presses Start. Failures log per-resource and never block boot.
+ */
+export async function reconcileSupabaseResourcesOnBoot(ctx: AppContext): Promise<void> {
+  const rows = ctx.db
+    .prepare(
+      "SELECT id, name FROM managed_resources WHERE profile = 'supabase' AND status IN ('ready', 'running', 'degraded')"
+    )
+    .all() as Array<{ id: string; name: string }>;
+  for (const row of rows) {
+    try {
+      await supabaseResourceAction(ctx, row.id, "start");
+      broadcast(ctx, { type: "resource_status", resourceId: row.id, status: "running", profile: "supabase" });
+    } catch (error) {
+      emitProvisionStep(
+        ctx,
+        row.id,
+        "boot",
+        `Boot reconcile failed for ${row.name}: ${serializeError(error)}`
+      );
+    }
   }
 }
 

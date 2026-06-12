@@ -442,7 +442,11 @@ const migrations = [
   // Opt-in production mode for built SPAs: after a successful build, serve the
   // emitted dist/ with the static server instead of launching the framework dev
   // server. Per-service so existing dev-server deployments keep their behavior.
-  "ALTER TABLE services ADD COLUMN serve_built_dist INTEGER NOT NULL DEFAULT 0"
+  "ALTER TABLE services ADD COLUMN serve_built_dist INTEGER NOT NULL DEFAULT 0",
+  // Optional explicit target port for a SaaS domain route. NULL → the owning
+  // service's port. Used to route a hostname to a sidecar listener that isn't
+  // a ServerHoster service itself (e.g. a local Supabase stack's API gateway).
+  "ALTER TABLE saas_domains ADD COLUMN target_port INTEGER"
 ];
 
 for (const statement of migrations) {

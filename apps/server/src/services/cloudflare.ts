@@ -960,10 +960,10 @@ export function collectIngressRoutes(ctx: AppContext): Array<{ domain: string; p
     .all() as Array<{ domain: string; port: number }>;
   const saasRoutes = ctx.db
     .prepare(
-      `SELECT sd.hostname AS domain, s.port AS port
+      `SELECT sd.hostname AS domain, COALESCE(sd.target_port, s.port) AS port
        FROM saas_domains sd
        JOIN services s ON s.id = sd.service_id
-       WHERE s.port IS NOT NULL`
+       WHERE COALESCE(sd.target_port, s.port) IS NOT NULL`
     )
     .all() as Array<{ domain: string; port: number }>;
   const seen = new Set(routes.map((r) => r.domain));
