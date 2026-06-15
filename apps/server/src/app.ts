@@ -28,6 +28,7 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerCloudflareRoutes } from "./routes/cloudflare.js";
 import { registerSaasDomainRoutes } from "./routes/saasDomains.js";
 import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
+import { usingDefaultSecretKey } from "./security.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
 import { registerTunnelRoutes } from "./routes/tunnels.js";
@@ -281,6 +282,17 @@ export async function buildApp(): Promise<AppContext> {
       userAgent: (req.headers["user-agent"] as string | undefined) ?? null
     });
   });
+
+  // Secrets at rest (API tokens, PATs) are only as safe as SURVHUB_SECRET_KEY.
+  // When it is unset the code falls back to a public, well-known default key, so
+  // make that loud rather than silent — the alternative is shipping "encrypted"
+  // secrets that anyone can decrypt.
+  if (usingDefaultSecretKey(ctx.config.secretKey)) {
+    app.log.warn(
+      "SECURITY: SURVHUB_SECRET_KEY is not set — stored secrets are encrypted with the built-in default key and are NOT secure. " +
+        "Set SURVHUB_SECRET_KEY (see ~/.survhub/survhub.env) and restart."
+    );
+  }
 
   // Fire-and-forget on purpose: Docker query may be slow if the daemon is
   // starting; we don't want to block API readiness on it.

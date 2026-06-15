@@ -1,9 +1,22 @@
 import crypto from "node:crypto";
 
+/**
+ * Fallback key used when SURVHUB_SECRET_KEY is unset/empty. It is a PUBLIC,
+ * well-known constant — anything encrypted under it (secrets at rest) is not
+ * actually protected. The server logs a loud warning at boot in that case (see
+ * warnIfDefaultSecretKey); production must set a real SURVHUB_SECRET_KEY.
+ */
+export const DEFAULT_DEV_SECRET_KEY = "survhub-dev-key";
+
+/** True when no real secret key is configured and the insecure default is in effect. */
+export function usingDefaultSecretKey(secretKey: string | undefined | null): boolean {
+  return !secretKey;
+}
+
 function getSecretKey(secretKey: string): Buffer {
   return crypto
     .createHash("sha256")
-    .update(secretKey || "survhub-dev-key")
+    .update(secretKey || DEFAULT_DEV_SECRET_KEY)
     .digest();
 }
 

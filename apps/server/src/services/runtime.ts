@@ -19,8 +19,35 @@ import { createNotification } from "./notifications.js";
 const exec = promisify(execFile);
 import { buildConnectionString, getDatabase } from "./databases.js";
 import { getResourceEnvForService } from "./resources/runtimeEnv.js";
+import { getSetting, setSetting, deleteSetting } from "./settings.js";
 
 type DockerRestartPolicy = "no" | "unless-stopped";
+
+/**
+ * Setting key holding the JSON list of service ids that were running when the
+ * server last shut down gracefully. reconcileRuntimeStateOnBoot consumes it to
+ * bring those services back regardless of start_mode — "it was serving traffic"
+ * is a stronger signal of desired state than the manual/auto flag. Cleared once
+ * consumed; an ungraceful crash falls back to the stale 'running' DB status.
+ */
+const SHUTDOWN_RUNNING_MARKER = "services_running_at_shutdown";
+
+/**
+ * Decide whether a non-adopted service should be (re)started during boot
+ * reconcile. We restore services that were running at the last *graceful*
+ * shutdown (marker) so a planned restart doesn't silently drop live services,
+ * and otherwise honor an explicit auto start_mode. An ungraceful crash (stale
+ * 'running' status, no marker) deliberately stays stopped — matching the
+ * long-standing adoption contract — so a crash-looping service isn't relaunched
+ * blindly on every boot.
+ */
+export function shouldRestoreServiceOnBoot(opts: {
+  startMode?: string | null;
+  wasRunningAtShutdown: boolean;
+}): boolean {
+  if (opts.wasRunningAtShutdown) return true;
+  return opts.startMode === "auto";
+}
 
 /**
  * How long a process must stay up before we clear its crash counter. A service
@@ -99,6 +126,27 @@ async function pullImage(ctx: AppContext, image: string): Promise<void> {
 
 function shouldPullImage(image: string): boolean {
   return !image.startsWith("survhub-build-");
+}
+
+/**
+ * Guard against starting a docker service whose locally-built image was pruned
+ * or never finished building. Without this the daemon raises a cryptic
+ * "No such image" 404 at container-create time; here we fail early with an
+ * actionable message. Registry images are skipped — the pull path covers them.
+ */
+export async function ensureLocalImagePresent(
+  docker: { getImage: (image: string) => { inspect: () => Promise<unknown> } },
+  image: string
+): Promise<void> {
+  if (shouldPullImage(image)) return;
+  try {
+    await docker.getImage(image).inspect();
+  } catch {
+    throw new Error(
+      `Docker image "${image}" is missing locally — it was removed (e.g. docker prune) or never finished building. ` +
+        `Redeploy this service to rebuild the image, then start it again.`
+    );
+  }
 }
 
 async function getContainerPort(ctx: AppContext, image: string, hostPort: number): Promise<number> {
@@ -669,6 +717,7 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
       insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
     }
   }
+  await ensureLocalImagePresent(ctx.docker, image);
   const containerPort = await getContainerPort(ctx, image, port);
   if (containerPort && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(containerPort);
   const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
@@ -975,6 +1024,17 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
 
   const adopted = await listLiveAdoptableContainers(ctx);
 
+  // Services that were running at the last graceful shutdown — restore them
+  // even if start_mode is "manual", then consume the marker.
+  let runningAtShutdown = new Set<string>();
+  try {
+    const raw = getSetting(ctx, SHUTDOWN_RUNNING_MARKER);
+    if (raw) runningAtShutdown = new Set(JSON.parse(raw) as string[]);
+  } catch {
+    /* malformed marker — ignore, fall back to stale-status detection */
+  }
+  deleteSetting(ctx, SHUTDOWN_RUNNING_MARKER);
+
   const rows = ctx.db
     .prepare("SELECT id, type, status, start_mode, stop_with_hoster, runtime_pgid FROM services")
     .all() as Array<{
@@ -1021,14 +1081,25 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
     // Its pgid (if any) is stale now.
     clearRuntimePgid(ctx, row.id);
 
+    const statusAtBoot = row.status;
     if (row.status === "running") {
       updateServiceStatus(ctx, row.id, "stopped");
-      insertLog(ctx, row.id, "warn", "Recovered from daemon restart. Service marked as stopped.");
     }
-    if (row.start_mode === "auto") {
+    const wasRunningAtShutdown = runningAtShutdown.has(row.id);
+    if (shouldRestoreServiceOnBoot({ startMode: row.start_mode, wasRunningAtShutdown })) {
+      insertLog(
+        ctx,
+        row.id,
+        "info",
+        wasRunningAtShutdown
+          ? "Restoring service that was running before the restart."
+          : "Auto-starting service (start_mode=auto)."
+      );
       void startService(ctx, row.id).catch((error) => {
-        insertLog(ctx, row.id, "error", `Auto-start failed: ${serializeError(error)}`);
+        insertLog(ctx, row.id, "error", `Boot start failed: ${serializeError(error)}`);
       });
+    } else if (statusAtBoot === "running") {
+      insertLog(ctx, row.id, "warn", "Recovered from daemon restart. Service marked as stopped.");
     }
   }
 }
@@ -1159,6 +1230,13 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
       "SELECT id FROM services WHERE status IN ('running', 'starting') AND COALESCE(stop_with_hoster, 1) != 0"
     )
     .all() as Array<{ id: string }>;
+  // Record what was running BEFORE we stop it, so the next boot can restore
+  // these (stopService below overwrites their status to 'stopped').
+  try {
+    setSetting(ctx, SHUTDOWN_RUNNING_MARKER, JSON.stringify(rows.map((r) => r.id)));
+  } catch {
+    /* best effort — restore degrades to stale-status detection on next boot */
+  }
   for (const row of rows) {
     try {
       insertLog(ctx, row.id, "warn", "ServerHoster is shutting down; stopping managed service.");
