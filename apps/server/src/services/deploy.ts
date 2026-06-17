@@ -1228,11 +1228,21 @@ async function deployFromGitLocked(
           `serve_built_dist is enabled — serving ${path.relative(targetPath, artifactPath)} with the static server (SPA fallback) instead of the dev server.\n`
         );
       } else {
+        // Preserve an explicitly-set run command across redeploys. Auto-detection
+        // can't infer the command for factory-pattern apps (e.g. Flask
+        // `create_app()` exposed via gunicorn), so clobbering it on every git
+        // auto-pull would break the service. Only fall back to the detected
+        // command when none has been set yet (fresh service).
+        const existing = ctx.db
+          .prepare("SELECT command FROM services WHERE id = ?")
+          .get(serviceId) as { command?: string } | undefined;
+        const preservedCommand =
+          existing?.command && existing.command.trim() ? existing.command : runtimeCommand;
         ctx.db
           .prepare(
             "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
           )
-          .run(inferred.type, runtimeCommand, runtimeWorkingDir, nowIso(), serviceId);
+          .run(inferred.type, preservedCommand, runtimeWorkingDir, nowIso(), serviceId);
       }
       transition(ctx, deploymentId, "starting", { gitSha: commitHash });
     }
