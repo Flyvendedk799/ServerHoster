@@ -9,6 +9,7 @@ import { buildApp } from "./app.js";
 import { nowIso } from "./lib/core.js";
 import { getServiceEnvWithLinks, gracefulShutdown } from "./services/runtime.js";
 import { scanForDatabaseDrivers } from "./services/codeScan.js";
+import { redisProfile } from "./services/resources/profiles/redis.js";
 
 /**
  * Database-Tracker Phase 0 — guardrail tests around CURRENT behavior, written
@@ -25,19 +26,23 @@ const LEARNAI_FIXTURE_DIR = path.resolve(
   "../src/services/resources/__fixtures__/learnai-like"
 );
 
-function seedService(ctx: Ctx, opts: { projectId?: string; linkedDatabaseId?: string | null } = {}): string {
+function seedService(
+  ctx: Ctx,
+  opts: { projectId?: string; linkedDatabaseId?: string | null; workingDir?: string } = {}
+): string {
   const id = nanoid();
   ctx.db
     .prepare(
       `INSERT INTO services
        (id, project_id, name, type, command, working_dir, port, status,
         auto_restart, restart_count, max_restarts, created_at, updated_at, linked_database_id)
-       VALUES (?, ?, ?, 'process', 'node index.js', '/tmp', 0, 'stopped', 0, 0, 5, ?, ?, ?)`
+       VALUES (?, ?, ?, 'process', 'node index.js', ?, 0, 'stopped', 0, 0, 5, ?, ?, ?)`
     )
     .run(
       id,
       opts.projectId ?? "proj-guardrail",
       `svc-${id.slice(0, 6)}`,
+      opts.workingDir ?? "/tmp",
       nowIso(),
       nowIso(),
       opts.linkedDatabaseId ?? null
@@ -121,6 +126,28 @@ test("guardrail: codeScan detects node database drivers from package.json", () =
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guardrail: redis dependency plans Redis/REDIS_URL, not a Postgres offer", async () => {
+  const ctx = await buildApp();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-redis-plan-"));
+  try {
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "redis-fixture", dependencies: { ioredis: "^5.0.0" } })
+    );
+    const serviceId = seedService(ctx, { workingDir: dir });
+    const plan = await redisProfile.plan(ctx, serviceId);
+
+    assert.equal(plan.profile, "redis");
+    assert.equal(plan.confidence, "high");
+    assert.deepEqual(plan.env.generated, ["REDIS_URL"]);
+    assert.equal(plan.actions[0].label, "Create managed Redis and inject REDIS_URL");
+    assert.ok(!plan.actions.some((action) => /Postgres|DATABASE_URL/.test(action.label)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    await gracefulShutdown(ctx);
   }
 });
 

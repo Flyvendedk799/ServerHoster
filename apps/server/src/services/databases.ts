@@ -107,30 +107,29 @@ export async function createManagedDatabase(
 ): Promise<DatabaseRow> {
   const id = nanoid();
   const username =
-    input.username ??
-    (input.engine === "postgres"
-      ? "postgres"
-      : input.engine === "mysql"
-        ? "root"
-        : input.engine === "mongo"
-          ? "admin"
-          : "");
+    input.engine === "redis"
+      ? null
+      : input.username ??
+        (input.engine === "postgres" ? "postgres" : input.engine === "mysql" ? "root" : "admin");
   const password = input.password ?? "survhub";
   const databaseName =
-    input.databaseName ??
-    (input.engine === "postgres"
-      ? "postgres"
-      : input.engine === "mysql"
-        ? input.name.replace(/-/g, "_")
-        : input.engine === "mongo"
-          ? "admin"
-          : "");
+    input.engine === "redis"
+      ? null
+      : input.databaseName ??
+        (input.engine === "postgres"
+          ? "postgres"
+          : input.engine === "mysql"
+            ? input.name.replace(/-/g, "_")
+            : "admin");
 
   const envMap: Record<DatabaseRow["engine"], string[]> = {
     postgres: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
     mysql: [`MYSQL_ROOT_PASSWORD=${password}`, `MYSQL_DATABASE=${databaseName}`],
     redis: [],
     mongo: [`MONGO_INITDB_ROOT_USERNAME=${username}`, `MONGO_INITDB_ROOT_PASSWORD=${password}`]
+  };
+  const cmdMap: Partial<Record<DatabaseRow["engine"], string[]>> = {
+    redis: ["redis-server", "--requirepass", password, "--appendonly", "yes"]
   };
 
   const containerName = `survhub-db-${id.slice(0, 8)}`;
@@ -141,6 +140,7 @@ export async function createManagedDatabase(
     const container = await ctx.docker.createContainer({
       Image: DATABASE_IMAGE[input.engine],
       name: containerName,
+      Cmd: cmdMap[input.engine],
       Env: envMap[input.engine],
       ExposedPorts: { [`${internalPort}/tcp`]: {} },
       HostConfig: {
@@ -205,7 +205,7 @@ export function containerNameForDatabase(db: DatabaseRow): string {
  */
 export function buildConnectionString(db: DatabaseRow, host = "localhost"): string {
   const user = db.username ?? defaultUser(db.engine);
-  const pass = db.password ?? "survhub";
+  const pass = db.password ?? (db.engine === "redis" ? "" : "survhub");
   const dbName = db.database_name ?? defaultDb(db.engine);
   switch (db.engine) {
     case "postgres":
@@ -215,7 +215,7 @@ export function buildConnectionString(db: DatabaseRow, host = "localhost"): stri
     case "mongo":
       return `mongodb://${user}:${pass}@${host}:${db.port}/${dbName}?authSource=admin`;
     case "redis":
-      return `redis://${host}:${db.port}`;
+      return pass ? `redis://:${pass}@${host === "localhost" ? "127.0.0.1" : host}:${db.port}` : `redis://${host}:${db.port}`;
   }
 }
 
@@ -751,9 +751,10 @@ export async function getDatabaseSizeBytes(db: DatabaseRow): Promise<number | nu
       return Number.isFinite(n) ? n : null;
     }
     if (db.engine === "redis") {
-      const { stdout } = await exec("docker", ["exec", container, "redis-cli", "INFO", "memory"], {
-        timeout: 5000
-      });
+      const args = ["exec", container, "redis-cli"];
+      if (db.password) args.push("-a", db.password);
+      args.push("INFO", "memory");
+      const { stdout } = await exec("docker", args, { timeout: 5000 });
       const match = /used_memory:(\d+)/.exec(stdout);
       return match ? Number(match[1]) : null;
     }

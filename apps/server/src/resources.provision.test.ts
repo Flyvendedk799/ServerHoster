@@ -16,6 +16,7 @@ import {
 import { getProfile } from "./services/resources/profiles.js";
 import { supabaseProfile, supabaseResourceAction } from "./services/resources/profiles/supabase.js";
 import { postgresProfile } from "./services/resources/profiles/postgres.js";
+import { redisProfile } from "./services/resources/profiles/redis.js";
 import { mongoProfile } from "./services/resources/profiles/mongo.js";
 import {
   functionEnvFilePath,
@@ -172,8 +173,9 @@ function cliSaw(calls: string[][], prefix: string): boolean {
 
 // ---- fake docker + ws capture -------------------------------------------------
 
-function installFakeDocker(ctx: Ctx): { logsRequested: string[] } {
+function installFakeDocker(ctx: Ctx): { logsRequested: string[]; createRequests: Array<Record<string, unknown>> } {
   const logsRequested: string[] = [];
+  const createRequests: Array<Record<string, unknown>> = [];
   const fake = {
     ping: async () => "OK",
     listContainers: async (opts: { filters?: Record<string, string[]> }) => {
@@ -194,10 +196,13 @@ function installFakeDocker(ctx: Ctx): { logsRequested: string[] } {
     }),
     pull: async () => ({}),
     modem: { followProgress: (_s: unknown, cb: (err: null) => void) => cb(null) },
-    createContainer: async () => ({ id: `fake-container-${nanoid(6)}`, start: async () => undefined })
+    createContainer: async (opts: Record<string, unknown>) => {
+      createRequests.push(opts);
+      return { id: `fake-container-${nanoid(6)}`, start: async () => undefined };
+    }
   };
   (ctx as { docker: unknown }).docker = fake;
-  return { logsRequested };
+  return { logsRequested, createRequests };
 }
 
 function captureWsEvents(ctx: Ctx): Array<Record<string, unknown>> {
@@ -999,22 +1004,84 @@ test("mongo profile provision: legacy mongo row, mongodb:// DATABASE_URL, remova
   }
 });
 
-test("redis still rejects provisioning; mysql and mongo are registered profiles now", async () => {
+test("redis profile provision: redis:7 container + REDIS_URL injection + clean removal", async () => {
   const ctx = await buildApp();
+  installFakeCli();
+  installFakeRestart();
+  const { createRequests } = installFakeDocker(ctx);
   try {
-    const token = await loginToken(ctx);
-    const auth = { authorization: `Bearer ${token}` };
-    const serviceId = seedService(ctx);
-    const redis = await ctx.app.inject({
-      method: "POST",
-      url: "/resources/provision",
-      headers: auth,
-      payload: { serviceId, profile: "redis" }
-    });
-    assert.equal(redis.statusCode, 500);
-    assert.ok(getProfile("mysql"), "mysql profile must be registered");
-    assert.ok(getProfile("mongo"), "mongo profile must be registered");
+    const serviceId = seedService(ctx, { type: "process" });
+    const resource = await redisProfile.provision(ctx, { serviceId, restart: false });
+    assert.equal(resource.status, "ready");
+    assert.equal(resource.profile, "redis");
+
+    const databaseId = String(resourceConfig(resource).database_id ?? "");
+    assert.ok(databaseId, "config_json.database_id must reference the legacy row");
+    const dbRow = ctx.db.prepare("SELECT * FROM databases WHERE id = ?").get(databaseId) as
+      | {
+          id: string;
+          engine: string;
+          port: number;
+          connection_string: string;
+          username: string | null;
+          password: string | null;
+          database_name: string | null;
+        }
+      | undefined;
+    assert.ok(dbRow, "legacy databases row must exist");
+    assert.equal(dbRow.engine, "redis");
+    assert.equal(dbRow.username, null, "Redis does not use SQL usernames");
+    assert.equal(dbRow.database_name, null, "Redis does not use SQL database names");
+    assert.ok(dbRow.password && dbRow.password.length >= 16, "Redis requires a generated password");
+    assert.ok(
+      dbRow.port >= 63790 && dbRow.port <= 63890,
+      `redis port ${dbRow.port} must come from the profile window`
+    );
+    assert.deepEqual(JSON.parse(resource.ports_json), { redis: dbRow.port });
+    assert.equal(dbRow.connection_string, `redis://:${dbRow.password}@127.0.0.1:${dbRow.port}`);
+
+    const createRequest = createRequests.at(-1);
+    assert.equal(createRequest?.Image, "redis:7");
+    assert.deepEqual(createRequest?.Cmd, [
+      "redis-server",
+      "--requirepass",
+      dbRow.password,
+      "--appendonly",
+      "yes"
+    ]);
+    assert.deepEqual(createRequest?.ExposedPorts, { "6379/tcp": {} });
+
+    const repeated = await redisProfile.provision(ctx, { serviceId, restart: false });
+    assert.equal(repeated.id, resource.id, "retry should reuse the linked Redis resource");
+    assert.equal(createRequests.length, 1, "retry must not create a second Redis container");
+
+    const svc = ctx.db.prepare("SELECT linked_database_id FROM services WHERE id = ?").get(serviceId) as {
+      linked_database_id: string | null;
+    };
+    assert.equal(svc.linked_database_id, databaseId);
+    assert.equal(listLinksForService(ctx, serviceId).length, 1);
+    assert.equal(redisProfile.env(ctx, resource.id, serviceId).REDIS_URL, dbRow.connection_string);
+    const mergedEnv = getServiceEnvWithLinks(ctx, serviceId);
+    assert.equal(mergedEnv.REDIS_URL, dbRow.connection_string);
+    assert.ok(!("DATABASE_URL" in mergedEnv), "Redis must not inject the generic DATABASE_URL key");
+
+    const rawSecret = ctx.db
+      .prepare("SELECT value, is_generated FROM resource_secrets WHERE resource_id = ? AND key = 'REDIS_URL'")
+      .get(resource.id) as { value: string; is_generated: number } | undefined;
+    assert.ok(rawSecret && !rawSecret.value.includes(dbRow.connection_string));
+    assert.equal(rawSecret.is_generated, 1);
+    assert.equal(getResourceSecret(ctx, resource.id, "REDIS_URL"), dbRow.connection_string);
+
+    await redisProfile.remove(ctx, resource.id);
+    assert.equal(getResource(ctx, resource.id), null);
+    assert.equal(ctx.db.prepare("SELECT id FROM databases WHERE id = ?").get(databaseId), undefined);
+    assert.equal(listLinksForService(ctx, serviceId).length, 0);
+    const svcAfter = ctx.db
+      .prepare("SELECT linked_database_id FROM services WHERE id = ?")
+      .get(serviceId) as { linked_database_id: string | null };
+    assert.equal(svcAfter.linked_database_id, null);
   } finally {
+    restoreSeams();
     await gracefulShutdown(ctx);
   }
 });

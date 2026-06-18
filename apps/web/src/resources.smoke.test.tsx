@@ -6,7 +6,7 @@
  * - the resource status view (Stacks) shows URLs and degraded functions
  */
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ComponentType } from "react";
 
@@ -167,6 +167,9 @@ const envRequirements = {
  * Stacks-view test.
  */
 let resourcesFixture: unknown[] = [];
+let scansFixture: unknown[] = [scanRecord];
+let orphanServicesFixture: unknown[] = [];
+let provisionRequests: Array<{ path: string; body: unknown }> = [];
 
 /** Route-keyed fetch mock; unknown GETs return []. */
 function jsonResponse(body: unknown): Response {
@@ -178,7 +181,7 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
-globalThis.fetch = (async (input: RequestInfo | URL) => {
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input);
   const path = url.replace(/^https?:\/\/[^/]+/, "");
   if (path === "/projects") return jsonResponse([{ id: "p1", name: "LearnAI" }]);
@@ -187,10 +190,28 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
       { id: "svc1", name: "learnai", type: "process", status: "stopped", project_id: "p1" }
     ]);
   if (path === "/databases") return jsonResponse([]);
-  if (path === "/resources/scans") return jsonResponse([scanRecord]);
+  if (path === "/databases/orphan-services") return jsonResponse(orphanServicesFixture);
+  if (path === "/resources/scans") return jsonResponse(scansFixture);
   if (path === "/resources/scans/svc1/run")
     return jsonResponse({ scan: scanRecord, plans: [supabasePlan], recommended: supabasePlan });
   if (path === "/resources") return jsonResponse(resourcesFixture);
+  if (path === "/resources/provision") {
+    provisionRequests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+    return jsonResponse({
+      id: "redis1",
+      project_id: "p1",
+      name: "learnai-redis",
+      profile: "redis",
+      status: "ready",
+      config: {},
+      ports: { redis: 63790 },
+      containers: ["survhub-db-redis"],
+      created_at: "2026-06-10T00:00:00.000Z",
+      updated_at: "2026-06-10T00:00:00.000Z",
+      secrets: [],
+      links: []
+    });
+  }
   if (path === "/resources/r1/env-requirements") return jsonResponse(envRequirements);
   if (path === "/services/svc1/env") return jsonResponse([]);
   if (path === "/services/github-sync-statuses") return jsonResponse({ items: [] });
@@ -215,7 +236,13 @@ describe("Resources / Stacks smoke", () => {
     ResourceStacks = (await import("./components/ResourceStacks")).ResourceStacks;
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    resourcesFixture = [];
+    scansFixture = [scanRecord];
+    orphanServicesFixture = [];
+    provisionRequests = [];
+  });
 
   it("offers Add Local Supabase for a LearnAI-like service", async () => {
     resourcesFixture = [];
@@ -231,6 +258,37 @@ describe("Resources / Stacks smoke", () => {
     expect(screen.getByText("Use plain Postgres anyway")).toBeTruthy();
     // The misleading generic prompt is gone for this card.
     expect(screen.queryByText("Add Postgres")).toBeNull();
+  });
+
+  it("offers Add Redis for a Redis driver and provisions the redis profile", async () => {
+    scansFixture = [];
+    orphanServicesFixture = [
+      {
+        service_id: "svc1",
+        service_name: "learnai",
+        project_id: "p1",
+        status: "stopped",
+        reason: "no-database-url",
+        code_signals: [{ driver: "Redis", ecosystem: "node", source_file: "package.json" }]
+      }
+    ];
+    render(
+      <MemoryRouter>
+        <ServicesPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText("Redis cache detected")).toBeTruthy();
+    const buttons = await screen.findAllByText("Add Redis");
+    const button = buttons[buttons.length - 1];
+    expect(screen.queryByText("Add Postgres")).toBeNull();
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(provisionRequests).toEqual([
+        { path: "/resources/provision", body: { serviceId: "svc1", profile: "redis", restart: true } }
+      ])
+    );
   });
 
   it("provision modal walks detection → secrets → bootstrap → confirm", async () => {

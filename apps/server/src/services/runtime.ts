@@ -58,11 +58,11 @@ export function shouldRestoreServiceOnBoot(opts: {
 const RESTART_STABILITY_MS = 30_000;
 
 /**
- * Merge project env, resource env, service env, and auto-injected DATABASE_URL.
+ * Merge project env, resource env, service env, and auto-injected database URLs.
  * Precedence (low → high):
- *   project env → active resource links → legacy linked DATABASE_URL → DATA_DIR → service env.
+ *   project env → active resource links → legacy linked DB URL → DATA_DIR → service env.
  * Service-level values always win so users can override project defaults,
- * system-managed resource env, and the DATABASE_URL auto-injection. Used by
+ * system-managed resource env, and linked database auto-injection. Used by
  * both runtime and deploy — keep it the single env merge path.
  */
 export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
@@ -88,11 +88,12 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
   const resourceEnv = getResourceEnvForService(ctx, serviceId);
   const merged: Record<string, string> = { ...projectEnv, ...resourceEnv };
 
-  if (service?.linked_database_id && !serviceEnv.DATABASE_URL) {
+  if (service?.linked_database_id) {
     const db = getDatabase(ctx, service.linked_database_id);
-    if (db) {
+    const envKey = db?.engine === "redis" ? "REDIS_URL" : "DATABASE_URL";
+    if (db && !serviceEnv[envKey]) {
       const host = service.type === "docker" ? "host.docker.internal" : "localhost";
-      merged.DATABASE_URL = buildConnectionString(db, host);
+      merged[envKey] = buildConnectionString(db, host);
     }
   }
 

@@ -145,6 +145,75 @@ function relativeTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleString();
 }
 
+type DetectedDatabaseOffer = {
+  profile: Extract<ResourceProfileId, "postgres" | "redis" | "mysql" | "mongo">;
+  label: string;
+  actionLabel: string;
+  headline: string;
+  detail: (drivers: string[]) => string;
+};
+
+function profileForDriver(driver: string): DetectedDatabaseOffer["profile"] | null {
+  if (/^Redis\b/i.test(driver)) return "redis";
+  if (driver === "PostgreSQL" || driver === "Prisma" || driver === "Drizzle ORM") return "postgres";
+  if (driver === "MySQL") return "mysql";
+  if (driver === "MongoDB") return "mongo";
+  return null;
+}
+
+const DATABASE_OFFERS: Record<DetectedDatabaseOffer["profile"], DetectedDatabaseOffer> = {
+  postgres: {
+    profile: "postgres",
+    label: "Postgres",
+    actionLabel: "Add Postgres",
+    headline: "No managed database",
+    detail: (drivers) =>
+      `Your code uses ${drivers.slice(0, 3).join(", ")}${drivers.length > 3 ? "..." : ""}. Add Postgres so data persists.`
+  },
+  redis: {
+    profile: "redis",
+    label: "Redis",
+    actionLabel: "Add Redis",
+    headline: "Redis cache detected",
+    detail: (drivers) =>
+      `Your code uses ${drivers.slice(0, 3).join(", ")}${drivers.length > 3 ? "..." : ""}. Add a managed Redis cache and inject REDIS_URL.`
+  },
+  mysql: {
+    profile: "mysql",
+    label: "MySQL",
+    actionLabel: "Add MySQL",
+    headline: "No managed MySQL database",
+    detail: (drivers) =>
+      `Your code uses ${drivers.slice(0, 3).join(", ")}${drivers.length > 3 ? "..." : ""}. Add MySQL so data persists.`
+  },
+  mongo: {
+    profile: "mongo",
+    label: "MongoDB",
+    actionLabel: "Add MongoDB",
+    headline: "No managed MongoDB database",
+    detail: (drivers) =>
+      `Your code uses ${drivers.slice(0, 3).join(", ")}${drivers.length > 3 ? "..." : ""}. Add MongoDB so data persists.`
+  }
+};
+
+function detectedDatabaseOffer(drivers: string[]): DetectedDatabaseOffer | null {
+  const counts = new Map<DetectedDatabaseOffer["profile"], { count: number; firstIndex: number }>();
+  drivers.forEach((driver, index) => {
+    const profile = profileForDriver(driver);
+    if (!profile) return;
+    const current = counts.get(profile);
+    counts.set(profile, {
+      count: (current?.count ?? 0) + 1,
+      firstIndex: current?.firstIndex ?? index
+    });
+  });
+  const [profile] =
+    Array.from(counts.entries()).sort(
+      (a, b) => b[1].count - a[1].count || a[1].firstIndex - b[1].firstIndex
+    )[0] ?? [];
+  return profile ? DATABASE_OFFERS[profile] : null;
+}
+
 type Project = {
   id: string;
   name: string;
@@ -696,6 +765,30 @@ export function ServicesPage() {
     }
   }
 
+  async function provisionDetectedResource(service: Service, offer: DetectedDatabaseOffer): Promise<void> {
+    if (offer.profile === "postgres") {
+      await quickAddDatabase(service);
+      return;
+    }
+    setProvisioningId(service.id);
+    try {
+      await api("/resources/provision", {
+        method: "POST",
+        body: JSON.stringify({
+          serviceId: service.id,
+          profile: offer.profile,
+          restart: true
+        })
+      });
+      toast.success(`${offer.label} linked to ${service.name}`);
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setProvisioningId(null);
+    }
+  }
+
   function databaseServiceForStack(stack: ServiceStack): Service | null {
     return (
       stack.services.find((service) => supabaseScan(service.id) && !serviceSupabaseResource(service.id)) ??
@@ -722,6 +815,12 @@ export function ServicesPage() {
       setPromoteTarget(embedded);
       return;
     }
+    const orphan = orphans.get(service.id);
+    const offer = orphan ? detectedDatabaseOffer(orphan.code_signals.map((signal) => signal.driver)) : null;
+    if (offer) {
+      void provisionDetectedResource(service, offer);
+      return;
+    }
     void quickAddDatabase(service);
   }
 
@@ -729,7 +828,10 @@ export function ServicesPage() {
     const service = databaseServiceForStack(stack);
     if (!service) return "Add database";
     if (supabaseScan(service.id) && !serviceSupabaseResource(service.id)) return "Add Local Supabase";
-    return embeddedDbs.has(service.id) ? "Promote data" : "Add database";
+    if (embeddedDbs.has(service.id)) return "Promote data";
+    const orphan = orphans.get(service.id);
+    const offer = orphan ? detectedDatabaseOffer(orphan.code_signals.map((signal) => signal.driver)) : null;
+    return offer?.actionLabel ?? "Add database";
   }
 
   async function deleteService(service: Service): Promise<void> {
@@ -1920,12 +2022,14 @@ export function ServicesPage() {
                                           return null;
                                         const drivers = orphan.code_signals.map((s) => s.driver);
                                         const uniqueDrivers = Array.from(new Set(drivers));
+                                        const offer = detectedDatabaseOffer(drivers);
                                         const headline = embedded
                                           ? "SQLite detected — promote to Postgres"
-                                          : "No managed database";
+                                          : offer?.headline ?? "No managed database";
                                         const detail = embedded
                                           ? `${embedded.file_path} won't survive container recreates.`
-                                          : `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "…" : ""}. Add Postgres so data persists.`;
+                                          : (offer?.detail(uniqueDrivers) ??
+                                            `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "..." : ""}. Add a managed dependency for this service.`);
                                         const dataDir = service.data_dir_container ?? service.data_dir;
                                         return (
                                           <div className="db-suggest-banner">
@@ -1958,7 +2062,9 @@ export function ServicesPage() {
                                               onClick={() =>
                                                 embedded
                                                   ? setPromoteTarget(embedded)
-                                                  : void quickAddDatabase(service)
+                                                  : offer
+                                                    ? void provisionDetectedResource(service, offer)
+                                                    : void quickAddDatabase(service)
                                               }
                                             >
                                               {provisioningId === service.id ? (
@@ -1967,6 +2073,8 @@ export function ServicesPage() {
                                                 </>
                                               ) : embedded ? (
                                                 "Promote data"
+                                              ) : offer ? (
+                                                offer.actionLabel
                                               ) : (
                                                 "Add Postgres"
                                               )}
