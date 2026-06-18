@@ -28,7 +28,8 @@ function hasPnpm(): boolean {
 
 function initGitFixture(
   dir: string,
-  pkgOrReadme: { kind: "package"; pkg: Record<string, unknown> } | { kind: "readme" }
+  pkgOrReadme: { kind: "package"; pkg: Record<string, unknown> } | { kind: "readme" },
+  branch = "main"
 ): void {
   fs.mkdirSync(dir, { recursive: true });
   if (pkgOrReadme.kind === "readme") {
@@ -36,10 +37,7 @@ function initGitFixture(
   } else {
     fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkgOrReadme.pkg, null, 2));
   }
-  // Force branch to `main` regardless of the host's `init.defaultBranch`
-  // setting so the deploy pipeline (which checks out `main` by default)
-  // can find it.
-  execSync("git init -b main", { cwd: dir, stdio: "ignore" });
+  execSync(`git init -b ${JSON.stringify(branch)}`, { cwd: dir, stdio: "ignore" });
   execSync('git config user.email "survhub-test@example.com"', { cwd: dir, stdio: "ignore" });
   execSync('git config user.name "SURVHub Test"', { cwd: dir, stdio: "ignore" });
   execSync("git add -A", { cwd: dir, stdio: "ignore" });
@@ -126,6 +124,156 @@ test("deploy-from-github: minimal npm repo via file URL", { skip: !hasGit() }, a
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test(
+  "deploy-from-github: falls back to the remote default branch when main is missing",
+  { skip: !hasGit() },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-git-master-"));
+    initGitFixture(
+      tmp,
+      {
+        kind: "package",
+        pkg: {
+          name: "fixture-master-branch",
+          version: "1.0.0",
+          private: true,
+          scripts: { start: 'node -e "process.exit(0)"' }
+        }
+      },
+      "master"
+    );
+    const repoUrl = pathToFileURL(tmp).href;
+
+    const ctx = await buildApp();
+    try {
+      ctx.db.prepare("DELETE FROM sessions").run();
+      ctx.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+        .run();
+      const login = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/login",
+        payload: { password: "test-pass" }
+      });
+      const token = login.json().token as string;
+
+      const proj = await ctx.app.inject({
+        method: "POST",
+        url: "/projects",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { name: `deploy-master-${Date.now()}` }
+      });
+      const projectId = (proj.json() as { id: string }).id;
+
+      const dep = await ctx.app.inject({
+        method: "POST",
+        url: "/services/deploy-from-github",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          projectId,
+          name: `svc-master-${Date.now()}`,
+          repoUrl,
+          startAfterDeploy: false
+        }
+      });
+      assert.equal(dep.statusCode, 200);
+      const body = dep.json() as {
+        deployment: { status: string; branch: string; build_log: string };
+        service: { id: string; github_branch: string };
+      };
+      assert.equal(body.deployment.status, "success");
+      assert.equal(body.deployment.branch, "master");
+      assert.equal(body.service.github_branch, "master");
+      assert.match(body.deployment.build_log, /using remote default branch "master"/);
+
+      cleanupDeployArtifacts(ctx, body.service.id, projectId);
+    } finally {
+      await gracefulShutdown(ctx);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  "deploy-from-github: falls back to native node when a Dockerfile build fails",
+  { skip: !hasGit() },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-git-docker-fallback-"));
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-fake-docker-"));
+    const oldPath = process.env.PATH;
+    initGitFixture(tmp, {
+      kind: "package",
+      pkg: {
+        name: "fixture-bad-docker-good-node",
+        version: "1.0.0",
+        private: true,
+        scripts: {
+          build: 'node -e "process.exit(0)"',
+          start: 'node -e "process.exit(0)"'
+        }
+      }
+    });
+    fs.writeFileSync(path.join(tmp, "Dockerfile"), "FROM node:20\nRUN exit 1\n");
+    execSync("git add Dockerfile && git commit -m dockerfile", { cwd: tmp, stdio: "ignore" });
+    const fakeDocker = path.join(fakeBin, "docker");
+    fs.writeFileSync(fakeDocker, '#!/bin/sh\necho "fake docker build failed" >&2\nexit 1\n');
+    fs.chmodSync(fakeDocker, 0o755);
+    process.env.PATH = `${fakeBin}${path.delimiter}${oldPath ?? ""}`;
+    const repoUrl = pathToFileURL(tmp).href;
+
+    const ctx = await buildApp();
+    try {
+      ctx.db.prepare("DELETE FROM sessions").run();
+      ctx.db
+        .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+        .run();
+      const login = await ctx.app.inject({
+        method: "POST",
+        url: "/auth/login",
+        payload: { password: "test-pass" }
+      });
+      const token = login.json().token as string;
+
+      const proj = await ctx.app.inject({
+        method: "POST",
+        url: "/projects",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { name: `deploy-docker-fallback-${Date.now()}` }
+      });
+      const projectId = (proj.json() as { id: string }).id;
+
+      const dep = await ctx.app.inject({
+        method: "POST",
+        url: "/services/deploy-from-github",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          projectId,
+          name: `svc-docker-fallback-${Date.now()}`,
+          repoUrl,
+          startAfterDeploy: false
+        }
+      });
+      assert.equal(dep.statusCode, 200);
+      const body = dep.json() as {
+        deployment: { status: string; build_log: string };
+        service: { id: string; type: string; command: string };
+      };
+      assert.equal(body.deployment.status, "success");
+      assert.equal(body.service.type, "process");
+      assert.equal(body.service.command, "npm run start");
+      assert.match(body.deployment.build_log, /Docker build failed/);
+      assert.match(body.deployment.build_log, /native node deployment pipeline/);
+
+      cleanupDeployArtifacts(ctx, body.service.id, projectId);
+    } finally {
+      process.env.PATH = oldPath;
+      await gracefulShutdown(ctx);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  }
+);
 
 test(
   "deploy-from-github: pnpm workspace repo uses pnpm install",

@@ -12,7 +12,9 @@ import {
   findStaticEntry,
   assertPortAvailable,
   dbReservedPorts,
-  assertWithinServiceDir
+  assertWithinServiceDir,
+  insertLog,
+  serializeError
 } from "../lib/core.js";
 import { refreshLoginIngress, isCloudflareConnected } from "../services/cloudflare.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
@@ -25,7 +27,6 @@ import {
 } from "../services/runtime.js";
 import { resolvePersistedRelPaths, resolvePersistedDockerBinds } from "../services/persistence.js";
 import { killTerminalSession } from "../services/terminals.js";
-import { insertLog } from "../lib/core.js";
 import {
   applyPostDeployServiceState,
   deployFromGit,
@@ -602,6 +603,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM deployments WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM logs WHERE service_id = ?").run(id);
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(id);
+    ctx.db.prepare("DELETE FROM service_group_members WHERE service_id = ?").run(id);
 
     // Tear down any SaaS tenant custom hostnames bound to this service (best
     // effort on the Cloudflare side; local rows must go regardless so the
@@ -738,8 +740,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     port: z.number().int().optional(),
     domain: z.string().optional(),
     githubAutoPull: z.boolean().optional(),
+    alwaysOn: z.boolean().optional(),
     autoRestart: z.boolean().optional(),
+    startMode: z.enum(["manual", "auto"]).optional(),
     stopWithHoster: z.boolean().optional(),
+    maxRestarts: z.number().int().min(0).max(1000).optional(),
     dependsOn: z.array(z.string()).optional(),
     environment: z.enum(["production", "staging", "development"]).optional(),
     linkedDatabaseId: z.string().nullable().optional(),
@@ -832,10 +837,43 @@ export function registerServiceRoutes(ctx: AppContext): void {
         .run(p.githubAutoPull ? 1 : 0, id);
     if (p.autoRestart !== undefined)
       ctx.db.prepare("UPDATE services SET auto_restart = ? WHERE id = ?").run(p.autoRestart ? 1 : 0, id);
+    if (p.startMode !== undefined)
+      ctx.db.prepare("UPDATE services SET start_mode = ? WHERE id = ?").run(p.startMode, id);
     if (p.stopWithHoster !== undefined)
       ctx.db
         .prepare("UPDATE services SET stop_with_hoster = ? WHERE id = ?")
         .run(p.stopWithHoster ? 1 : 0, id);
+    if (p.maxRestarts !== undefined)
+      ctx.db.prepare("UPDATE services SET max_restarts = ? WHERE id = ?").run(p.maxRestarts, id);
+    if (p.alwaysOn !== undefined) {
+      if (p.alwaysOn) {
+        ctx.db
+          .prepare(
+            "UPDATE services SET auto_restart = 1, start_mode = 'auto', stop_with_hoster = 0, updated_at = ? WHERE id = ?"
+          )
+          .run(nowIso(), id);
+      } else {
+        ctx.db
+          .prepare("UPDATE services SET start_mode = 'manual', stop_with_hoster = 1, updated_at = ? WHERE id = ?")
+          .run(nowIso(), id);
+      }
+      if (service.type === "docker") {
+        const restartPolicyName = p.alwaysOn ? "unless-stopped" : "no";
+        try {
+          await ctx.docker
+            .getContainer(`survhub-${id}`)
+            .update({ RestartPolicy: { Name: restartPolicyName } } as any);
+          insertLog(ctx, id, "info", `Updated Docker restart policy to ${restartPolicyName} for Always on.`);
+        } catch (error) {
+          insertLog(
+            ctx,
+            id,
+            "warn",
+            `Could not update Docker restart policy for Always on: ${serializeError(error)}`
+          );
+        }
+      }
+    }
     if (p.dependsOn !== undefined) {
       ctx.db.prepare("UPDATE services SET depends_on = ? WHERE id = ?").run(JSON.stringify(p.dependsOn), id);
     }

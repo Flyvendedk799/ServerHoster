@@ -611,8 +611,18 @@ async function startProcessService(
     // duplicate restart.
     if (current && current.instanceId !== instanceId) return;
     const cfg = ctx.db
-      .prepare("SELECT auto_restart, restart_count, max_restarts FROM services WHERE id = ?")
-      .get(serviceId) as { auto_restart: number; restart_count: number; max_restarts: number } | undefined;
+      .prepare(
+        "SELECT auto_restart, restart_count, max_restarts, start_mode, stop_with_hoster FROM services WHERE id = ?"
+      )
+      .get(serviceId) as
+      | {
+          auto_restart: number;
+          restart_count: number;
+          max_restarts: number;
+          start_mode?: string | null;
+          stop_with_hoster?: number | null;
+        }
+      | undefined;
     if (!cfg) return;
     if (ctx.manuallyStopped.has(serviceId)) {
       ctx.runtimeProcesses.delete(serviceId);
@@ -656,7 +666,8 @@ async function startProcessService(
             `Service exited (code ${code}) shortly after start:\n${startupBuffer.slice(-2000)}`
           );
         }
-        if (cfg.auto_restart && cfg.restart_count < cfg.max_restarts) {
+        const alwaysOn = cfg.start_mode === "auto" && Number(cfg.stop_with_hoster ?? 1) === 0;
+        if (cfg.auto_restart && (alwaysOn || cfg.restart_count < cfg.max_restarts)) {
           const nextCount = cfg.restart_count + 1;
           ctx.db.prepare("UPDATE services SET restart_count = ? WHERE id = ?").run(nextCount, serviceId);
           const backoffMs = Math.min(30000, 1000 * Math.pow(2, nextCount));
@@ -672,7 +683,9 @@ async function startProcessService(
             kind: "service_crash",
             severity: "warning",
             title: `Service crashed: ${serviceName}`,
-            body: `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
+            body: alwaysOn
+              ? `Exit code ${code}. Always on is enabled; restart attempt ${nextCount} in ${backoffMs}ms.`
+              : `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
             serviceId
           });
           setTimeout(() => {
@@ -1274,7 +1287,15 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
     }
   }
 
+  const durableProcessRows = ctx.db
+    .prepare("SELECT id FROM services WHERE COALESCE(stop_with_hoster, 1) = 0")
+    .all() as Array<{ id: string }>;
+  const durableProcessIds = new Set(durableProcessRows.map((row) => row.id));
   for (const [serviceId, runtime] of ctx.runtimeProcesses.entries()) {
+    if (durableProcessIds.has(serviceId)) {
+      insertLog(ctx, serviceId, "info", "Always on service left running while ServerHoster stops.");
+      continue;
+    }
     terminateRuntimeProcess(runtime);
     insertLog(ctx, serviceId, "warn", "Service received shutdown signal.");
   }

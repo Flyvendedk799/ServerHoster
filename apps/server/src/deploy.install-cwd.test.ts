@@ -8,6 +8,7 @@ import {
   findDockerfile,
   nodeInstallCommands,
   nodeVersionWarning,
+  resolveDockerFallbackBuildType,
   pythonEntryCommand,
   resolveBuildType,
   resolveInstallCwd,
@@ -95,10 +96,7 @@ test("workspaceDepBuildCommand: pnpm member builds its dep closure first (^... s
       scripts: { build: "next build" },
       dependencies: { "@scope/shared": "workspace:*" }
     });
-    assert.equal(
-      workspaceDepBuildCommand("pnpm", appDir, root),
-      'pnpm --filter "@scope/web^..." run build'
-    );
+    assert.equal(workspaceDepBuildCommand("pnpm", appDir, root), 'pnpm --filter "@scope/web^..." run build');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -221,6 +219,22 @@ test("findDockerfile + resolveBuildType: a subdir-only Dockerfile deploys as doc
     fs.writeFileSync(path.join(apiDir, "Dockerfile"), "FROM node:20\n");
     assert.equal(findDockerfile(root), path.join("services", "api", "Dockerfile"));
     assert.equal(resolveBuildType(root), "docker");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveDockerFallbackBuildType: a Dockerfile repo with a launchable package can fall back to node", () => {
+  const root = tmpRoot("docker-fallback-node");
+  try {
+    fs.writeFileSync(path.join(root, "Dockerfile"), "FROM node:20\n");
+    writeJson(root, "package.json", {
+      name: "next-ish",
+      scripts: { build: "next build", start: "next start" },
+      dependencies: { next: "14.2.18" }
+    });
+    assert.equal(resolveBuildType(root), "docker");
+    assert.equal(resolveDockerFallbackBuildType(root), "node");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -383,7 +397,10 @@ test("detectNodeLaunchTarget: a pnpm Vite app launches via the host-wrapper conf
     fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
     const target = detectNodeLaunchTarget(root, "vite_react_shadcn_ts");
     assert.equal(target.kind, "web");
-    assert.equal(target.command, "pnpm exec vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs");
+    assert.equal(
+      target.command,
+      "pnpm exec vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs"
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

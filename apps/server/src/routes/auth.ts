@@ -11,6 +11,7 @@ import {
 } from "../services/auth.js";
 import { nanoid } from "nanoid";
 import { nowIso } from "../lib/core.js";
+import { publicResourceRouteForRequest } from "../services/resources/publicExposure.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).optional(),
@@ -33,6 +34,7 @@ function requestPath(url: string): string {
 const API_PREFIXES = [
   "/auth",
   "/projects",
+  "/service-groups",
   "/services",
   "/databases",
   "/resources",
@@ -82,6 +84,8 @@ export function registerAuthRoutes(ctx: AppContext): void {
 
   ctx.app.addHook("onRequest", async (req, reply) => {
     const path = requestPath(req.url);
+    const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
+    if (host && publicResourceRouteForRequest(ctx, host, path)) return;
     if (
       path === "/health" ||
       path === "/auth/login" ||

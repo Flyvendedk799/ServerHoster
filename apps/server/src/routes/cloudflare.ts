@@ -25,9 +25,11 @@ import {
   disconnectCloudflare,
   isCloudflareConnected
 } from "../services/cloudflare.js";
-import { broadcast, nowIso } from "../lib/core.js";
+import { broadcast, insertLog, nowIso, serializeError } from "../lib/core.js";
 import { setSecretSetting, deleteSetting, getSetting, getSecretSetting } from "../services/settings.js";
 import { enqueueCleanup } from "../services/cleanupQueue.js";
+import { publicResourceIngressRoutes } from "../services/resources/publicExposure.js";
+import { restartOrRedeployService } from "../services/resources/restart.js";
 
 const configSchema = z.object({
   accountId: z.string().optional(),
@@ -40,6 +42,34 @@ const routeSchema = z.object({
   domain: z.string().min(1),
   targetPort: z.number().int().min(1).max(65535)
 });
+
+async function applyLinkedPublicResourceEnv(
+  ctx: AppContext,
+  serviceId: string
+): Promise<{ action: "restarted" | "redeployed" | "skipped" | "failed"; error?: string }> {
+  if (!publicResourceIngressRoutes(ctx).some((route) => route.serviceId === serviceId)) {
+    return { action: "skipped" };
+  }
+  const service = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(serviceId) as
+    | { status?: string }
+    | undefined;
+  if (service?.status !== "running") return { action: "skipped" };
+
+  try {
+    const outcome = await restartOrRedeployService(ctx, serviceId);
+    insertLog(ctx, serviceId, "info", `Applied public linked-resource environment (${outcome.action}).`);
+    return { action: outcome.action };
+  } catch (error) {
+    const message = serializeError(error);
+    insertLog(
+      ctx,
+      serviceId,
+      "warn",
+      `Public linked-resource environment is ready, but the service could not be restarted automatically: ${message}`
+    );
+    return { action: "failed", error: message };
+  }
+}
 
 /**
  * Validate a Cloudflare API token before storing it. User-owned tokens verify
@@ -57,10 +87,7 @@ async function assertValidCloudflareToken(token: string): Promise<void> {
   if (accountsRes.ok) {
     const body = (await accountsRes.json()) as { result?: Array<{ id: string }> };
     for (const acct of body.result ?? []) {
-      const v = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${acct.id}/tokens/verify`,
-        auth
-      );
+      const v = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acct.id}/tokens/verify`, auth);
       if (v.ok) return;
     }
   }
@@ -281,7 +308,8 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
     }
     // Prefer the browser-login tunnel when connected — no API tokens to hunt.
     if (isCloudflareConnected(ctx)) {
-      return bindDomainViaLogin(ctx, serviceId, domain, { overwriteDns });
+      const result = bindDomainViaLogin(ctx, serviceId, domain, { overwriteDns });
+      return { ...result, public_resource_env: await applyLinkedPublicResourceEnv(ctx, serviceId) };
     }
     // --- legacy API-token path (Advanced fallback) ------------------------
     // domain lives in proxy_routes, not services (services.domain doesn't exist).
@@ -335,8 +363,16 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
         enqueueCleanup(ctx, "delete_dns", { domain: previous });
       }
     }
+    for (const route of publicResourceIngressRoutes(ctx).filter((route) => route.serviceId === serviceId)) {
+      await upsertTunnelIngress(ctx, route.domain, route.port, route.path);
+    }
     broadcast(ctx, { type: "exposure_changed", serviceId });
-    return { ok: true, domain, public_url: `https://${domain}` };
+    return {
+      ok: true,
+      domain,
+      public_url: `https://${domain}`,
+      public_resource_env: await applyLinkedPublicResourceEnv(ctx, serviceId)
+    };
   });
 
   /** Tear down the custom-domain binding for a service. */
@@ -383,9 +419,9 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
    */
   ctx.app.post("/services/:id/expose/test", async (req) => {
     const { id: serviceId } = req.params as { id: string };
-    const service = ctx.db
-      .prepare("SELECT domain FROM proxy_routes WHERE service_id = ?")
-      .get(serviceId) as { domain?: string } | undefined;
+    const service = ctx.db.prepare("SELECT domain FROM proxy_routes WHERE service_id = ?").get(serviceId) as
+      | { domain?: string }
+      | undefined;
     if (!service?.domain) throw new Error("Service has no domain bound");
     const url = `https://${service.domain}`;
     const start = Date.now();

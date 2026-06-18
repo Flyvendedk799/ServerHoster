@@ -9,6 +9,7 @@ import {
   handleTerminalWebSocketMessage,
   stopAllTerminalSessions
 } from "./services/terminals.js";
+import { publicResourceRouteForRequest } from "./services/resources/publicExposure.js";
 
 const ctx = await buildApp();
 const server = await ctx.app.listen({ port: ctx.config.apiPort, host: ctx.config.host });
@@ -82,7 +83,12 @@ wss.on("connection", (ws: WebSocket, req) => {
 const domainProxy = httpProxy.createProxyServer({});
 const port80 = http.createServer((req, res) => {
   const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
-  let route = ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
+  const requestPath = (req.url ?? "/").split("?")[0] || "/";
+  const publicResourceRoute = publicResourceRouteForRequest(ctx, host, requestPath);
+  let route: { target_port?: number } | undefined = publicResourceRoute
+    ? { target_port: publicResourceRoute.targetPort }
+    : undefined;
+  route ??= ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
     | { target_port?: number }
     | undefined;
   if (!route?.target_port) {

@@ -199,6 +199,85 @@ test("PATCH /services/:id: rejects invalid port", async () => {
   }
 });
 
+test("PATCH /services/:id: alwaysOn applies and removes the 24/7 runtime preset", async () => {
+  const ctx = await buildApp();
+  try {
+    const token = await authedToken(ctx);
+    const id = seedService(ctx, `svc-always-${Date.now()}`, 3009);
+    const enable = await ctx.app.inject({
+      method: "PATCH",
+      url: `/services/${id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { alwaysOn: true }
+    });
+    assert.equal(enable.statusCode, 200);
+    let row = ctx.db
+      .prepare("SELECT auto_restart, start_mode, stop_with_hoster FROM services WHERE id = ?")
+      .get(id) as { auto_restart: number; start_mode: string; stop_with_hoster: number };
+    assert.equal(row.auto_restart, 1);
+    assert.equal(row.start_mode, "auto");
+    assert.equal(row.stop_with_hoster, 0);
+
+    const disable = await ctx.app.inject({
+      method: "PATCH",
+      url: `/services/${id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { alwaysOn: false }
+    });
+    assert.equal(disable.statusCode, 200);
+    row = ctx.db
+      .prepare("SELECT auto_restart, start_mode, stop_with_hoster FROM services WHERE id = ?")
+      .get(id) as { auto_restart: number; start_mode: string; stop_with_hoster: number };
+    assert.equal(row.auto_restart, 1, "default auto-restart can stay enabled outside 24/7 mode");
+    assert.equal(row.start_mode, "manual");
+    assert.equal(row.stop_with_hoster, 1);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("PATCH /services/:id: alwaysOn updates a running Docker container restart policy", async () => {
+  const ctx = await buildApp();
+  const dockerUpdates: unknown[] = [];
+  try {
+    const token = await authedToken(ctx);
+    const id = seedService(ctx, `svc-always-docker-${Date.now()}`, 3010);
+    ctx.db.prepare("UPDATE services SET type = 'docker' WHERE id = ?").run(id);
+    (ctx as { docker: unknown }).docker = {
+      getContainer: (name: string) => {
+        assert.equal(name, `survhub-${id}`);
+        return {
+          update: async (opts: unknown) => {
+            dockerUpdates.push(opts);
+          }
+        };
+      }
+    };
+
+    const enable = await ctx.app.inject({
+      method: "PATCH",
+      url: `/services/${id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { alwaysOn: true }
+    });
+    assert.equal(enable.statusCode, 200);
+
+    const disable = await ctx.app.inject({
+      method: "PATCH",
+      url: `/services/${id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { alwaysOn: false }
+    });
+    assert.equal(disable.statusCode, 200);
+    assert.deepEqual(dockerUpdates, [
+      { RestartPolicy: { Name: "unless-stopped" } },
+      { RestartPolicy: { Name: "no" } }
+    ]);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
 test("PATCH /services/:id: rejects port already in use", async () => {
   const ctx = await buildApp();
   try {

@@ -95,6 +95,17 @@ test("buildIngressConfig: exact hostnames precede wildcards (first-match routing
   assert.ok(exactIdx < wildcardIdx, "exact rule must come before the wildcard rule");
 });
 
+test("buildIngressConfig: path routes precede generic routes for the same hostname", () => {
+  const cfg = buildIngressConfig("tid", "/c.json", [
+    { domain: "app.example.com", port: 3000 },
+    { domain: "app.example.com", path: "^/(auth|functions)/v1(/.*)?$", port: 55421 }
+  ]);
+  const pathIdx = cfg.indexOf('path: "^/(auth|functions)/v1(/.*)?$"');
+  const appIdx = cfg.indexOf("service: http://localhost:3000");
+  assert.ok(pathIdx >= 0 && appIdx >= 0);
+  assert.ok(pathIdx < appIdx, "resource path rule must come before the app fallback");
+});
+
 test("CF_LOGIN_URL_RE captures the dash.cloudflare.com/argotunnel URL", () => {
   const line =
     "Please open the following URL: https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin.cloudflareaccess.org%2Fabc123";
@@ -129,7 +140,24 @@ test("isCloudflareConnected + exposure capability flip once cert.pem AND tunnel 
           auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(serviceId, "p1", "svc", "process", "", "", "", "", 3000, "stopped", 1, 0, 5, "manual", nowIso(), nowIso());
+      .run(
+        serviceId,
+        "p1",
+        "svc",
+        "process",
+        "",
+        "",
+        "",
+        "",
+        3000,
+        "stopped",
+        1,
+        0,
+        5,
+        "manual",
+        nowIso(),
+        nowIso()
+      );
 
     assert.equal(isCloudflareConnected(ctx), false);
     assert.equal(getExposure(ctx, serviceId).capabilities.cloudflareConnected, false);

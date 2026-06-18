@@ -18,7 +18,10 @@ type Service = {
   environment?: string;
   depends_on?: string | null;
   linked_database_id?: string | null;
-  stop_with_hoster?: number;
+  auto_restart?: number;
+  max_restarts?: number;
+  start_mode?: string | null;
+  stop_with_hoster?: number | null;
   github_repo_url?: string | null;
   github_branch?: string | null;
   github_auto_pull?: number | null;
@@ -60,7 +63,12 @@ function parseDependsOn(raw: string | null | undefined): string[] {
   }
 }
 
+function serviceAlwaysOn(service: Service): boolean {
+  return service.start_mode === "auto" && service.auto_restart !== 0 && service.stop_with_hoster === 0;
+}
+
 export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
+  const initialAlwaysOn = serviceAlwaysOn(service);
   const [form, setForm] = useState({
     name: service.name,
     domain: service.domain || "",
@@ -71,7 +79,7 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
     environment: (service.environment as "production" | "staging" | "development") ?? "production",
     dependsOn: parseDependsOn(service.depends_on ?? null),
     linkedDatabaseId: service.linked_database_id ?? "",
-    stopWithHoster: service.stop_with_hoster !== 0,
+    alwaysOn: initialAlwaysOn,
     githubAutoPull: service.github_auto_pull !== 0
   });
   const [loading, setLoading] = useState(false);
@@ -150,21 +158,22 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
   async function save() {
     setLoading(true);
     try {
+      const payload: Record<string, unknown> = {
+        name: form.name,
+        type: form.type,
+        command: form.command,
+        workingDir: form.workingDir,
+        port: form.port ? Number(form.port) : undefined,
+        domain: form.domain || undefined,
+        environment: form.environment,
+        dependsOn: form.dependsOn,
+        linkedDatabaseId: form.linkedDatabaseId || null,
+        githubAutoPull: form.githubAutoPull
+      };
+      if (form.alwaysOn !== initialAlwaysOn) payload.alwaysOn = form.alwaysOn;
       await api(`/services/${service.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          name: form.name,
-          type: form.type,
-          command: form.command,
-          workingDir: form.workingDir,
-          port: form.port ? Number(form.port) : undefined,
-          domain: form.domain || undefined,
-          environment: form.environment,
-          dependsOn: form.dependsOn,
-          linkedDatabaseId: form.linkedDatabaseId || null,
-          stopWithHoster: form.stopWithHoster,
-          githubAutoPull: form.githubAutoPull
-        })
+        body: JSON.stringify(payload)
       });
       toast.success("Settings updated");
       onUpdated();
@@ -384,17 +393,20 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
             </div>
           </div>
 
-          <label className="checkbox-row">
+          <label className={`checkbox-row always-on-settings-row${form.alwaysOn ? " active" : ""}`}>
             <input
               type="checkbox"
-              checked={form.stopWithHoster}
-              onChange={(e) => setForm({ ...form, stopWithHoster: e.target.checked })}
+              checked={form.alwaysOn}
+              onChange={(e) => setForm({ ...form, alwaysOn: e.target.checked })}
             />
-            <span>Stop this service when LocalSURV stops</span>
+            <span>
+              <strong>Always on</strong>
+              <small>Auto-starts on boot, restarts after crashes, and survives ServerHoster restarts.</small>
+            </span>
           </label>
           <p className="hint">
-            Leave this on for local dev apps. Turn it off for durable background services that should survive
-            the control panel.
+            Services in this mode show a 24/7 badge on the Services page. Manual Stop still wins when you
+            deliberately turn the service off.
           </p>
 
           {service.github_repo_url && (

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import simpleGit from "simple-git";
+import simpleGit, { type SimpleGit } from "simple-git";
 import { nanoid } from "nanoid";
 import {
   broadcast,
@@ -14,7 +14,7 @@ import {
   serializeError,
   updateServiceStatus
 } from "../lib/core.js";
-import type { AppContext } from "../types.js";
+import type { AppContext, BuildType } from "../types.js";
 import { getServiceEnvWithLinks, startService, stopService, withLock } from "./runtime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 import { createNotification } from "./notifications.js";
@@ -36,9 +36,64 @@ type NodeLaunchTarget = {
   reason: string;
 };
 
+type BuildPipelineResult = {
+  status: "success" | "failed";
+  buildLog: string;
+  artifactPath: string;
+  buildType: BuildType;
+  nodeTarget?: NodeLaunchTarget;
+  pythonDir?: string;
+};
+
 // Native addon compiles (better-sqlite3, sharp, canvas, bcrypt) routinely blow
 // past the 2-minute default; give installs real headroom.
 const NODE_INSTALL_TIMEOUT_MS = 600_000;
+
+function parseRemoteDefaultBranch(output: string): string | null {
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^ref:\s+refs\/heads\/(.+?)\s+HEAD$/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function remoteBranchExists(git: SimpleGit, authedUrl: string, branch: string): Promise<boolean> {
+  const out = await git.listRemote(["--heads", authedUrl, branch]);
+  return out.trim().length > 0;
+}
+
+async function remoteDefaultBranch(git: SimpleGit, authedUrl: string): Promise<string | null> {
+  const symref = await git.listRemote(["--symref", authedUrl, "HEAD"]);
+  const parsed = parseRemoteDefaultBranch(symref);
+  if (parsed) return parsed;
+
+  const heads = await git.listRemote(["--heads", authedUrl]);
+  for (const line of heads.split(/\r?\n/)) {
+    const match = line.match(/\srefs\/heads\/(.+)$/);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function resolveDeployBranch(
+  git: SimpleGit,
+  authedUrl: string,
+  requestedBranch: string
+): Promise<{ branch: string; note?: string }> {
+  const requested = requestedBranch.trim();
+  if (requested && (await remoteBranchExists(git, authedUrl, requested))) return { branch: requested };
+
+  const fallback = await remoteDefaultBranch(git, authedUrl);
+  if (!fallback) return { branch: requested || "main" };
+
+  if (fallback !== requested) {
+    const msg = requested
+      ? `Requested branch "${requested}" was not found; using remote default branch "${fallback}".\n`
+      : `No branch was provided; using remote default branch "${fallback}".\n`;
+    return { branch: fallback, note: msg };
+  }
+  return { branch: fallback };
+}
 
 function detectNodePackageManager(projectPath: string): NodePackageManager {
   const declared = detectDeclaredPackageManager(projectPath);
@@ -529,14 +584,14 @@ function hasLaunchableNodePackage(rootPath: string): boolean {
     const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
     return Boolean(
       scripts.dev ||
-        scripts.start ||
-        scripts.build ||
-        deps.vite ||
-        deps.next ||
-        deps.astro ||
-        deps.nuxt ||
-        deps["@sveltejs/kit"] ||
-        deps.electron
+      scripts.start ||
+      scripts.build ||
+      deps.vite ||
+      deps.next ||
+      deps.astro ||
+      deps.nuxt ||
+      deps["@sveltejs/kit"] ||
+      deps.electron
     );
   });
 }
@@ -548,8 +603,7 @@ function findPythonProjectDir(rootPath: string): string | null {
   const walk = (dir: string, depth: number) => {
     if (depth > 4) return;
     const hasMarker =
-      fs.existsSync(path.join(dir, "requirements.txt")) ||
-      fs.existsSync(path.join(dir, "pyproject.toml"));
+      fs.existsSync(path.join(dir, "requirements.txt")) || fs.existsSync(path.join(dir, "pyproject.toml"));
     if (hasMarker) found.push({ dir, depth });
     let entries: fs.Dirent[];
     try {
@@ -643,6 +697,12 @@ export function resolveBuildType(projectPath: string): ReturnType<typeof detectB
     if (entry && looksLikeUnbuiltSpa(entry) && findPackageDirs(projectPath).length > 0) return "node";
   }
   return base;
+}
+
+export function resolveDockerFallbackBuildType(projectPath: string): BuildType | null {
+  if (hasLaunchableNodePackage(projectPath)) return "node";
+  if (findPythonProjectDir(projectPath)) return "python";
+  return null;
 }
 
 /** An index.html that references a dev entry (e.g. /src/main.tsx) is unbuilt SPA source. */
@@ -840,8 +900,9 @@ export async function runBuildPipeline(
     onPhase?: (phase: DeployPhase) => void;
     nodeTarget?: NodeLaunchTarget;
     pythonDir?: string;
+    buildTypeOverride?: BuildType;
   } = {}
-): Promise<{ status: "success" | "failed"; buildLog: string; artifactPath: string }> {
+): Promise<BuildPipelineResult> {
   const deploymentId = opts.deploymentId;
   // Build with the SAME env the runtime gets (project env + linked DATABASE_URL
   // + service env), so build-time-inlined vars (VITE_*, NEXT_PUBLIC_*, SSG data)
@@ -854,7 +915,7 @@ export async function runBuildPipeline(
     | { dockerfile?: string }
     | undefined;
   const dockerfile = String(serviceBuild?.dockerfile ?? "").trim();
-  const buildType = resolveBuildType(projectPath);
+  const buildType = opts.buildTypeOverride ?? resolveBuildType(projectPath);
   let buildLog = `Detected build type: ${buildType}\n`;
   let artifactPath = projectPath;
 
@@ -894,8 +955,7 @@ export async function runBuildPipeline(
       );
     if (deploymentId)
       emitBuildLog(ctx, serviceId, deploymentId, `Installing dependencies in: ${installRel}\n`);
-    if (versionWarning && deploymentId)
-      emitBuildLog(ctx, serviceId, deploymentId, versionWarning, "stderr");
+    if (versionWarning && deploymentId) emitBuildLog(ctx, serviceId, deploymentId, versionWarning, "stderr");
 
     // Make incompatible native deps (e.g. better-sqlite3@9 on Node 25) build out
     // of the box: rewrite their pins to host-compatible ranges before install,
@@ -921,7 +981,7 @@ export async function runBuildPipeline(
       // `npm rebuild` failing means a native addon couldn't compile for this
       // host (e.g. better-sqlite3 vs Node's V8 ABI) — fail the deploy with the
       // error in the log rather than starting an app that will crash on require.
-      if (install.code !== 0) return { status: "failed", buildLog, artifactPath };
+      if (install.code !== 0) return { status: "failed", buildLog, artifactPath, buildType, nodeTarget };
     }
 
     // A Vite launch command runs against a generated wrapper config that allows
@@ -939,7 +999,7 @@ export async function runBuildPipeline(
       const msg = `\nSkipping package build for ${nodeTarget.reason}; the launch command performs its own development build.\n`;
       buildLog += msg;
       if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stdout");
-      return { status: "success", buildLog, artifactPath };
+      return { status: "success", buildLog, artifactPath, buildType, nodeTarget };
     }
 
     opts.onPhase?.("building");
@@ -961,7 +1021,7 @@ export async function runBuildPipeline(
           timeoutMs: NODE_INSTALL_TIMEOUT_MS
         });
         buildLog += `\n$ ${depBuildCommand}\n${depBuild.output}\n`;
-        if (depBuild.code !== 0) return { status: "failed", buildLog, artifactPath };
+        if (depBuild.code !== 0) return { status: "failed", buildLog, artifactPath, buildType, nodeTarget };
       }
     }
 
@@ -971,8 +1031,9 @@ export async function runBuildPipeline(
       timeoutMs: NODE_INSTALL_TIMEOUT_MS
     });
     buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
-    if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
+    if (build.code !== 0) return { status: "failed", buildLog, artifactPath, buildType, nodeTarget };
     if (fs.existsSync(path.join(buildCwd, "dist"))) artifactPath = path.join(buildCwd, "dist");
+    return { status: "success", buildLog, artifactPath, buildType, nodeTarget };
   } else if (buildType === "python") {
     opts.onPhase?.("installing");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "installing");
@@ -998,7 +1059,7 @@ export async function runBuildPipeline(
         timeoutMs: NODE_INSTALL_TIMEOUT_MS
       });
       buildLog += mk.output + "\n";
-      if (mk.code !== 0) return { status: "failed", buildLog, artifactPath };
+      if (mk.code !== 0) return { status: "failed", buildLog, artifactPath, buildType, pythonDir: pythonCwd };
     }
 
     // 2) Install project deps using the venv interpreter.
@@ -1012,7 +1073,8 @@ export async function runBuildPipeline(
       timeoutMs: NODE_INSTALL_TIMEOUT_MS
     });
     buildLog += install.output + "\n";
-    if (install.code !== 0) return { status: "failed", buildLog, artifactPath };
+    if (install.code !== 0)
+      return { status: "failed", buildLog, artifactPath, buildType, pythonDir: pythonCwd };
 
     // 3) Ensure the server the run command needs (uvicorn/gunicorn) is present.
     const serverPkg = pythonServerPackage(pythonCwd);
@@ -1024,6 +1086,7 @@ export async function runBuildPipeline(
       });
       buildLog += ensure.output + "\n"; // non-fatal: may already be a project dep
     }
+    return { status: "success", buildLog, artifactPath, buildType, pythonDir: pythonCwd };
   } else if (buildType === "godot") {
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
@@ -1037,7 +1100,7 @@ export async function runBuildPipeline(
       onChunk: stream
     });
     buildLog += `\n$ ${command}\n${build.output}\n`;
-    if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
+    if (build.code !== 0) return { status: "failed", buildLog, artifactPath, buildType };
     artifactPath = path.dirname(exportPath);
   } else if (buildType === "static") {
     const staticDir = findStaticEntry(projectPath);
@@ -1058,7 +1121,25 @@ export async function runBuildPipeline(
       onChunk: stream
     });
     buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
-    if (build.code !== 0) return { status: "failed", buildLog, artifactPath };
+    if (build.code !== 0) {
+      const fallbackBuildType = resolveDockerFallbackBuildType(projectPath);
+      if (fallbackBuildType) {
+        const msg =
+          `Docker build failed, but this repository also looks like a ${fallbackBuildType} app. ` +
+          `Falling back to ServerHoster's native ${fallbackBuildType} deployment pipeline.\n`;
+        buildLog += msg;
+        if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
+        const fallback = await runBuildPipeline(ctx, serviceId, projectPath, {
+          ...opts,
+          buildTypeOverride: fallbackBuildType
+        });
+        return {
+          ...fallback,
+          buildLog: buildLog + fallback.buildLog
+        };
+      }
+      return { status: "failed", buildLog, artifactPath, buildType };
+    }
     ctx.db
       .prepare("UPDATE services SET docker_image = ?, updated_at = ? WHERE id = ?")
       .run(imageTag, nowIso(), serviceId);
@@ -1067,10 +1148,10 @@ export async function runBuildPipeline(
       "\nNo Dockerfile, package.json, Python markers, Godot project, or static index.html found. Cannot deploy this repository layout.\n";
     buildLog += msg;
     if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
-    return { status: "failed", buildLog, artifactPath };
+    return { status: "failed", buildLog, artifactPath, buildType };
   }
 
-  return { status: "success", buildLog, artifactPath };
+  return { status: "success", buildLog, artifactPath, buildType };
 }
 
 /**
@@ -1108,9 +1189,7 @@ export function deployFromGit(
   // poller tick, a webhook, and a manual redeploy can't run concurrent git
   // pulls / installs in the same working tree and corrupt it. Throws
   // "Service action already in progress" if something else holds the lock.
-  return withLock(ctx, serviceId, () =>
-    deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger)
-  );
+  return withLock(ctx, serviceId, () => deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger));
 }
 
 async function deployFromGitLocked(
@@ -1128,6 +1207,7 @@ async function deployFromGitLocked(
   let commitHash = "";
   let status: "success" | "failed" = "success";
   let artifactPath = targetPath;
+  let effectiveBranch = branch.trim() || "main";
 
   const deploymentId = nanoid();
   const startedAt = nowIso();
@@ -1148,6 +1228,21 @@ async function deployFromGitLocked(
   let failureStage: "queued" | "cloning" | "building" | "starting" | "unknown" = "unknown";
   try {
     failureStage = "cloning";
+    const branchResolution = await resolveDeployBranch(git, authedUrl, effectiveBranch);
+    effectiveBranch = branchResolution.branch;
+    if (branchResolution.note) {
+      buildLog += branchResolution.note;
+      emitBuildLog(ctx, serviceId, deploymentId, branchResolution.note);
+    }
+    if (effectiveBranch !== branch) {
+      const msg = `Resolved deploy branch: ${effectiveBranch}.\n`;
+      buildLog += msg;
+      emitBuildLog(ctx, serviceId, deploymentId, msg);
+      ctx.db
+        .prepare("UPDATE services SET github_branch = ?, updated_at = ? WHERE id = ?")
+        .run(effectiveBranch, nowIso(), serviceId);
+      ctx.db.prepare("UPDATE deployments SET branch = ? WHERE id = ?").run(effectiveBranch, deploymentId);
+    }
     // Remove any persisted-upload symlinks from the previous deploy so the git
     // checkout/reset below can restore tracked files cleanly instead of choking
     // on a symlink pointing into the data volume. Re-established after the reset.
@@ -1159,7 +1254,7 @@ async function deployFromGitLocked(
       } catch {
         /* first-time */
       }
-      await git.cwd(targetPath).fetch(["origin", branch]);
+      await git.cwd(targetPath).fetch(["origin", effectiveBranch]);
       // Force the working tree to EXACTLY match the remote branch instead of
       // merging. A plain `pull` aborts on a dirty tree — and our own native-dep
       // remediation (remediateNativeDeps) leaves backend/package.json + the lock
@@ -1167,14 +1262,14 @@ async function deployFromGitLocked(
       // changes would be overwritten by merge". `checkout -f` + `reset --hard` is
       // the correct deploy semantic (deploy = exact remote state) and is
       // idempotent with remediation, which re-applies during the build.
-      await git.cwd(targetPath).raw(["checkout", "-f", branch]);
-      await git.cwd(targetPath).reset(["--hard", `origin/${branch}`]);
-      buildLog += `Reset working tree to origin/${branch} (deploy = exact remote state).\n`;
-      emitBuildLog(ctx, serviceId, deploymentId, `Reset working tree to origin/${branch}.\n`);
+      await git.cwd(targetPath).raw(["checkout", "-f", effectiveBranch]);
+      await git.cwd(targetPath).reset(["--hard", `origin/${effectiveBranch}`]);
+      buildLog += `Reset working tree to origin/${effectiveBranch} (deploy = exact remote state).\n`;
+      emitBuildLog(ctx, serviceId, deploymentId, `Reset working tree to origin/${effectiveBranch}.\n`);
     } else {
-      await git.clone(authedUrl, targetPath, ["--branch", branch]);
-      buildLog += `Cloned repository branch: ${branch}.\n`;
-      emitBuildLog(ctx, serviceId, deploymentId, `Cloned repository branch: ${branch}.\n`);
+      await git.clone(authedUrl, targetPath, ["--branch", effectiveBranch]);
+      buildLog += `Cloned repository branch: ${effectiveBranch}.\n`;
+      emitBuildLog(ctx, serviceId, deploymentId, `Cloned repository branch: ${effectiveBranch}.\n`);
     }
     // Back conventional/configured upload dirs with the persistent volume: seed
     // committed files (copy-if-absent — runtime/admin uploads always win) then
@@ -1183,7 +1278,9 @@ async function deployFromGitLocked(
     // use bind mounts wired at container start instead.
     {
       const svcType = (
-        ctx.db.prepare("SELECT type FROM services WHERE id = ?").get(serviceId) as { type?: string } | undefined
+        ctx.db.prepare("SELECT type FROM services WHERE id = ?").get(serviceId) as
+          | { type?: string }
+          | undefined
       )?.type;
       if (svcType !== "docker") {
         const linked = ensurePersistedPaths(ctx, serviceId, targetPath, (rel, err) => {
@@ -1211,10 +1308,6 @@ async function deployFromGitLocked(
     const nodeTarget =
       buildType === "node" ? detectNodeLaunchTarget(targetPath, service?.name ?? "") : undefined;
     const pythonDir = buildType === "python" ? (findPythonProjectDir(targetPath) ?? targetPath) : undefined;
-    const inferred = inferServiceRuntimeDefaults(buildType, nodeTarget?.workingDir ?? pythonDir ?? targetPath);
-    const runtimeWorkingDir = nodeTarget?.workingDir ?? pythonDir ?? targetPath;
-    const runtimeCommand =
-      nodeTarget?.command ?? (pythonDir ? pythonEntryCommand(pythonDir) : inferred.command);
     // Persist only the dockerfile up front — the docker build step reads it.
     // type/command/working_dir are written ONLY after a successful build (below)
     // so a failed deploy doesn't overwrite the last-good runtime config with a
@@ -1234,13 +1327,28 @@ async function deployFromGitLocked(
     buildLog += result.buildLog;
     artifactPath = result.artifactPath;
     if (status === "success") {
-      if (buildType === "godot" || buildType === "static") {
+      const effectiveBuildType = result.buildType;
+      const effectiveNodeTarget =
+        result.nodeTarget ??
+        (effectiveBuildType === "node" ? detectNodeLaunchTarget(targetPath, service?.name ?? "") : undefined);
+      const effectivePythonDir =
+        result.pythonDir ??
+        (effectiveBuildType === "python" ? (findPythonProjectDir(targetPath) ?? targetPath) : undefined);
+      const inferred = inferServiceRuntimeDefaults(
+        effectiveBuildType,
+        effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? targetPath
+      );
+      const runtimeWorkingDir = effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? targetPath;
+      const runtimeCommand =
+        effectiveNodeTarget?.command ??
+        (effectivePythonDir ? pythonEntryCommand(effectivePythonDir) : inferred.command);
+      if (effectiveBuildType === "godot" || effectiveBuildType === "static") {
         ctx.db
           .prepare(
             "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
           )
           .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
-      } else if (shouldServeBuiltDist(ctx, serviceId, buildType, targetPath, artifactPath)) {
+      } else if (shouldServeBuiltDist(ctx, serviceId, effectiveBuildType, targetPath, artifactPath)) {
         // Opted-in production mode: serve the freshly built dist/ statically
         // instead of launching the framework dev server.
         ctx.db
@@ -1260,15 +1368,13 @@ async function deployFromGitLocked(
         // `create_app()` exposed via gunicorn), so clobbering it on every git
         // auto-pull would break the service. Only fall back to the detected
         // command when none has been set yet (fresh service).
-        const existing = ctx.db
-          .prepare("SELECT command FROM services WHERE id = ?")
-          .get(serviceId) as { command?: string } | undefined;
+        const existing = ctx.db.prepare("SELECT command FROM services WHERE id = ?").get(serviceId) as
+          | { command?: string }
+          | undefined;
         const preservedCommand =
           existing?.command && existing.command.trim() ? existing.command : runtimeCommand;
         ctx.db
-          .prepare(
-            "UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
-          )
+          .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
           .run(inferred.type, preservedCommand, runtimeWorkingDir, nowIso(), serviceId);
       }
       transition(ctx, deploymentId, "starting", { gitSha: commitHash });
@@ -1318,7 +1424,7 @@ async function deployFromGitLocked(
     created_at: startedAt,
     started_at: startedAt,
     finished_at: finishedAt,
-    branch,
+    branch: effectiveBranch,
     trigger_source: trigger
   };
 }
@@ -1454,17 +1560,38 @@ export async function deployFromLocalPath(
     status = result.status;
     buildLog += result.buildLog;
     artifactPath = result.artifactPath;
-    if (
-      status === "success" &&
-      (buildType === "godot" ||
-        buildType === "static" ||
-        shouldServeBuiltDist(ctx, serviceId, buildType, localPath, artifactPath))
-    ) {
-      ctx.db
-        .prepare(
-          "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
-        )
-        .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+    if (status === "success") {
+      const effectiveBuildType = result.buildType;
+      const effectiveNodeTarget =
+        result.nodeTarget ??
+        (effectiveBuildType === "node" ? detectNodeLaunchTarget(localPath, service?.name ?? "") : undefined);
+      const effectivePythonDir =
+        result.pythonDir ??
+        (effectiveBuildType === "python" ? (findPythonProjectDir(localPath) ?? localPath) : undefined);
+      const effectiveInferred = inferServiceRuntimeDefaults(
+        effectiveBuildType,
+        effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? localPath
+      );
+      const runtimeWorkingDir = effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? localPath;
+      const runtimeCommand =
+        effectiveNodeTarget?.command ??
+        (effectivePythonDir ? pythonEntryCommand(effectivePythonDir) : effectiveInferred.command);
+      if (
+        effectiveBuildType === "godot" ||
+        effectiveBuildType === "static" ||
+        shouldServeBuiltDist(ctx, serviceId, effectiveBuildType, localPath, artifactPath)
+      ) {
+        ctx.db
+          .prepare(
+            "UPDATE services SET type = 'static', command = ?, working_dir = ?, updated_at = ? WHERE id = ?"
+          )
+          .run(staticServeCommand(), artifactPath, nowIso(), serviceId);
+      } else {
+        const commandToPersist = options.command !== undefined ? options.command : runtimeCommand;
+        ctx.db
+          .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
+          .run(effectiveInferred.type, commandToPersist, runtimeWorkingDir, nowIso(), serviceId);
+      }
     }
   } catch (error) {
     status = "failed";
@@ -1561,8 +1688,7 @@ async function rollbackDeploymentLocked(ctx: AppContext, serviceId: string, depl
   const svc = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
     | { name?: string }
     | undefined;
-  const nodeTarget =
-    buildType === "node" ? detectNodeLaunchTarget(targetPath, svc?.name ?? "") : undefined;
+  const nodeTarget = buildType === "node" ? detectNodeLaunchTarget(targetPath, svc?.name ?? "") : undefined;
   const pythonDir = buildType === "python" ? (findPythonProjectDir(targetPath) ?? targetPath) : undefined;
   const result = await runBuildPipeline(ctx, serviceId, targetPath, {
     deploymentId: newDeployId,

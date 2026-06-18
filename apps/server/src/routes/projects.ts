@@ -112,6 +112,11 @@ export function registerProjectRoutes(ctx: AppContext): void {
     ctx.db
       .prepare("DELETE FROM env_vars WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)")
       .run(id);
+    ctx.db
+      .prepare(
+        "DELETE FROM service_group_members WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)"
+      )
+      .run(id);
     ctx.db.prepare("DELETE FROM services WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM databases WHERE project_id = ?").run(id);
     ctx.db.prepare("DELETE FROM projects WHERE id = ?").run(id);

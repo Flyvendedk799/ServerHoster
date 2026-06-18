@@ -9,6 +9,7 @@ import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
 import { broadcast, insertLog, nowIso } from "../lib/core.js";
 import { deleteSetting, getSecretSetting, getSetting, setSetting } from "./settings.js";
+import { publicResourceIngressRoutes } from "./resources/publicExposure.js";
 
 /**
  * Upsert a system-managed env var on a service. System rows are write-locked
@@ -187,22 +188,31 @@ export function parseTunnelId(output: string): string | null {
 }
 
 /** Build the cloudflared config.yml body for a set of (domain, port) ingress rules. */
-export function buildIngressConfig(
-  tunnelId: string,
-  credsPath: string,
-  routes: Array<{ domain: string; port: number }>
-): string {
+export type IngressRoute = { domain: string; port: number; path?: string };
+
+export function buildIngressConfig(tunnelId: string, credsPath: string, routes: IngressRoute[]): string {
   // cloudflared matches ingress rules FIRST-MATCH, so exact hostnames must
-  // precede wildcards — otherwise `*.zone` swallows `api.zone`. Stable sort
-  // keeps the relative order within each group.
-  const ordered = [...routes].sort(
-    (a, b) => Number(a.domain.includes("*")) - Number(b.domain.includes("*"))
-  );
+  // precede wildcards and path-specific rules must precede generic host rules.
+  const ordered = routes
+    .map((route, index) => ({ route, index }))
+    .sort((a, b) => {
+      const wildcard = Number(a.route.domain.includes("*")) - Number(b.route.domain.includes("*"));
+      if (wildcard !== 0) return wildcard;
+      const domain = a.route.domain.localeCompare(b.route.domain);
+      if (domain !== 0) return domain;
+      const pathSpecific = Number(Boolean(b.route.path)) - Number(Boolean(a.route.path));
+      if (pathSpecific !== 0) return pathSpecific;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.route);
   const ingressLines = ordered
     .map((r) => {
       // A bare `*` starts a YAML alias — wildcard hostnames must be quoted.
       const host = r.domain.includes("*") ? JSON.stringify(r.domain) : r.domain;
-      return `  - hostname: ${host}\n    service: http://localhost:${r.port}`;
+      const lines = [`  - hostname: ${host}`];
+      if (r.path) lines.push(`    path: ${JSON.stringify(r.path)}`);
+      lines.push(`    service: http://localhost:${r.port}`);
+      return lines.join("\n");
     })
     .join("\n");
   return (
@@ -655,6 +665,23 @@ function withIngressLock<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+function orderTunnelConfigIngress<T extends { hostname?: string; path?: string }>(rules: T[]): T[] {
+  return rules
+    .map((rule, index) => ({ rule, index }))
+    .sort((a, b) => {
+      const aHost = a.rule.hostname ?? "";
+      const bHost = b.rule.hostname ?? "";
+      const wildcard = Number(aHost.includes("*")) - Number(bHost.includes("*"));
+      if (wildcard !== 0) return wildcard;
+      const host = aHost.localeCompare(bHost);
+      if (host !== 0) return host;
+      const pathSpecific = Number(Boolean(b.rule.path)) - Number(Boolean(a.rule.path));
+      if (pathSpecific !== 0) return pathSpecific;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.rule);
+}
+
 /**
  * Add (or replace) an ingress rule in the tunnel configuration so traffic
  * for `domain` is forwarded to `http://localhost:<port>`. The catch-all rule
@@ -663,7 +690,8 @@ function withIngressLock<T>(task: () => Promise<T>): Promise<T> {
 export async function upsertTunnelIngress(
   ctx: AppContext,
   domain: string,
-  targetPort: number
+  targetPort: number,
+  targetPath?: string
 ): Promise<void> {
   return withIngressLock(async () => {
     const accountId = getSetting(ctx, "cloudflare_account_id");
@@ -675,12 +703,20 @@ export async function upsertTunnelIngress(
       `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`
     );
     const existingIngress = current?.config?.ingress ?? [];
-    const filtered = existingIngress.filter((r) => r.hostname !== domain && r.service !== "http_status:404");
-    filtered.push({ hostname: domain, service: `http://localhost:${targetPort}` });
-    filtered.push({ service: "http_status:404" });
+    const filtered = existingIngress.filter(
+      (r) =>
+        !(r.hostname === domain && (r.path ?? "") === (targetPath ?? "")) && r.service !== "http_status:404"
+    );
+    filtered.push({
+      hostname: domain,
+      ...(targetPath ? { path: targetPath } : {}),
+      service: `http://localhost:${targetPort}`
+    });
+    const ordered = orderTunnelConfigIngress(filtered);
+    ordered.push({ service: "http_status:404" });
     await cf(ctx, `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`, {
       method: "PUT",
-      body: JSON.stringify({ config: { ingress: filtered } })
+      body: JSON.stringify({ config: { ingress: ordered } })
     });
   });
 }
@@ -950,12 +986,14 @@ export function ensureNamedTunnel(ctx: AppContext): { tunnelId: string; credsPat
  *   - saas_domains: tenant-owned custom hostnames (Cloudflare for SaaS) routed
  *     to their service's port — traffic arrives through the fallback origin
  *     with the ORIGINAL tenant Host header, so each needs its own ingress rule
+ *   - linked public resources: profile-owned path prefixes (for example
+ *     Supabase /auth/v1 + /functions/v1) routed on the service's own domain
  *   - the SaaS fallback origin itself → the designated SaaS service (covers
  *     edge configurations that rewrite Host to the fallback origin)
  *   - the optional public API hostname → the control-plane port, so external
  *     callers (e.g. a hosted app's edge functions) can reach the /saas API
  */
-export function collectIngressRoutes(ctx: AppContext): Array<{ domain: string; port: number }> {
+export function collectIngressRoutes(ctx: AppContext): IngressRoute[] {
   const routes = ctx.db
     .prepare(
       `SELECT pr.domain AS domain, COALESCE(pr.target_port, s.port) AS port
@@ -963,7 +1001,10 @@ export function collectIngressRoutes(ctx: AppContext): Array<{ domain: string; p
        JOIN services s ON s.id = pr.service_id
        WHERE pr.domain IS NOT NULL AND COALESCE(pr.target_port, s.port) IS NOT NULL`
     )
-    .all() as Array<{ domain: string; port: number }>;
+    .all() as IngressRoute[];
+  for (const r of publicResourceIngressRoutes(ctx)) {
+    routes.push({ domain: r.domain, path: r.path, port: r.port });
+  }
   const saasRoutes = ctx.db
     .prepare(
       `SELECT sd.hostname AS domain, COALESCE(sd.target_port, s.port) AS port
@@ -971,7 +1012,7 @@ export function collectIngressRoutes(ctx: AppContext): Array<{ domain: string; p
        JOIN services s ON s.id = sd.service_id
        WHERE COALESCE(sd.target_port, s.port) IS NOT NULL`
     )
-    .all() as Array<{ domain: string; port: number }>;
+    .all() as IngressRoute[];
   const seen = new Set(routes.map((r) => r.domain));
   for (const r of saasRoutes) {
     if (!seen.has(r.domain)) {
@@ -1064,14 +1105,17 @@ export function runManagedTunnel(ctx: AppContext): void {
     });
     if (wasStop || runtime.restartCount >= 10) return;
     const next = runtime.restartCount + 1;
-    setTimeout(() => {
-      try {
-        runManagedTunnel(ctx);
-        if (LOGIN_STATE.managed) LOGIN_STATE.managed.restartCount = next;
-      } catch {
-        /* surfaces via status broadcast */
-      }
-    }, Math.min(30000, 2000 * next));
+    setTimeout(
+      () => {
+        try {
+          runManagedTunnel(ctx);
+          if (LOGIN_STATE.managed) LOGIN_STATE.managed.restartCount = next;
+        } catch {
+          /* surfaces via status broadcast */
+        }
+      },
+      Math.min(30000, 2000 * next)
+    );
   });
   broadcast(ctx, { type: "cf_managed_status", running: true, pid: child.pid, startedAt: runtime.startedAt });
 }
@@ -1223,7 +1267,9 @@ export function bindDomainViaLogin(
 export function unbindDomainViaLogin(ctx: AppContext, serviceId: string): { ok: true } {
   ctx.db.transaction(() => {
     ctx.db.prepare("DELETE FROM proxy_routes WHERE service_id = ?").run(serviceId);
-    ctx.db.prepare("UPDATE services SET ssl_status = 'none', updated_at = ? WHERE id = ?").run(nowIso(), serviceId);
+    ctx.db
+      .prepare("UPDATE services SET ssl_status = 'none', updated_at = ? WHERE id = ?")
+      .run(nowIso(), serviceId);
     setSystemEnv(ctx, serviceId, "PUBLIC_URL", null);
   })();
   const remaining = collectIngressRoutes(ctx).length;

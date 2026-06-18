@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -77,6 +77,10 @@ type Service = {
   latest_git_branch?: string | null;
   ssl_status?: string;
   environment?: string;
+  auto_restart?: number;
+  max_restarts?: number;
+  start_mode?: string | null;
+  stop_with_hoster?: number | null;
   tunnel_url?: string | null;
   linked_database_id?: string | null;
   cert_expires_at?: number | null;
@@ -295,9 +299,20 @@ type ServiceStack = {
   databases: DatabaseResource[];
 };
 
+type OperatorServiceGroup = {
+  id: string;
+  name: string;
+  description?: string | null;
+  service_ids: string[];
+  services: Service[];
+  created_at: string;
+  updated_at: string;
+};
+
 export function ServicesPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [services, setServices] = useState<Service[]>([]);
+  const [operatorGroups, setOperatorGroups] = useState<OperatorServiceGroup[]>([]);
   const [databases, setDatabases] = useState<DatabaseResource[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [serviceLogs, setServiceLogs] = useState<Record<string, LogEntry[]>>({});
@@ -306,6 +321,10 @@ export function ServicesPage() {
   const [loadError, setLoadError] = useState(false);
 
   const [editingService, setEditingService] = useState<Service | null>(null);
+  const [editingOperatorGroup, setEditingOperatorGroup] = useState<OperatorServiceGroup | "new" | null>(
+    null
+  );
+  const [operatorGroupActionKey, setOperatorGroupActionKey] = useState<string | null>(null);
   const [showGithubDeploy, setShowGithubDeploy] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showComposeModal, setShowComposeModal] = useState(false);
@@ -325,6 +344,7 @@ export function ServicesPage() {
   const [githubSyncStatuses, setGithubSyncStatuses] = useState<Record<string, GithubSyncStatus>>({});
   const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
   const [forceRestartingId, setForceRestartingId] = useState<string | null>(null);
+  const [alwaysOnBusyId, setAlwaysOnBusyId] = useState<string | null>(null);
   const [scans, setScans] = useState<Map<string, DependencyScan>>(new Map());
   const [resources, setResources] = useState<ManagedResourceDetail[]>([]);
   const [provisionTarget, setProvisionTarget] = useState<{
@@ -339,14 +359,16 @@ export function ServicesPage() {
 
   async function load(): Promise<void> {
     try {
-      const [projectData, serviceData, databaseData] = await Promise.all([
+      const [projectData, serviceData, databaseData, groupData] = await Promise.all([
         api<Project[]>("/projects", { silent: true }),
         api<Service[]>("/services", { silent: true }),
-        api<DatabaseResource[]>("/databases", { silent: true })
+        api<DatabaseResource[]>("/databases", { silent: true }),
+        api<OperatorServiceGroup[]>("/service-groups", { silent: true }).catch(() => [])
       ]);
       setProjects(projectData);
       setServices(serviceData);
       setDatabases(databaseData);
+      setOperatorGroups(groupData);
       setLoadError(false);
       void loadGithubSyncStatuses(serviceData);
       // Best-effort — never break the page if these fail.
@@ -625,6 +647,23 @@ export function ServicesPage() {
     }
   }
 
+  async function toggleAlwaysOn(service: Service): Promise<void> {
+    const next = !serviceAlwaysOn(service);
+    setAlwaysOnBusyId(service.id);
+    try {
+      await api(`/services/${service.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ alwaysOn: next })
+      });
+      toast.success(next ? `${service.name} is now always on` : `${service.name} returned to manual mode`);
+      await load();
+    } catch {
+      /* api handles toast */
+    } finally {
+      setAlwaysOnBusyId(null);
+    }
+  }
+
   /**
    * Hard power-cycle for a wedged service. Breaks any stuck action lock and
    * SIGKILLs the runtime before starting again — the escape hatch for a service
@@ -730,6 +769,59 @@ export function ServicesPage() {
       );
     } catch {
       /* serviceAction handles toast/state */
+    }
+  }
+
+  async function operatorGroupAction(
+    group: OperatorServiceGroup,
+    action: "start" | "stop" | "restart"
+  ): Promise<void> {
+    if (group.services.length === 0) return;
+    const titleAction = `${action[0].toUpperCase()}${action.slice(1)}`;
+    const ok = await confirmDialog({
+      title: `${titleAction} "${group.name}"?`,
+      message: `This will ${action} ${group.services.length} selected service${
+        group.services.length === 1 ? "" : "s"
+      } in this group.`,
+      danger: action === "stop",
+      confirmLabel: `${titleAction} All`
+    });
+    if (!ok) return;
+    const key = `${group.id}:${action}`;
+    setOperatorGroupActionKey(key);
+    try {
+      const result = await api<{ results: Array<{ serviceId: string; ok: boolean; error?: string }> }>(
+        `/service-groups/${group.id}/${action}-all`,
+        { method: "POST" }
+      );
+      const failures = result.results.filter((item) => !item.ok);
+      if (failures.length > 0) {
+        toast.error(`${failures.length} service${failures.length === 1 ? "" : "s"} could not ${action}`);
+      } else {
+        toast.success(`${titleAction} sent to ${result.results.length} service${result.results.length === 1 ? "" : "s"}`);
+      }
+      await load();
+    } catch {
+      /* api handles toast */
+    } finally {
+      setOperatorGroupActionKey(null);
+    }
+  }
+
+  async function deleteOperatorGroup(group: OperatorServiceGroup): Promise<void> {
+    const ok = await confirmDialog({
+      title: `Delete "${group.name}"?`,
+      message: "The services themselves stay intact. Only this operator group is removed.",
+      danger: true,
+      confirmLabel: "Delete Group"
+    });
+    if (!ok) return;
+    try {
+      await api(`/service-groups/${group.id}`, { method: "DELETE" });
+      toast.success(`Deleted ${group.name}`);
+      await load();
+    } catch {
+      /* api handles toast */
     }
   }
 
@@ -887,7 +979,7 @@ export function ServicesPage() {
     setSearchQuery("");
   }
 
-  const serviceGroups = useMemo(() => {
+  const visibleServiceGroups = useMemo(() => {
     if (!groupByProject) return [{ id: "all", title: "All Services", services: filteredServices }];
     return projects
       .map((project) => ({
@@ -898,10 +990,50 @@ export function ServicesPage() {
       .filter((group) => group.services.length > 0);
   }, [filteredServices, groupByProject, projects]);
 
+  function operatorGroupStatus(group: OperatorServiceGroup): string {
+    if (group.services.length === 0) return "none";
+    if (group.services.some((service) => service.status === "crashed" || service.status === "error"))
+      return "error";
+    if (group.services.some((service) => ["starting", "stopping", "building"].includes(service.status)))
+      return "starting";
+    if (group.services.every((service) => service.status === "running")) return "running";
+    if (group.services.some((service) => service.status === "running")) return "partial";
+    return "stopped";
+  }
+
+  function operatorGroupDisabledReason(
+    group: OperatorServiceGroup,
+    action: "start" | "stop" | "restart"
+  ): string | null {
+    if (group.services.length === 0) return "Add services to this group first";
+    const actionable = group.services.some(
+      (service) => lifecycleDisabledReason(service.status, action) === null
+    );
+    if (actionable) return null;
+    if (action === "start") return "Every service is already running or starting";
+    if (action === "stop") return "No running service to stop";
+    return "No running service to restart";
+  }
+
+  function operatorGroupActionInFlight(
+    group: OperatorServiceGroup,
+    action: "start" | "stop" | "restart"
+  ): boolean {
+    if (operatorGroupActionKey === `${group.id}:${action}`) return true;
+    return group.services.some((service) => {
+      const op = operations[service.id];
+      return op?.action === action && (op.status === "queued" || op.status === "active");
+    });
+  }
+
   function serviceUrl(service: Service): string | null {
     if (service.domain) return `http://${service.domain}`;
     if (service.port) return `http://localhost:${service.port}`;
     return null;
+  }
+
+  function serviceAlwaysOn(service: Service): boolean {
+    return service.start_mode === "auto" && service.auto_restart !== 0 && service.stop_with_hoster === 0;
   }
 
   /**
@@ -1426,6 +1558,148 @@ export function ServicesPage() {
         </motion.div>
       </section>
 
+      <section className="operator-groups-section">
+        <div className="section-title">
+          <div className="row">
+            <Layers size={18} />
+            <h3>Service Groups</h3>
+            <span className="badge accent">{operatorGroups.length} groups</span>
+          </div>
+          <button className="ghost xsmall" onClick={() => setEditingOperatorGroup("new")}>
+            <Plus size={14} /> New Group
+          </button>
+        </div>
+
+        {operatorGroups.length === 0 ? (
+          <div className="operator-groups-empty">
+            <span>No service groups yet.</span>
+            <button className="primary xsmall" onClick={() => setEditingOperatorGroup("new")}>
+              <Plus size={14} /> Create Group
+            </button>
+          </div>
+        ) : (
+          <div className="operator-group-list">
+            {operatorGroups.map((group) => {
+              const status = operatorGroupStatus(group);
+              const running = group.services.filter((service) => service.status === "running").length;
+              const startReason = operatorGroupDisabledReason(group, "start");
+              const restartReason = operatorGroupDisabledReason(group, "restart");
+              const stopReason = operatorGroupDisabledReason(group, "stop");
+              return (
+                <section key={group.id} className={`operator-group operator-group-${status}`}>
+                  <div className="operator-group-main">
+                    <div className="operator-group-title">
+                      <div className="row">
+                        <h4>{group.name}</h4>
+                        <StatusBadge status={status} label={status} />
+                      </div>
+                      {group.description && <p className="muted small">{group.description}</p>}
+                    </div>
+                    <div className="operator-group-stats">
+                      <span>
+                        {running}/{group.services.length} running
+                      </span>
+                      <span>{group.services.length} selected</span>
+                    </div>
+                  </div>
+
+                  <div className="operator-group-members">
+                    {group.services.length === 0 ? (
+                      <span className="operator-group-member muted">No services selected</span>
+                    ) : (
+                      group.services.map((service) => {
+                        const url = serviceUrl(service);
+                        return url ? (
+                          <a
+                            key={service.id}
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="operator-group-member"
+                            data-tooltip="Open service endpoint"
+                          >
+                            <StatusBadge status={service.status} dotOnly />
+                            <span>{service.name}</span>
+                            {service.port && <code>{service.port}</code>}
+                          </a>
+                        ) : (
+                          <span key={service.id} className="operator-group-member">
+                            <StatusBadge status={service.status} dotOnly />
+                            <span>{service.name}</span>
+                            {service.port && <code>{service.port}</code>}
+                          </span>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="operator-group-actions">
+                    <button
+                      className="ghost xsmall"
+                      disabled={Boolean(startReason)}
+                      data-tooltip={startReason ?? "Start every service in this group"}
+                      title={startReason ?? undefined}
+                      onClick={() => void operatorGroupAction(group, "start")}
+                    >
+                      {operatorGroupActionInFlight(group, "start") ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Play size={14} />
+                      )}
+                      Start all
+                    </button>
+                    <button
+                      className="ghost xsmall"
+                      disabled={Boolean(restartReason)}
+                      data-tooltip={restartReason ?? "Restart every service in this group"}
+                      title={restartReason ?? undefined}
+                      onClick={() => void operatorGroupAction(group, "restart")}
+                    >
+                      {operatorGroupActionInFlight(group, "restart") ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <RotateCw size={14} />
+                      )}
+                      Restart all
+                    </button>
+                    <button
+                      className="ghost xsmall"
+                      disabled={Boolean(stopReason)}
+                      data-tooltip={stopReason ?? "Stop every service in this group"}
+                      title={stopReason ?? undefined}
+                      onClick={() => void operatorGroupAction(group, "stop")}
+                    >
+                      {operatorGroupActionInFlight(group, "stop") ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Square size={14} />
+                      )}
+                      Stop all
+                    </button>
+                    <button
+                      className="ghost xsmall"
+                      onClick={() => setEditingOperatorGroup(group)}
+                      aria-label={`Edit ${group.name}`}
+                      data-tooltip="Edit group"
+                    >
+                      <Settings2 size={14} /> Edit
+                    </button>
+                    <button
+                      className="ghost xsmall text-danger"
+                      onClick={() => void deleteOperatorGroup(group)}
+                      aria-label={`Delete ${group.name}`}
+                      data-tooltip="Delete group"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       <section className="services-section">
         <div className="section-title">
           <div className="row">
@@ -1521,7 +1795,7 @@ export function ServicesPage() {
           </div>
         ) : (
           <div className="service-groups">
-            {serviceGroups.map((group) => (
+            {visibleServiceGroups.map((group) => (
               <section key={group.id} className="service-group">
                 {groupByProject && <h4 className="service-group-title">{group.title}</h4>}
                 <div className="app-stack-list">
@@ -1756,6 +2030,7 @@ export function ServicesPage() {
                                   op?.status === "active" ||
                                   service.status === "starting" ||
                                   service.status === "stopping";
+                                const alwaysOn = serviceAlwaysOn(service);
                                 return (
                                   <motion.div
                                     key={service.id}
@@ -1795,6 +2070,30 @@ export function ServicesPage() {
                                           <span className="tiny muted font-bold uppercase">
                                             {service.type}
                                           </span>
+                                          <button
+                                            type="button"
+                                            className={`always-on-toggle${alwaysOn ? " active" : ""}`}
+                                            disabled={alwaysOnBusyId === service.id}
+                                            aria-pressed={alwaysOn}
+                                            aria-label={
+                                              alwaysOn
+                                                ? `Disable always on for ${service.name}`
+                                                : `Enable always on for ${service.name}`
+                                            }
+                                            data-tooltip={
+                                              alwaysOn
+                                                ? "24/7: auto-starts, restarts on crash, and survives ServerHoster restarts"
+                                                : "Enable 24/7 mode for this service"
+                                            }
+                                            onClick={() => void toggleAlwaysOn(service)}
+                                          >
+                                            {alwaysOnBusyId === service.id ? (
+                                              <Loader2 size={11} className="animate-spin" />
+                                            ) : (
+                                              <Clock size={11} />
+                                            )}
+                                            24/7
+                                          </button>
                                           {gitSummary && (
                                             <span
                                               className={`tiny row service-git-chip ${gitSummary.empty ? "empty" : ""} ${gitSummary.pending ? "pending" : ""}`}
@@ -2420,6 +2719,17 @@ export function ServicesPage() {
           onUpdated={() => void load()}
         />
       )}
+      {editingOperatorGroup && (
+        <ServiceGroupModal
+          group={editingOperatorGroup === "new" ? null : editingOperatorGroup}
+          services={services}
+          onClose={() => setEditingOperatorGroup(null)}
+          onSaved={() => {
+            setEditingOperatorGroup(null);
+            void load();
+          }}
+        />
+      )}
       {showGithubDeploy && (
         <GitHubDeployModal
           projects={projects}
@@ -2545,6 +2855,137 @@ export function ServicesPage() {
       `
         }}
       />
+    </div>
+  );
+}
+
+function ServiceGroupModal({
+  group,
+  services,
+  onClose,
+  onSaved
+}: {
+  group: OperatorServiceGroup | null;
+  services: Service[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(group?.name ?? "");
+  const [description, setDescription] = useState(group?.description ?? "");
+  const [selected, setSelected] = useState<Set<string>>(new Set(group?.service_ids ?? []));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setName(group?.name ?? "");
+    setDescription(group?.description ?? "");
+    setSelected(new Set(group?.service_ids ?? []));
+  }, [group]);
+
+  const sortedServices = useMemo(
+    () => [...services].sort((a, b) => a.name.localeCompare(b.name)),
+    [services]
+  );
+
+  function toggleService(serviceId: string): void {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(serviceId)) next.delete(serviceId);
+      else next.add(serviceId);
+      return next;
+    });
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      toast.error("Group name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api(group ? `/service-groups/${group.id}` : "/service-groups", {
+        method: group ? "PUT" : "POST",
+        body: JSON.stringify({
+          name: trimmedName,
+          description: description.trim(),
+          serviceIds: Array.from(selected)
+        })
+      });
+      toast.success(group ? "Service group updated" : "Service group created");
+      onSaved();
+    } catch {
+      /* api handles toast */
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <form className="modal-content service-group-modal" onSubmit={(event) => void save(event)}>
+        <div className="modal-header">
+          <h3>{group ? "Edit Service Group" : "New Service Group"}</h3>
+        </div>
+        <div className="modal-body">
+          <div className="form-stack">
+            <div className="form-group">
+              <label htmlFor="service-group-name">Name</label>
+              <input
+                id="service-group-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Daily launch"
+                autoFocus
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="service-group-description">Description</label>
+              <textarea
+                id="service-group-description"
+                value={description ?? ""}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="Production services"
+                rows={3}
+              />
+            </div>
+            <div className="form-group">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <label>Services</label>
+                <span className="muted tiny">{selected.size} selected</span>
+              </div>
+              <div className="service-group-service-list">
+                {sortedServices.length === 0 ? (
+                  <div className="muted small">No services available.</div>
+                ) : (
+                  sortedServices.map((service) => (
+                    <label key={service.id} className="service-group-checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(service.id)}
+                        onChange={() => toggleService(service.id)}
+                      />
+                      <StatusBadge status={service.status} dotOnly />
+                      <span>{service.name}</span>
+                      <code>{service.type}</code>
+                      {service.port && <code>{service.port}</code>}
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={saving}>
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+            {group ? "Save Group" : "Create Group"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

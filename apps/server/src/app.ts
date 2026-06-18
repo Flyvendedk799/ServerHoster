@@ -16,6 +16,7 @@ import { dockerUnavailableMessage, serializeError } from "./lib/core.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOpsRoutes } from "./routes/ops.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerServiceGroupRoutes } from "./routes/serviceGroups.js";
 import { registerServiceRoutes } from "./routes/services.js";
 import { registerDatabaseRoutes } from "./routes/databases.js";
 import { registerResourceRoutes } from "./routes/resources.js";
@@ -231,6 +232,7 @@ export async function buildApp(): Promise<AppContext> {
   registerAuthRoutes(ctx);
   registerOpsRoutes(ctx);
   registerProjectRoutes(ctx);
+  registerServiceGroupRoutes(ctx);
   registerServiceRoutes(ctx);
   registerDatabaseRoutes(ctx);
   registerResourceRoutes(ctx);
@@ -370,6 +372,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
   const reservedPrefixes = [
     "/auth",
     "/projects",
+    "/service-groups",
     "/services",
     "/databases",
     "/resources",

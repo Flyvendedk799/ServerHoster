@@ -4,6 +4,7 @@ import type { AppContext } from "../types.js";
 import { nowIso } from "../lib/core.js";
 import { activeChallenges } from "../services/ssl.js";
 import { recordInboundRequest } from "../services/requestInspector.js";
+import { publicResourceRouteForRequest } from "../services/resources/publicExposure.js";
 
 const proxySchema = z.object({
   serviceId: z.string(),
@@ -21,9 +22,13 @@ export function registerProxyRoutes(ctx: AppContext): void {
     if (url.startsWith("/.well-known/acme-challenge/")) return;
     const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
     if (!host) return;
-    const route = ctx.db
-      .prepare("SELECT service_id, target_port FROM proxy_routes WHERE domain = ?")
-      .get(host) as { service_id?: string; target_port?: number } | undefined;
+    const requestPath = url.split("?")[0] || "/";
+    const publicResourceRoute = publicResourceRouteForRequest(ctx, host, requestPath);
+    const route = publicResourceRoute
+      ? { service_id: publicResourceRoute.serviceId, target_port: publicResourceRoute.targetPort }
+      : (ctx.db.prepare("SELECT service_id, target_port FROM proxy_routes WHERE domain = ?").get(host) as
+          | { service_id?: string; target_port?: number }
+          | undefined);
     if (!route?.target_port) return;
     reply.hijack();
 
@@ -37,7 +42,7 @@ export function registerProxyRoutes(ctx: AppContext): void {
         serviceId: route.service_id,
         timestamp: new Date(startedAt).toISOString(),
         method: req.method ?? "GET",
-        path: (req.raw.url ?? "/").split("?")[0],
+        path: requestPath,
         status,
         latencyMs: Date.now() - startedAt,
         remoteAddress: req.ip ?? null,

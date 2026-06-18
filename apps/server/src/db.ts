@@ -175,6 +175,21 @@ CREATE TABLE IF NOT EXISTS mcp_session_tokens (
   revoked_at TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS service_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS service_group_members (
+  group_id TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(group_id, service_id)
+);
 `);
 
 const migrations = [
@@ -451,7 +466,23 @@ const migrations = [
   // NULL → auto-detect conventional upload dirs only. Backs persistence.ts: upload
   // dirs get symlinked into the service's DATA_DIR so runtime/admin uploads survive
   // the hard-reset every deploy does to the git clone. See services/persistence.ts.
-  "ALTER TABLE services ADD COLUMN persisted_paths_config TEXT"
+  "ALTER TABLE services ADD COLUMN persisted_paths_config TEXT",
+  // Operator-defined service groups are independent of projects/stacks. They let
+  // the hoster start/stop/restart arbitrary parent services together.
+  `CREATE TABLE IF NOT EXISTS service_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS service_group_members (
+    group_id TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(group_id, service_id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_service_group_members_service ON service_group_members(service_id)"
 ];
 
 for (const statement of migrations) {

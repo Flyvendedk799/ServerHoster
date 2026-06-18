@@ -38,6 +38,7 @@ import { supabaseResourceAction } from "../services/resources/profiles/supabase.
 import { getLatestScan, listLatestScans, runDependencyScan } from "../services/resources/scan.js";
 import { listResourceSecrets, setResourceSecret } from "../services/resources/secrets.js";
 import { scanFunctionSecrets } from "../services/resources/secretsScan.js";
+import { refreshLoginIngress } from "../services/cloudflare.js";
 
 /**
  * Resource API (Database-Tracker Phases 2+3): profile listing, dependency
@@ -96,6 +97,14 @@ const unlinkSchema = z.object({ serviceId: z.string().min(1) });
 
 /** Config keys that never leave the control plane (Security Requirements). */
 const INTERNAL_CONFIG_KEYS = new Set(["db_url"]);
+
+function refreshPublicResourceIngress(ctx: AppContext): void {
+  try {
+    refreshLoginIngress(ctx);
+  } catch (error) {
+    ctx.app.log?.warn?.({ err: error }, "refreshLoginIngress after resource link change failed");
+  }
+}
 
 function maskEnvValues(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -270,6 +279,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
       serveFunctions: p.serveFunctions,
       config: p.config
     });
+    refreshPublicResourceIngress(ctx);
     return serializeResource(ctx, resource);
   });
 
@@ -312,6 +322,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
     const profile = getProfile(resource.profile);
     if (!profile) throw new Error(`Unknown resource profile: ${resource.profile}`);
     await profile.remove(ctx, resource.id);
+    refreshPublicResourceIngress(ctx);
     broadcast(ctx, {
       type: "resource_status",
       resourceId: resource.id,
@@ -473,6 +484,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
       resourceId: resource.id,
       envMap: p.envMap
     });
+    refreshPublicResourceIngress(ctx);
     return { ok: true, link: serializeLink(link) };
   });
 
@@ -482,6 +494,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
     if (!resource) throw new Error("Resource not found");
     const p = unlinkSchema.parse(req.body);
     unlinkResource(ctx, p.serviceId, resource.id);
+    refreshPublicResourceIngress(ctx);
     return { ok: true };
   });
 }

@@ -45,6 +45,7 @@ import {
   type SupabaseStatusInfo
 } from "../supabaseCli.js";
 import { restartOrRedeployService } from "../restart.js";
+import { publicOriginForLinkedResource } from "../publicExposure.js";
 
 /**
  * Supabase resource profile (Database-Tracker Phases 2+3).
@@ -742,7 +743,9 @@ export const supabaseProfile: ResourceProfile = {
     // Manual/legacy env maps still apply (config_json.env), generated values win.
     const env: Record<string, string> = envFromResourceConfig(resource);
 
-    const apiUrl = typeof config.api_url === "string" && config.api_url ? config.api_url : null;
+    const publicApiUrl = publicOriginForLinkedResource(ctx, serviceId, resourceId, "supabase");
+    const apiUrl =
+      publicApiUrl ?? (typeof config.api_url === "string" && config.api_url ? config.api_url : null);
     if (apiUrl) {
       env.SUPABASE_URL = apiUrl;
       env.VITE_SUPABASE_URL = apiUrl;

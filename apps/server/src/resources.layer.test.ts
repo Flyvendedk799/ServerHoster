@@ -23,6 +23,10 @@ import {
   setResourceSecret
 } from "./services/resources/secrets.js";
 import { getResourceEnvForService } from "./services/resources/runtimeEnv.js";
+import {
+  publicResourceIngressRoutes,
+  publicResourceRouteForRequest
+} from "./services/resources/publicExposure.js";
 
 /**
  * Database-Tracker Phase 1 — generic resource layer: profile registry,
@@ -311,6 +315,60 @@ test("resource env: link order, env_map overrides, unregistered profiles, unlink
     const afterUnlink = getResourceEnvForService(ctx, serviceId);
     assert.equal(afterUnlink.VITE_SUPABASE_URL, undefined, "unlinked resources stop injecting");
     assert.equal(afterUnlink.ORDER_KEY, "second", "remaining links keep injecting");
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("public resource exposure: Supabase follows a service public domain without SaaS tenant domains", async () => {
+  const ctx = await buildApp();
+  try {
+    const serviceId = seedService(ctx);
+    ctx.db.prepare("UPDATE services SET ssl_status = 'cloudflare' WHERE id = ?").run(serviceId);
+    ctx.db
+      .prepare(
+        "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(nanoid(), serviceId, "havekongen.dk", 4442, nowIso());
+    ctx.db
+      .prepare(
+        `INSERT INTO saas_domains
+         (id, service_id, hostname, status, ssl_status, mode, target_port, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 'active', 'own_zone', NULL, ?, ?)`
+      )
+      .run(nanoid(), serviceId, "client.example.com", nowIso(), nowIso());
+
+    const resource = createResource(ctx, {
+      name: "public-supabase",
+      profile: "supabase",
+      status: "running",
+      config: { api_url: "http://127.0.0.1:55421" },
+      ports: { api: 55421 }
+    });
+    linkResourceToService(ctx, { serviceId, resourceId: resource.id });
+
+    const env = getResourceEnvForService(ctx, serviceId);
+    assert.equal(env.SUPABASE_URL, "https://havekongen.dk");
+    assert.equal(env.VITE_SUPABASE_URL, "https://havekongen.dk");
+
+    const routes = publicResourceIngressRoutes(ctx);
+    assert.deepEqual(
+      routes.map((r) => ({ domain: r.domain, path: r.path, port: r.port })),
+      [
+        {
+          domain: "havekongen.dk",
+          path: "^/(auth|rest|functions|storage|realtime|graphql)/v1(/.*)?$",
+          port: 55421
+        }
+      ]
+    );
+    assert.equal(
+      publicResourceRouteForRequest(ctx, "havekongen.dk", "/functions/v1/get-matrikel")?.targetPort,
+      55421
+    );
+    assert.equal(publicResourceRouteForRequest(ctx, "havekongen.dk", "/auth/v1/token")?.targetPort, 55421);
+    assert.equal(publicResourceRouteForRequest(ctx, "havekongen.dk", "/"), null);
+    assert.equal(publicResourceRouteForRequest(ctx, "client.example.com", "/auth/v1/token"), null);
   } finally {
     await gracefulShutdown(ctx);
   }
