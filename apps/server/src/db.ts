@@ -446,7 +446,12 @@ const migrations = [
   // Optional explicit target port for a SaaS domain route. NULL → the owning
   // service's port. Used to route a hostname to a sidecar listener that isn't
   // a ServerHoster service itself (e.g. a local Supabase stack's API gateway).
-  "ALTER TABLE saas_domains ADD COLUMN target_port INTEGER"
+  "ALTER TABLE saas_domains ADD COLUMN target_port INTEGER",
+  // Persistent-uploads config (JSON: {auto?:bool, paths?:string[], exclude?:string[]}).
+  // NULL → auto-detect conventional upload dirs only. Backs persistence.ts: upload
+  // dirs get symlinked into the service's DATA_DIR so runtime/admin uploads survive
+  // the hard-reset every deploy does to the git clone. See services/persistence.ts.
+  "ALTER TABLE services ADD COLUMN persisted_paths_config TEXT"
 ];
 
 for (const statement of migrations) {

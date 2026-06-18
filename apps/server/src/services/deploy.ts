@@ -20,6 +20,7 @@ import { buildGitEnv, injectGitCredentials } from "./settings.js";
 import { createNotification } from "./notifications.js";
 import { transition, markFailed } from "./deployStateMachine.js";
 import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
+import { ensurePersistedPaths, unlinkPersistedSymlinks } from "./persistence.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
@@ -1147,6 +1148,10 @@ async function deployFromGitLocked(
   let failureStage: "queued" | "cloning" | "building" | "starting" | "unknown" = "unknown";
   try {
     failureStage = "cloning";
+    // Remove any persisted-upload symlinks from the previous deploy so the git
+    // checkout/reset below can restore tracked files cleanly instead of choking
+    // on a symlink pointing into the data volume. Re-established after the reset.
+    unlinkPersistedSymlinks(ctx, serviceId, targetPath);
     if (fs.existsSync(path.join(targetPath, ".git"))) {
       // Reset origin URL so an updated PAT or switched remote takes effect.
       try {
@@ -1170,6 +1175,28 @@ async function deployFromGitLocked(
       await git.clone(authedUrl, targetPath, ["--branch", branch]);
       buildLog += `Cloned repository branch: ${branch}.\n`;
       emitBuildLog(ctx, serviceId, deploymentId, `Cloned repository branch: ${branch}.\n`);
+    }
+    // Back conventional/configured upload dirs with the persistent volume: seed
+    // committed files (copy-if-absent — runtime/admin uploads always win) then
+    // symlink the dir into <service-data>/<id>/persisted. Runs before the build
+    // so build steps (e.g. collectstatic) see the symlinked dir. Docker services
+    // use bind mounts wired at container start instead.
+    {
+      const svcType = (
+        ctx.db.prepare("SELECT type FROM services WHERE id = ?").get(serviceId) as { type?: string } | undefined
+      )?.type;
+      if (svcType !== "docker") {
+        const linked = ensurePersistedPaths(ctx, serviceId, targetPath, (rel, err) => {
+          const msg = `Persistent uploads: could not link ${rel}: ${String(err)}\n`;
+          buildLog += msg;
+          emitBuildLog(ctx, serviceId, deploymentId, msg);
+        });
+        if (linked.length) {
+          const msg = `Persisted upload dirs (survive redeploys): ${linked.join(", ")}.\n`;
+          buildLog += msg;
+          emitBuildLog(ctx, serviceId, deploymentId, msg);
+        }
+      }
     }
     const buildType = resolveBuildType(targetPath);
     const preferredDockerfile =

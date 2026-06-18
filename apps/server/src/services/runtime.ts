@@ -20,6 +20,7 @@ const exec = promisify(execFile);
 import { buildConnectionString, getDatabase } from "./databases.js";
 import { getResourceEnvForService } from "./resources/runtimeEnv.js";
 import { getSetting, setSetting, deleteSetting } from "./settings.js";
+import { ensurePersistedPaths, resolvePersistedDockerBinds } from "./persistence.js";
 
 type DockerRestartPolicy = "no" | "unless-stopped";
 
@@ -194,7 +195,8 @@ async function getOrCreateContainer(
   hostPort: number,
   containerPort: number,
   envList: string[],
-  restartPolicyName: DockerRestartPolicy
+  restartPolicyName: DockerRestartPolicy,
+  persistedBinds: string[] = []
 ) {
   const containerName = `survhub-${serviceId}`;
   const exposedPort = containerPort ? `${containerPort}/tcp` : undefined;
@@ -205,6 +207,9 @@ async function getOrCreateContainer(
   // the container keeps there (SQLite, uploads) survives recreation/redeploys.
   // DATA_DIR=/data is injected via getServiceEnvWithLinks.
   const dataBind = `${serviceDataDirFor(ctx, serviceId)}:/data`;
+  // Per-path persisted binds (persistence.ts): map configured container paths to
+  // host dirs under the data volume so uploads written there survive redeploys.
+  const binds = [agentHomeBind, dataBind, ...persistedBinds];
   const extraHosts = process.platform === "linux" ? ["host.docker.internal:host-gateway"] : undefined;
   const createConfig = {
     Image: image,
@@ -216,7 +221,7 @@ async function getOrCreateContainer(
     HostConfig: {
       PortBindings: exposedPort && hostPort ? { [exposedPort]: [{ HostPort: String(hostPort) }] } : undefined,
       RestartPolicy: { Name: restartPolicyName },
-      Binds: [agentHomeBind, dataBind],
+      Binds: binds,
       ExtraHosts: extraHosts
     }
   };
@@ -241,9 +246,12 @@ async function getOrCreateContainer(
         bindings?.some((binding: { HostPort?: string }) => binding.HostPort === String(hostPort));
       // A pre-DATA_DIR container lacks the /data mount, but its env now claims
       // DATA_DIR=/data — data written there would die with the container. Treat
-      // a missing data bind like a port mismatch: recreate.
-      const hasDataBind = (info.HostConfig?.Binds ?? []).includes(dataBind);
-      if (mappedToRequestedPort && hasDataBind) {
+      // a missing data bind (or a newly-added persisted bind) like a port
+      // mismatch: recreate so the mounts match the current config.
+      const existingBinds = info.HostConfig?.Binds ?? [];
+      const hasDataBind = existingBinds.includes(dataBind);
+      const hasAllPersistedBinds = persistedBinds.every((b) => existingBinds.includes(b));
+      if (mappedToRequestedPort && hasDataBind && hasAllPersistedBinds) {
         await ensureDockerRestartPolicy(ctx, serviceId, existing, restartPolicyName, info);
         return existing;
       }
@@ -501,6 +509,16 @@ async function startProcessService(
   const cwd = String(service.working_dir || process.cwd());
   if (!fs.existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
 
+  // Re-establish persisted-upload symlinks on start too, so services adopted or
+  // started without a redeploy still get their upload dirs backed by the volume.
+  // Keyed off the clone root (where repo-relative persisted paths live).
+  const cloneDir = path.join(ctx.config.projectsDir, serviceId);
+  if (fs.existsSync(cloneDir)) {
+    ensurePersistedPaths(ctx, serviceId, cloneDir, (rel, err) =>
+      insertLog(ctx, serviceId, "warn", `Persistent uploads: could not link ${rel}: ${serializeError(err)}`)
+    );
+  }
+
   updateServiceStatus(ctx, serviceId, "starting");
   insertLog(ctx, serviceId, "info", `Starting process service from ${cwd}`);
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", message: `Starting ${command}` });
@@ -725,6 +743,14 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
     insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
   }
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
+  const persistedBinds = resolvePersistedDockerBinds(
+    ctx,
+    serviceId,
+    path.join(ctx.config.projectsDir, serviceId)
+  ).map((b) => b.bind);
+  if (persistedBinds.length) {
+    insertLog(ctx, serviceId, "info", `Persisted upload mounts: ${persistedBinds.join(", ")}`);
+  }
   let container = await getOrCreateContainer(
     ctx,
     serviceId,
@@ -733,7 +759,8 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
     port,
     containerPort,
     envList,
-    restartPolicyName
+    restartPolicyName,
+    persistedBinds
   );
   try {
     await container.start();

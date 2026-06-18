@@ -23,6 +23,7 @@ import {
   startService,
   stopService
 } from "../services/runtime.js";
+import { resolvePersistedRelPaths, resolvePersistedDockerBinds } from "../services/persistence.js";
 import { killTerminalSession } from "../services/terminals.js";
 import { insertLog } from "../lib/core.js";
 import {
@@ -360,10 +361,17 @@ export function registerServiceRoutes(ctx: AppContext): void {
         // Surface the persistent DATA_DIR so the UI can show users where
         // redeploy-safe data lives (host path; Docker containers see /data).
         const r = row as { id: string; type?: string };
+        const cloneDir = path.join(ctx.config.projectsDir, r.id);
+        // Effective upload dirs that survive redeploys (auto-detected + configured).
+        const persisted =
+          r.type === "docker"
+            ? resolvePersistedDockerBinds(ctx, r.id, cloneDir).map((b) => b.containerPath)
+            : resolvePersistedRelPaths(ctx, r.id, cloneDir);
         return {
           ...(row as Record<string, unknown>),
           data_dir: path.join(ctx.config.serviceDataDir, r.id),
-          data_dir_container: r.type === "docker" ? "/data" : null
+          data_dir_container: r.type === "docker" ? "/data" : null,
+          persisted_paths: persisted
         };
       });
   });
@@ -385,7 +393,18 @@ export function registerServiceRoutes(ctx: AppContext): void {
       )
       .get(id);
     if (!service) throw new Error("Service not found");
-    return service;
+    // Effective persisted-upload paths so the UI can show what survives redeploys.
+    const r = service as { type?: string };
+    const cloneDir = path.join(ctx.config.projectsDir, id);
+    const persisted =
+      r.type === "docker"
+        ? resolvePersistedDockerBinds(ctx, id, cloneDir).map((b) => b.containerPath)
+        : resolvePersistedRelPaths(ctx, id, cloneDir);
+    return {
+      ...(service as Record<string, unknown>),
+      persisted_paths: persisted,
+      persisted_dir: path.join(ctx.config.serviceDataDir, id, "persisted")
+    };
   });
 
   ctx.app.get("/services/:id/env-requirements", async (req) => {
@@ -724,7 +743,16 @@ export function registerServiceRoutes(ctx: AppContext): void {
     dependsOn: z.array(z.string()).optional(),
     environment: z.enum(["production", "staging", "development"]).optional(),
     linkedDatabaseId: z.string().nullable().optional(),
-    serveBuiltDist: z.boolean().optional()
+    serveBuiltDist: z.boolean().optional(),
+    // Persistent-uploads config. null clears it (→ defaults: auto-detect on).
+    persistedPathsConfig: z
+      .object({
+        auto: z.boolean().optional(),
+        paths: z.array(z.string()).optional(),
+        exclude: z.array(z.string()).optional()
+      })
+      .nullable()
+      .optional()
   });
 
   ctx.app.patch("/services/:id", async (req, reply) => {
@@ -821,6 +849,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
       ctx.db
         .prepare("UPDATE services SET serve_built_dist = ? WHERE id = ?")
         .run(p.serveBuiltDist ? 1 : 0, id);
+    }
+    if (p.persistedPathsConfig !== undefined) {
+      ctx.db
+        .prepare("UPDATE services SET persisted_paths_config = ? WHERE id = ?")
+        .run(p.persistedPathsConfig === null ? null : JSON.stringify(p.persistedPathsConfig), id);
     }
 
     const finalPort = p.port !== undefined ? p.port : service.port;

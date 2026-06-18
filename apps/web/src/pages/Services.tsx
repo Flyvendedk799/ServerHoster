@@ -84,6 +84,10 @@ type Service = {
   data_dir?: string | null;
   /** Container-side mount of data_dir for docker services ("/data"). */
   data_dir_container?: string | null;
+  /** Effective upload dirs backed by the data volume so they survive redeploys. */
+  persisted_paths?: string[] | null;
+  /** Raw persisted-uploads config JSON (auto/paths/exclude). */
+  persisted_paths_config?: string | null;
 };
 
 function certBadgeState(
@@ -1966,6 +1970,72 @@ export function ServicesPage() {
                                               ) : (
                                                 "Add Postgres"
                                               )}
+                                            </button>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      {(() => {
+                                        // Persistent uploads: dirs symlinked into the data
+                                        // volume so admin/runtime uploads survive the git
+                                        // hard-reset every deploy does. Editing custom paths
+                                        // takes effect on the next deploy/restart.
+                                        const persisted = service.persisted_paths ?? [];
+                                        let cfg: { auto?: boolean; paths?: string[]; exclude?: string[] } = {};
+                                        try {
+                                          cfg = service.persisted_paths_config
+                                            ? JSON.parse(service.persisted_paths_config)
+                                            : {};
+                                        } catch {
+                                          cfg = {};
+                                        }
+                                        const autoOn = cfg.auto !== false;
+                                        const isDocker = service.type === "docker";
+                                        const editPaths = async (): Promise<void> => {
+                                          const current = (cfg.paths ?? []).join(", ");
+                                          const input = window.prompt(
+                                            isDocker
+                                              ? "Container paths to keep across deploys (comma-separated, absolute — e.g. /app/static/images). Bind-mounted from the persistent volume."
+                                              : "Upload directories to keep across deploys (comma-separated, repo-relative — e.g. app/static/images). Symlinked into the persistent volume so a git update can't revert admin uploads.",
+                                            current
+                                          );
+                                          if (input === null) return;
+                                          const paths = input
+                                            .split(",")
+                                            .map((s) => s.trim())
+                                            .filter(Boolean);
+                                          try {
+                                            await api(`/services/${service.id}`, {
+                                              method: "PATCH",
+                                              body: JSON.stringify({
+                                                persistedPathsConfig: { auto: autoOn, paths, exclude: cfg.exclude ?? [] }
+                                              })
+                                            });
+                                            toast.success("Persistent uploads saved — redeploy or restart to apply");
+                                            void load();
+                                          } catch {
+                                            toast.error("Could not update persistent uploads");
+                                          }
+                                        };
+                                        return (
+                                          <div className="persisted-uploads-row muted tiny">
+                                            <DatabaseIcon size={12} />
+                                            <span>
+                                              Persistent uploads:{" "}
+                                              {persisted.length ? (
+                                                persisted.map((p, i) => (
+                                                  <span key={p}>
+                                                    {i > 0 ? " " : ""}
+                                                    <code>{p}</code>
+                                                  </span>
+                                                ))
+                                              ) : (
+                                                <em>none detected</em>
+                                              )}
+                                              {!isDocker && (autoOn ? " · auto-detect on" : " · auto-detect off")}
+                                            </span>
+                                            <button className="link xsmall" onClick={() => void editPaths()}>
+                                              Edit
                                             </button>
                                           </div>
                                         );

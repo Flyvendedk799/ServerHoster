@@ -5241,3 +5241,21 @@ a.list-row:hover .row-chevron,
 .domains-page .with-icon { padding-left: 2.5rem !important; }
 .domains-page .pr-overlap { position: relative; }
 .domains-page .icon-overlay { position: absolute; left: 0.75rem; top: 12px; pointer-events: none; z-index: 1; }
+
+/* Persistent-uploads row in the service detail: lists upload dirs symlinked into
+   the data volume (survive redeploys). Inline, low-emphasis, with an Edit action. */
+.persisted-uploads-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+.persisted-uploads-row code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+}
+.persisted-uploads-row .link.xsmall {
+  margin-left: auto;
+}
