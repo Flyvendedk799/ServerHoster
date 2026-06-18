@@ -2,6 +2,12 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootstrapSecretKey } from "./secret-key.mjs";
+
+// Load ~/.survhub/survhub.env (so the server uses the strong SURVHUB_SECRET_KEY
+// instead of the insecure built-in dev key) and one-time re-encrypt any
+// dev-key secret blobs under it. Must run before the server child is spawned.
+bootstrapSecretKey((msg) => console.log(`[launcher] ${msg}`));
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const shouldOpen = process.argv.includes("--open");

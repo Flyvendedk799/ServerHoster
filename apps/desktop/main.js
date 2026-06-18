@@ -139,6 +139,17 @@ async function startServer() {
     return null;
   }
   const fileEnv = loadOrCreateEnvFile();
+  // One-time re-encrypt any secret stored under the legacy dev key into the
+  // strong SURVHUB_SECRET_KEY from survhub.env, so a server booted with the
+  // strong key can still read secrets a dev-key launch wrote. Idempotent.
+  try {
+    const { migrateSecretsToStrongKey } = await import(
+      path.join(REPO_ROOT, "scripts", "secret-key.mjs")
+    );
+    migrateSecretsToStrongKey(fileEnv.SURVHUB_SECRET_KEY || "", (m) => console.log(m));
+  } catch (err) {
+    console.error(`[main] secret-key migration skipped: ${err.message}`);
+  }
   const port = await findFreePort();
   serverProcess = spawn(nodeBin, [SERVER_ENTRY], {
     env: { ...process.env, ...fileEnv, SURVHUB_PORT: String(port) },

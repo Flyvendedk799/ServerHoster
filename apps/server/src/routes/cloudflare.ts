@@ -41,6 +41,32 @@ const routeSchema = z.object({
   targetPort: z.number().int().min(1).max(65535)
 });
 
+/**
+ * Validate a Cloudflare API token before storing it. User-owned tokens verify
+ * at /user/tokens/verify; account-owned tokens (the `cfat_…` format) return 401
+ * there but verify per-account, so fall back to checking every account the
+ * token can see. Accepting account-scoped tokens matters because the rest of
+ * the integration only needs zone-level DNS/SSL permissions, which both token
+ * kinds can carry.
+ */
+async function assertValidCloudflareToken(token: string): Promise<void> {
+  const auth = { headers: { Authorization: `Bearer ${token}` } };
+  const userRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", auth);
+  if (userRes.ok) return;
+  const accountsRes = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=50", auth);
+  if (accountsRes.ok) {
+    const body = (await accountsRes.json()) as { result?: Array<{ id: string }> };
+    for (const acct of body.result ?? []) {
+      const v = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${acct.id}/tokens/verify`,
+        auth
+      );
+      if (v.ok) return;
+    }
+  }
+  throw new Error(`Cloudflare rejected API token (HTTP ${userRes.status})`);
+}
+
 export function registerCloudflareRoutes(ctx: AppContext): void {
   ctx.app.get("/cloudflare/status", async () => getTunnelStatus(ctx));
 
@@ -54,11 +80,7 @@ export function registerCloudflareRoutes(ctx: AppContext): void {
 
   ctx.app.put("/cloudflare/api-token", async (req) => {
     const { token } = z.object({ token: z.string().min(10) }).parse(req.body);
-    // Validate against /user/tokens/verify
-    const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!res.ok) throw new Error(`Cloudflare rejected API token (HTTP ${res.status})`);
+    await assertValidCloudflareToken(token);
     setSecretSetting(ctx, "cloudflare_api_token", token);
     return { ok: true };
   });
