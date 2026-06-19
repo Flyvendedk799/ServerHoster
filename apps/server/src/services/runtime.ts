@@ -10,7 +10,8 @@ import {
   insertLog,
   sanitizedHostEnv,
   serializeError,
-  updateServiceStatus
+  updateServiceStatus,
+  dockerUnavailableMessage
 } from "../lib/core.js";
 import { nanoid } from "nanoid";
 import type { AppContext, RuntimeProcess } from "../types.js";
@@ -146,7 +147,14 @@ export async function ensureLocalImagePresent(
   if (shouldPullImage(image)) return;
   try {
     await docker.getImage(image).inspect();
-  } catch {
+  } catch (error) {
+    const dockerMsg = dockerUnavailableMessage(error);
+    if (dockerMsg) throw new Error(dockerMsg);
+    const message = serializeError(error);
+    const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+    if (statusCode !== 404 && !/no such image|not found/i.test(message)) {
+      throw error;
+    }
     throw new Error(
       `Docker image "${image}" is missing locally — it was removed (e.g. docker prune) or never finished building. ` +
         `Redeploy this service to rebuild the image, then start it again.`
@@ -240,6 +248,13 @@ async function getOrCreateContainer(
     if (state === "removing" || state === "dead") {
       try {
         await existing.remove({ force: true });
+      } catch {
+        /* already gone */
+      }
+    } else if (state && state !== "running") {
+      try {
+        await existing.remove({ force: true });
+        insertLog(ctx, serviceId, "info", "Recreated Docker container from image for a clean start.");
       } catch {
         /* already gone */
       }
@@ -743,77 +758,86 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   // prior force/stop doesn't leave a stale manuallyStopped entry for this id.
   ctx.manuallyStopped.delete(serviceId);
 
-  if (shouldPullImage(image)) {
-    try {
-      insertLog(ctx, serviceId, "info", `Pulling Docker image ${image}...`);
-      broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "pulling", image });
-      await pullImage(ctx, image);
-    } catch (error) {
-      insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
-    }
-  }
-  await ensureLocalImagePresent(ctx.docker, image);
-  const containerPort = await getContainerPort(ctx, image, port);
-  if (containerPort && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(containerPort);
-  const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
-  if (port && containerPort && port !== containerPort) {
-    insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
-  }
-  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
-  const persistedBinds = resolvePersistedDockerBinds(
-    ctx,
-    serviceId,
-    path.join(ctx.config.projectsDir, serviceId)
-  ).map((b) => b.bind);
-  if (persistedBinds.length) {
-    insertLog(ctx, serviceId, "info", `Persisted upload mounts: ${persistedBinds.join(", ")}`);
-  }
-  let container = await getOrCreateContainer(
-    ctx,
-    serviceId,
-    image,
-    command,
-    port,
-    containerPort,
-    envList,
-    restartPolicyName,
-    persistedBinds
-  );
   try {
-    await container.start();
-  } catch (error) {
-    const msg = serializeError(error);
-    const sc = (error as { statusCode?: number }).statusCode;
-    if (msg.includes("already started")) {
-      // already running — fine
-    } else if (sc === 409 || sc === 404 || /marked for removal|no such container/i.test(msg)) {
-      // The container went bad between create and start (mid-removal / vanished).
-      // Force-remove any leftover by name, recreate a fresh one, and start it.
-      insertLog(ctx, serviceId, "warn", `Container could not be started (${msg}); recreating a fresh one.`);
+    if (shouldPullImage(image)) {
       try {
-        await ctx.docker.getContainer(`survhub-${serviceId}`).remove({ force: true });
-      } catch {
-        /* already gone */
+        insertLog(ctx, serviceId, "info", `Pulling Docker image ${image}...`);
+        broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "pulling", image });
+        await pullImage(ctx, image);
+      } catch (error) {
+        insertLog(ctx, serviceId, "warn", `Image pull skipped for ${image}: ${serializeError(error)}`);
       }
-      container = await getOrCreateContainer(
-        ctx,
-        serviceId,
-        image,
-        command,
-        port,
-        containerPort,
-        envList,
-        restartPolicyName
-      );
-      await container.start();
-    } else {
-      throw error;
     }
+    await ensureLocalImagePresent(ctx.docker, image);
+    const containerPort = await getContainerPort(ctx, image, port);
+    if (containerPort && !dockerServiceEnv.PORT) dockerServiceEnv.PORT = String(containerPort);
+    const envList = Object.entries(dockerServiceEnv).map(([k, v]) => `${k}=${v}`);
+    if (port && containerPort && port !== containerPort) {
+      insertLog(ctx, serviceId, "info", `Publishing local port ${port} to container port ${containerPort}.`);
+    }
+    broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "container", image, port, containerPort });
+    const persistedBinds = resolvePersistedDockerBinds(
+      ctx,
+      serviceId,
+      path.join(ctx.config.projectsDir, serviceId)
+    ).map((b) => b.bind);
+    if (persistedBinds.length) {
+      insertLog(ctx, serviceId, "info", `Persisted upload mounts: ${persistedBinds.join(", ")}`);
+    }
+    let container = await getOrCreateContainer(
+      ctx,
+      serviceId,
+      image,
+      command,
+      port,
+      containerPort,
+      envList,
+      restartPolicyName,
+      persistedBinds
+    );
+    try {
+      await container.start();
+    } catch (error) {
+      const msg = serializeError(error);
+      const sc = (error as { statusCode?: number }).statusCode;
+      if (msg.includes("already started")) {
+        // already running — fine
+      } else if (sc === 409 || sc === 404 || /marked for removal|no such container/i.test(msg)) {
+        // The container went bad between create and start (mid-removal / vanished).
+        // Force-remove any leftover by name, recreate a fresh one, and start it.
+        insertLog(ctx, serviceId, "warn", `Container could not be started (${msg}); recreating a fresh one.`);
+        try {
+          await ctx.docker.getContainer(`survhub-${serviceId}`).remove({ force: true });
+        } catch {
+          /* already gone */
+        }
+        container = await getOrCreateContainer(
+          ctx,
+          serviceId,
+          image,
+          command,
+          port,
+          containerPort,
+          envList,
+          restartPolicyName,
+          persistedBinds
+        );
+        await container.start();
+      } else {
+        throw error;
+      }
+    }
+    await waitForContainerReadiness(ctx, serviceId, container);
+    updateServiceStatus(ctx, serviceId, "running");
+    insertLog(ctx, serviceId, "info", `Docker container running with image ${image}`);
+    broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "live", image, port, containerPort });
+  } catch (error) {
+    const message = dockerUnavailableMessage(error) ?? serializeError(error);
+    updateServiceStatus(ctx, serviceId, "error");
+    insertLog(ctx, serviceId, "error", `Docker start failed: ${message}`);
+    broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "failed", action: "start", message });
+    throw error;
   }
-  await waitForContainerReadiness(ctx, serviceId, container);
-  updateServiceStatus(ctx, serviceId, "running");
-  insertLog(ctx, serviceId, "info", `Docker container running with image ${image}`);
-  broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "live", image, port, containerPort });
 
   // Auto-start quick tunnel if enabled
   const qtRowDocker = ctx.db

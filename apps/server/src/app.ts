@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -67,16 +68,35 @@ function createDockerClient(): Docker {
     return new Docker();
   }
 
-  const defaultSocket = "/var/run/docker.sock";
-  if (fs.existsSync(defaultSocket)) {
-    return new Docker({ socketPath: defaultSocket });
+  try {
+    const contextHost = execFileSync(
+      "docker",
+      ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1000
+      }
+    ).trim();
+    const host = JSON.parse(contextHost) as unknown;
+    if (typeof host === "string" && host.startsWith("unix://")) {
+      return new Docker({ socketPath: host.replace("unix://", "") });
+    }
+  } catch {
+    /* Fall back to common local sockets below. */
   }
 
-  const colimaSockets = [
+  const socketCandidates = [
+    path.join(os.homedir(), ".docker", "run", "docker.sock"),
     path.join(os.homedir(), ".colima", "default", "docker.sock"),
-    path.join(os.homedir(), ".colima", "docker.sock")
+    path.join(os.homedir(), ".colima", "docker.sock"),
+    "/var/run/docker.sock"
   ];
-  const socketPath = colimaSockets.find((candidate) => fs.existsSync(candidate));
+  const socketPath =
+    socketCandidates.find((candidate) => fs.existsSync(candidate)) ??
+    (fs.existsSync(path.join(os.homedir(), ".colima", "default"))
+      ? path.join(os.homedir(), ".colima", "default", "docker.sock")
+      : null);
   return socketPath ? new Docker({ socketPath }) : new Docker();
 }
 
