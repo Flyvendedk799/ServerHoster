@@ -34,7 +34,11 @@ import {
   waitForPostgresReady,
   type DatabaseRow
 } from "../services/databases.js";
-import { listEmbeddedDatabases, listOrphanServices } from "../services/embeddedDatabases.js";
+import {
+  getComposeDatabaseConnectionForService,
+  listEmbeddedDatabases,
+  listOrphanServices
+} from "../services/embeddedDatabases.js";
 import { restartService } from "../services/runtime.js";
 
 const databaseSchema = z.object({
@@ -64,6 +68,10 @@ const promoteSchema = z.object({
   autoImportEmbedded: z.boolean().default(false),
   // external mode: point the service at an existing DATABASE_URL
   externalUrl: z.string().optional(),
+  restart: z.boolean().default(true)
+});
+
+const adoptComposeSchema = z.object({
   restart: z.boolean().default(true)
 });
 
@@ -202,6 +210,44 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
   /** Services with neither a linked DB nor a DATABASE_URL — candidates for one-click provisioning. */
   ctx.app.get("/databases/orphan-services", async () => {
     return listOrphanServices(ctx);
+  });
+
+  /** Attach a service to an existing database discovered from docker-compose.yml. */
+  ctx.app.post("/databases/compose/:serviceId/adopt", async (req) => {
+    const { serviceId } = req.params as { serviceId: string };
+    const p = adoptComposeSchema.parse(req.body);
+    const service = ctx.db
+      .prepare("SELECT id, name FROM services WHERE id = ?")
+      .get(serviceId) as { id: string; name: string } | undefined;
+    if (!service) throw new Error("Service not found");
+
+    const candidate = await getComposeDatabaseConnectionForService(ctx, serviceId);
+    if (!candidate) throw new Error("No Docker Compose database was detected for this service.");
+    if (!candidate.connection_url || !candidate.available) {
+      throw new Error(candidate.note || "Docker Compose database is not reachable from the host.");
+    }
+
+    ctx.db.prepare("DELETE FROM env_vars WHERE service_id = ? AND key = ?").run(serviceId, candidate.env_key);
+    ctx.db
+      .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
+      .run(nanoid(), serviceId, candidate.env_key, encryptSecret(candidate.connection_url, ctx.config.secretKey), 1);
+
+    if (p.restart) {
+      try {
+        await restartService(ctx, serviceId);
+      } catch {
+        /* surfaced via logs */
+      }
+    }
+
+    return {
+      ok: true,
+      env_key: candidate.env_key,
+      engine: candidate.engine,
+      service_name: service.name,
+      connection_preview: candidate.connection_preview,
+      restarted: p.restart
+    };
   });
 
   /** List tables (with row + size estimates) in this database. Postgres + MySQL only. */

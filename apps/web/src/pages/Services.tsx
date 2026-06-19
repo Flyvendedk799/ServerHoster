@@ -231,10 +231,27 @@ type DatabaseResource = {
   container_status?: { state?: string; health?: string | null };
 };
 
+type ComposeDatabaseCandidate = {
+  engine: "postgres" | "mysql" | "redis" | "mongo";
+  env_key: string;
+  compose_file: string;
+  app_service_name: string | null;
+  database_service_name: string;
+  container_name: string | null;
+  internal_port: number;
+  host: "localhost";
+  port: number | null;
+  running: boolean;
+  available: boolean;
+  connection_preview: string | null;
+  note: string;
+};
+
 type OrphanInfo = {
   service_id: string;
   service_name: string;
   code_signals: Array<{ driver: string; ecosystem: string; source_file: string }>;
+  compose_database?: ComposeDatabaseCandidate;
 };
 
 type EnvRequirement = {
@@ -879,6 +896,33 @@ export function ServicesPage() {
     }
   }
 
+  async function attachComposeDatabase(service: Service, orphan: OrphanInfo): Promise<void> {
+    const composeDb = orphan.compose_database;
+    if (!composeDb?.available) {
+      toast.error(composeDb?.note ?? "No attachable compose database was detected.");
+      return;
+    }
+    const confirmed = await confirmDialog({
+      title: `Connect existing ${profileLabel(composeDb.engine)} for "${service.name}"?`,
+      message: `ServerHoster will store ${composeDb.env_key} as a protected service secret using ${composeDb.connection_preview ?? "the detected compose database URL"}, then restart the service.`,
+      confirmLabel: "Connect Existing"
+    });
+    if (!confirmed) return;
+    setProvisioningId(service.id);
+    try {
+      await api(`/databases/compose/${service.id}/adopt`, {
+        method: "POST",
+        body: JSON.stringify({ restart: true })
+      });
+      toast.success(`Connected ${composeDb.database_service_name} to ${service.name}`);
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setProvisioningId(null);
+    }
+  }
+
   async function provisionDetectedResource(service: Service, offer: DetectedDatabaseOffer): Promise<void> {
     if (offer.profile === "postgres") {
       await quickAddDatabase(service);
@@ -1005,7 +1049,7 @@ export function ServicesPage() {
       stack.services.find((service) => embeddedDbs.has(service.id)) ??
       stack.services.find((service) => {
         const orphan = orphans.get(service.id);
-        return orphan && orphan.code_signals.length > 0;
+        return orphan && (orphan.compose_database?.available || orphan.code_signals.length > 0);
       }) ??
       stack.services.find((service) => serviceRole(service, stack.services.length) === "API") ??
       stack.services[0] ??
@@ -1027,6 +1071,10 @@ export function ServicesPage() {
       return;
     }
     const orphan = orphans.get(service.id);
+    if (orphan?.compose_database?.available) {
+      void attachComposeDatabase(service, orphan);
+      return;
+    }
     const offer = orphan ? detectedDatabaseOffer(orphan.code_signals.map((signal) => signal.driver)) : null;
     if (offer) {
       void provisionDetectedResource(service, offer);
@@ -1054,6 +1102,7 @@ export function ServicesPage() {
     }
     if (embeddedDbs.has(service.id)) return "Promote data";
     const orphan = orphans.get(service.id);
+    if (orphan?.compose_database?.available) return "Connect existing";
     const offer = orphan ? detectedDatabaseOffer(orphan.code_signals.map((signal) => signal.driver)) : null;
     return offer?.actionLabel ?? "Add database";
   }
@@ -2456,6 +2505,7 @@ export function ServicesPage() {
                                         }
                                         const orphan = orphans.get(service.id);
                                         const embedded = embeddedDbs.get(service.id);
+                                        const composeDb = orphan?.compose_database;
                                         const isFrontend =
                                           serviceRole(service, stack.services.length) === "Frontend";
                                         const stackHasDatabaseOwner = stack.services.some(
@@ -2469,16 +2519,20 @@ export function ServicesPage() {
                                         // don't need a DB (static frontends, etc.). In multi-service
                                         // apps, the API owns the DB; the frontend should call the API.
                                         if (!embedded && isFrontend && stackHasDatabaseOwner) return null;
-                                        if (!orphan || (!embedded && orphan.code_signals.length === 0))
+                                        if (!orphan || (!embedded && !composeDb && orphan.code_signals.length === 0))
                                           return null;
                                         const drivers = orphan.code_signals.map((s) => s.driver);
                                         const uniqueDrivers = Array.from(new Set(drivers));
                                         const offer = detectedDatabaseOffer(drivers);
                                         const headline = embedded
                                           ? "SQLite detected — promote to Postgres"
+                                          : composeDb
+                                            ? `Existing compose ${profileLabel(composeDb.engine)} detected`
                                           : offer?.headline ?? "No managed database";
                                         const detail = embedded
                                           ? `${embedded.file_path} won't survive container recreates.`
+                                          : composeDb
+                                            ? `${composeDb.database_service_name}${composeDb.container_name ? ` (${composeDb.container_name})` : ""} can be attached as ${composeDb.env_key}${composeDb.connection_preview ? `: ${composeDb.connection_preview}` : "."}`
                                           : (offer?.detail(uniqueDrivers) ??
                                             `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "..." : ""}. Add a managed dependency for this service.`);
                                         const dataDir = service.data_dir_container ?? service.data_dir;
@@ -2513,6 +2567,10 @@ export function ServicesPage() {
                                               onClick={() =>
                                                 embedded
                                                   ? setPromoteTarget(embedded)
+                                                  : composeDb?.available
+                                                    ? void attachComposeDatabase(service, orphan)
+                                                    : composeDb
+                                                      ? toast.error(composeDb.note)
                                                   : offer
                                                     ? void provisionDetectedResource(service, offer)
                                                     : void quickAddDatabase(service)
@@ -2524,6 +2582,10 @@ export function ServicesPage() {
                                                 </>
                                               ) : embedded ? (
                                                 "Promote data"
+                                              ) : composeDb?.available ? (
+                                                "Connect existing"
+                                              ) : composeDb ? (
+                                                "Review compose"
                                               ) : offer ? (
                                                 offer.actionLabel
                                               ) : (

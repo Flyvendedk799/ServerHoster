@@ -76,12 +76,28 @@ function backupAgeDays(iso: string | null | undefined): number | null {
 type Project = { id: string; name: string };
 type Service = { id: string; name: string; project_id?: string; linked_database_id?: string };
 type Backup = { id: string; filename: string; size_bytes: number; created_at: string };
+type ComposeDatabaseCandidate = {
+  engine: "postgres" | "mysql" | "redis" | "mongo";
+  env_key: string;
+  compose_file: string;
+  app_service_name: string | null;
+  database_service_name: string;
+  container_name: string | null;
+  internal_port: number;
+  host: "localhost";
+  port: number | null;
+  running: boolean;
+  available: boolean;
+  connection_preview: string | null;
+  note: string;
+};
 type OrphanService = {
   service_id: string;
   service_name: string;
   project_id: string | null;
   status: string;
   reason: string;
+  compose_database?: ComposeDatabaseCandidate;
 };
 
 function fmtSize(bytes: number): string {
@@ -235,6 +251,30 @@ export function DatabasesPage() {
         body: JSON.stringify({ mode: "managed", restart: true })
       });
       toast.success(`Provisioned database for ${orphan.service_name}`);
+      await load();
+    } catch {
+      /* toasted */
+    }
+  }
+
+  async function attachComposeDatabase(orphan: OrphanService): Promise<void> {
+    const composeDb = orphan.compose_database;
+    if (!composeDb?.available) {
+      toast.error(composeDb?.note ?? "No attachable compose database was detected.");
+      return;
+    }
+    const ok = await confirmDialog({
+      title: `Connect existing ${recognitionProfileLabel(composeDb.engine)} for ${orphan.service_name}?`,
+      message: `ServerHoster will store ${composeDb.env_key} as a protected service secret using ${composeDb.connection_preview ?? "the detected compose database URL"}, then restart the service.`,
+      confirmLabel: "Connect Existing"
+    });
+    if (!ok) return;
+    try {
+      await api(`/databases/compose/${orphan.service_id}/adopt`, {
+        method: "POST",
+        body: JSON.stringify({ restart: true })
+      });
+      toast.success(`Connected ${composeDb.database_service_name} to ${orphan.service_name}`);
       await load();
     } catch {
       /* toasted */
@@ -671,8 +711,8 @@ export function DatabasesPage() {
             </div>
             <p className="muted tiny">
               Services that don't yet have a managed database. Embedded SQLite files are listed when detected;
-              services with no <code>DATABASE_URL</code> at all are listed below them. One click provisions a
-              managed Postgres and links it.
+              services with no database URL are listed below them. ServerHoster can either connect a detected
+              compose database or provision a managed Postgres.
             </p>
           </header>
           <div className="grid embedded-grid">
@@ -712,17 +752,43 @@ export function DatabasesPage() {
                   <div className="row between">
                     <div>
                       <h4>{orph.service_name}</h4>
-                      <div className="muted tiny">No DATABASE_URL configured</div>
+                      <div className="muted tiny">
+                        {orph.compose_database
+                          ? `Detected ${recognitionProfileLabel(orph.compose_database.engine)} in ${orph.compose_database.database_service_name}`
+                          : "No DATABASE_URL configured"}
+                      </div>
                     </div>
-                    <span className="chip xsmall warn-chip">No DB</span>
+                    <span className="chip xsmall warn-chip">
+                      {orph.compose_database ? "Compose DB" : "No DB"}
+                    </span>
                   </div>
                   <div className="embedded-meta">
                     <span>Service status: {orph.status}</span>
+                    {orph.compose_database?.connection_preview && (
+                      <span className="muted font-mono">{orph.compose_database.connection_preview}</span>
+                    )}
                   </div>
+                  {orph.compose_database && !orph.compose_database.available && (
+                    <div className="embedded-warning">
+                      <AlertTriangle size={13} />
+                      <span>{orph.compose_database.note}</span>
+                    </div>
+                  )}
                   <div className="row" style={{ marginTop: "0.75rem", gap: "0.5rem" }}>
-                    <button className="primary xsmall" onClick={() => void provisionForService(orph)}>
-                      <PackageOpen size={13} /> Provision Postgres
-                    </button>
+                    {orph.compose_database?.available ? (
+                      <button className="primary xsmall" onClick={() => void attachComposeDatabase(orph)}>
+                        <Link2 size={13} /> Connect existing
+                      </button>
+                    ) : (
+                      <button className="primary xsmall" onClick={() => void provisionForService(orph)}>
+                        <PackageOpen size={13} /> Provision Postgres
+                      </button>
+                    )}
+                    {orph.compose_database?.available && (
+                      <button className="ghost xsmall" onClick={() => void provisionForService(orph)}>
+                        Provision new
+                      </button>
+                    )}
                     <button
                       className="ghost xsmall"
                       onClick={() =>
