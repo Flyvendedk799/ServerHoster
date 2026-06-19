@@ -42,6 +42,7 @@ import {
   type ResourceProfileId
 } from "../lib/resources";
 import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
+import { InfoHint } from "../components/ui/InfoHint";
 import { ServiceSettingsModal } from "../components/ServiceSettingsModal";
 import { ServiceSecretModal } from "../components/ServiceSecretModal";
 import { GitHubDeployModal } from "../components/GitHubDeployModal";
@@ -109,6 +110,57 @@ function gitSourceLabel(source: string | null | undefined): string {
   if (source === "webhook") return "GitHub webhook";
   if (source === "manual") return "manual Git redeploy";
   return "Git";
+}
+
+function normalizeRuntimeStackName(name: string): string {
+  return name
+    .replace(/\s+(api|backend|frontend|front-end|web|server|worker)$/i, "")
+    .replace(/[-_]+(api|backend|frontend|front-end|web|server|worker)$/i, "")
+    .trim();
+}
+
+function runtimeStackKey(service: Service): string {
+  return `${service.project_id}:${normalizeRuntimeStackName(service.name).toLowerCase()}`;
+}
+
+function runtimeServiceRole(service: Service, stackSize = 1): string {
+  if (/\b(api|backend|server)\b/i.test(service.name)) return "API";
+  if (/\b(frontend|front-end|web)\b/i.test(service.name)) return "Frontend";
+  if (/\b(worker|queue|jobs)\b/i.test(service.name)) return "Worker";
+  if (stackSize > 1 && service.port && service.port >= 7000 && service.port <= 8999) return "API";
+  if (stackSize > 1) return "Frontend";
+  return service.type;
+}
+
+function compareServicesByRuntimeRole(a: Service, b: Service, stackSize: number): number {
+  const rank = (service: Service) => {
+    const role = runtimeServiceRole(service, stackSize);
+    if (role === "Frontend") return 0;
+    if (role === "API") return 1;
+    if (role === "Worker") return 2;
+    return 3;
+  };
+  return rank(a) - rank(b) || a.name.localeCompare(b.name);
+}
+
+function buildRuntimeServiceStacks(rows: Service[]): RuntimeServiceStack[] {
+  const map = new Map<string, RuntimeServiceStack>();
+  for (const service of rows) {
+    const key = runtimeStackKey(service);
+    const title = normalizeRuntimeStackName(service.name) || service.name;
+    const existing = map.get(key);
+    if (existing) {
+      existing.services.push(service);
+    } else {
+      map.set(key, { id: key, title, services: [service] });
+    }
+  }
+  return [...map.values()]
+    .map((stack) => ({
+      ...stack,
+      services: stack.services.sort((a, b) => compareServicesByRuntimeRole(a, b, stack.services.length))
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
 }
 
 /** Pull a concise, human reason out of a failed deployment's build log so a
@@ -314,6 +366,8 @@ type ServiceStack = {
   services: Service[];
   databases: DatabaseResource[];
 };
+
+type RuntimeServiceStack = Omit<ServiceStack, "databases">;
 
 type OperatorServiceGroup = {
   id: string;
@@ -1300,23 +1354,15 @@ export function ServicesPage() {
   }
 
   function normalizeStackName(name: string): string {
-    return name
-      .replace(/\s+(api|backend|frontend|front-end|web|server|worker)$/i, "")
-      .replace(/[-_]+(api|backend|frontend|front-end|web|server|worker)$/i, "")
-      .trim();
+    return normalizeRuntimeStackName(name);
   }
 
   function stackKey(service: Service): string {
-    return `${service.project_id}:${normalizeStackName(service.name).toLowerCase()}`;
+    return runtimeStackKey(service);
   }
 
   function serviceRole(service: Service, stackSize = 1): string {
-    if (/\b(api|backend|server)\b/i.test(service.name)) return "API";
-    if (/\b(frontend|front-end|web)\b/i.test(service.name)) return "Frontend";
-    if (/\b(worker|queue|jobs)\b/i.test(service.name)) return "Worker";
-    if (stackSize > 1 && service.port && service.port >= 7000 && service.port <= 8999) return "API";
-    if (stackSize > 1) return "Frontend";
-    return service.type;
+    return runtimeServiceRole(service, stackSize);
   }
 
   function stackStatus(stack: ServiceStack): string {
@@ -1527,16 +1573,7 @@ export function ServicesPage() {
     }
     return [...map.values()].map((stack) => ({
       ...stack,
-      services: stack.services.sort((a, b) => {
-        const rank = (service: Service) => {
-          const role = serviceRole(service, stack.services.length);
-          if (role === "Frontend") return 0;
-          if (role === "API") return 1;
-          if (role === "Worker") return 2;
-          return 3;
-        };
-        return rank(a) - rank(b) || a.name.localeCompare(b.name);
-      }),
+      services: stack.services.sort((a, b) => compareServicesByRuntimeRole(a, b, stack.services.length)),
       databases: stack.databases.sort((a, b) => a.name.localeCompare(b.name))
     }));
   }
@@ -2394,7 +2431,22 @@ export function ServicesPage() {
                                             <div className={isSupabase ? "res-supabase-banner" : "db-suggest-banner"}>
                                               <DatabaseIcon size={14} />
                                               <div className={isSupabase ? "res-supabase-text" : "db-suggest-text"}>
-                                                <strong>{headline}</strong>
+                                                <span className="row" style={{ gap: "0.3rem" }}>
+                                                  <strong>{headline}</strong>
+                                                  <InfoHint title="Database check" side="right">
+                                                    <p>
+                                                      ServerHoster looked at this app's code and what's
+                                                      currently connected, and thinks something here needs
+                                                      your attention.
+                                                    </p>
+                                                    <p>
+                                                      The main button does the recommended fix. The smaller
+                                                      links are escape hatches — keep using a database you
+                                                      host elsewhere, force plain Postgres instead of
+                                                      Supabase, or re-scan the code.
+                                                    </p>
+                                                  </InfoHint>
+                                                </span>
                                                 <span>{detail}</span>
                                                 <span className="muted tiny">
                                                   Current: {actionable.current_provider.label}
@@ -2540,7 +2592,21 @@ export function ServicesPage() {
                                           <div className="db-suggest-banner">
                                             <DatabaseIcon size={14} />
                                             <div className="db-suggest-text">
-                                              <strong>{headline}</strong>
+                                              <span className="row" style={{ gap: "0.3rem" }}>
+                                                <strong>{headline}</strong>
+                                                <InfoHint title="Database suggestion" side="right">
+                                                  <p>
+                                                    This app looks like it wants to store data, but nothing
+                                                    managed is connected yet. The button sets up the
+                                                    recommended option for you.
+                                                  </p>
+                                                  <p>
+                                                    Prefer not to use a database? Apps that just need to keep
+                                                    files around can use a persistent folder
+                                                    (<code>$DATA_DIR</code>) instead.
+                                                  </p>
+                                                </InfoHint>
+                                              </span>
                                               <span>{detail}</span>
                                               {dataDir && (
                                                 <span className="muted tiny">
@@ -3114,10 +3180,8 @@ function ServiceGroupModal({
     setSelected(new Set(group?.service_ids ?? []));
   }, [group]);
 
-  const sortedServices = useMemo(
-    () => [...services].sort((a, b) => a.name.localeCompare(b.name)),
-    [services]
-  );
+  const runtimeStacks = useMemo(() => buildRuntimeServiceStacks(services), [services]);
+  const sortedServices = useMemo(() => [...services].sort((a, b) => a.name.localeCompare(b.name)), [services]);
 
   function toggleService(serviceId: string): void {
     setSelected((prev) => {
@@ -3126,6 +3190,26 @@ function ServiceGroupModal({
       else next.add(serviceId);
       return next;
     });
+  }
+
+  function toggleStack(stack: RuntimeServiceStack): void {
+    const stackIds = stack.services.map((service) => service.id);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = stackIds.every((serviceId) => next.has(serviceId));
+      for (const serviceId of stackIds) {
+        if (allSelected) next.delete(serviceId);
+        else next.add(serviceId);
+      }
+      return next;
+    });
+  }
+
+  function stackSelectionState(stack: RuntimeServiceStack): "checked" | "mixed" | "none" {
+    const selectedCount = stack.services.filter((service) => selected.has(service.id)).length;
+    if (selectedCount === stack.services.length) return "checked";
+    if (selectedCount > 0) return "mixed";
+    return "none";
   }
 
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -3184,8 +3268,45 @@ function ServiceGroupModal({
             </div>
             <div className="form-group">
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <label>Services</label>
-                <span className="muted tiny">{selected.size} selected</span>
+                <label>Applications</label>
+                <span className="muted tiny">{selected.size} runtimes selected</span>
+              </div>
+              <div className="service-group-service-list">
+                {runtimeStacks.length === 0 ? (
+                  <div className="muted small">No services available.</div>
+                ) : (
+                  runtimeStacks.map((stack) => {
+                    const state = stackSelectionState(stack);
+                    return (
+                      <label key={stack.id} className="service-group-checkbox-row service-group-stack-row">
+                        <input
+                          type="checkbox"
+                          ref={(input) => {
+                            if (input) input.indeterminate = state === "mixed";
+                          }}
+                          checked={state === "checked"}
+                          onChange={() => toggleStack(stack)}
+                        />
+                        <Layers size={15} className="text-accent" />
+                        <span>{stack.title}</span>
+                        <code>
+                          {stack.services.length} runtime{stack.services.length === 1 ? "" : "s"}
+                        </code>
+                        <code>
+                          {stack.services
+                            .map((service) => runtimeServiceRole(service, stack.services.length))
+                            .join(", ")}
+                        </code>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+            <div className="form-group">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <label>Individual Runtimes</label>
+                <span className="muted tiny">Optional fine tuning</span>
               </div>
               <div className="service-group-service-list">
                 {sortedServices.length === 0 ? (

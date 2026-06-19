@@ -4,6 +4,7 @@ import { toast } from "../lib/toast";
 import { AlertTriangle, Database, Link2, Sparkles } from "lucide-react";
 import { SqlFileInput } from "./SqlFileInput";
 import { useModalA11y } from "../lib/useModalA11y";
+import { InfoHint } from "./ui/InfoHint";
 
 export type EmbeddedDb = {
   service_id: string;
@@ -96,6 +97,17 @@ export function PromoteEmbeddedDbModal({ embedded, onClose, onPromoted }: Props)
           <div className="row">
             <Sparkles size={20} />
             <h3 id="promote-db-modal-title">Promote embedded database</h3>
+            <InfoHint title="Two ways to promote" side="right">
+              <p>
+                <strong>Provision managed Postgres</strong> — ServerHoster creates a brand-new Postgres
+                database, can copy your existing data into it, connects it to the app, and hands the
+                app its address.
+              </p>
+              <p>
+                <strong>Use existing DATABASE_URL</strong> — point the app at a database you already run
+                somewhere else; the address is stored securely.
+              </p>
+            </InfoHint>
           </div>
           <p className="hint">
             <code>{embedded.file_path}</code> inside <code>{embedded.container_name}</code> is{" "}

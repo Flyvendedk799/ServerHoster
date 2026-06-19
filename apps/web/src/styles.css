@@ -5530,3 +5530,100 @@ a.list-row:hover .row-chevron,
 .persisted-uploads-row .link.xsmall {
   margin-left: auto;
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Info hint — accessible "(i)" helper icon + portal-positioned rich tooltip.
+   Component: components/ui/InfoHint.tsx. Use for explanatory "what is this"
+   copy; keep [data-tooltip] for terse action-button hints.
+   ────────────────────────────────────────────────────────────────────────── */
+.info-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: help;
+  vertical-align: text-bottom;
+  flex: 0 0 auto;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+.info-hint:hover,
+.info-hint:focus-visible,
+.info-hint[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.info-hint svg {
+  display: block;
+}
+
+.info-hint-bubble {
+  position: fixed;
+  z-index: 5000;
+  max-width: min(320px, calc(100vw - 16px));
+  width: max-content;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-elevated) 97%, black);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.info-hint-bubble .info-hint-title {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--text-primary);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.info-hint-bubble code {
+  padding: 0.05rem 0.28rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.info-hint-bubble p {
+  margin: 0.45rem 0 0;
+}
+.info-hint-bubble p:first-child {
+  margin-top: 0;
+}
+.info-hint-bubble strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* A form label that carries an InfoHint icon, kept on one baseline. */
+.label-with-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* Small heading above a console panel (Functions / Secrets) with a helper icon. */
+.res-panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}

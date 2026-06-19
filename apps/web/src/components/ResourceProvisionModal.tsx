@@ -20,6 +20,7 @@ import { api } from "../lib/api";
 import { toast } from "../lib/toast";
 import { connectLogs } from "../lib/ws";
 import { useModalA11y } from "../lib/useModalA11y";
+import { InfoHint } from "./ui/InfoHint";
 import {
   getBootstrapPlan,
   getResourceRecognition,
@@ -410,6 +411,17 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                     <span className={`res-confidence badge-size ${plan.confidence}`}>
                       {plan.confidence} confidence
                     </span>
+                    <InfoHint title="How this was detected" side="left">
+                      <p>
+                        ServerHoster scanned the app's code for clues — its packages, config files,
+                        database migrations, functions, and settings — to work out what backend it
+                        needs.
+                      </p>
+                      <p>
+                        <strong>Confidence</strong> is how sure it is: high means several strong clues
+                        lined up, low means just a hint. You can always override the choice.
+                      </p>
+                    </InfoHint>
                   </div>
                   {overrideEnvKeys.length > 0 && (
                     <div className="res-warning-banner">
@@ -462,7 +474,21 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
 
           {phase === "wizard" && step === "mode" && (
             <div className="res-step-panel">
-              <h4 className="res-step-title">How should the local schema be created?</h4>
+              <h4 className="res-step-title">
+                How should the local schema be created?
+                <InfoHint title="Schema, migrations & seed" side="right">
+                  <p>
+                    Migrations are the app's step-by-step recipe for building its database tables (they
+                    live in the repo). "Schema" just means those tables and their structure.
+                  </p>
+                  <p>
+                    <strong>Schema only</strong> builds the tables (recommended).{" "}
+                    <strong>Schema + seed</strong> also loads the example/starter rows the repo
+                    provides. <strong>Empty</strong> skips all of it.
+                  </p>
+                  <p>Either way, none of your real hosted data is copied.</p>
+                </InfoHint>
+              </h4>
               <div className="res-mode-options">
                 <label className={`res-mode-option ${mode === "schema-only" ? "active" : ""}`}>
                   <input
@@ -518,7 +544,18 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
 
           {phase === "wizard" && step === "secrets" && (
             <div className="res-step-panel">
-              <h4 className="res-step-title">Local secrets</h4>
+              <h4 className="res-step-title">
+                Local secrets
+                <InfoHint title="Local secrets" side="right">
+                  <p>Secrets are settings the stack and its functions need — mostly keys and passwords.</p>
+                  <p>
+                    <strong>Generated</strong> ones are created for you. <strong>Required</strong> ones
+                    must be filled in or setup can't finish. <strong>Optional</strong> ones power extra
+                    features — skip them and those features just run in a limited mode until you add
+                    them.
+                  </p>
+                </InfoHint>
+              </h4>
               {(plan?.env.generated.length ?? 0) > 0 && (
                 <div className="res-secret-block">
                   <strong className="res-secret-block-title">
@@ -600,7 +637,19 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
 
           {phase === "wizard" && step === "functions" && (
             <div className="res-step-panel">
-              <h4 className="res-step-title">Edge Functions</h4>
+              <h4 className="res-step-title">
+                Edge Functions
+                <InfoHint title="Edge Functions" side="right">
+                  <p>
+                    Small serverless functions bundled with the app. ServerHoster can run them on your
+                    machine alongside the database.
+                  </p>
+                  <p>
+                    A function marked "missing secrets" still runs, but the parts that need those keys
+                    won't work until you provide them.
+                  </p>
+                </InfoHint>
+              </h4>
               {functionGroups.size === 0 ? (
                 <p className="muted small">No Edge Functions detected in this repository.</p>
               ) : (
@@ -650,7 +699,20 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
 
           {phase === "wizard" && step === "bootstrap" && (
             <div className="res-step-panel">
-              <h4 className="res-step-title">First local user (optional)</h4>
+              <h4 className="res-step-title">
+                First local user (optional)
+                <InfoHint title="First local user" side="right">
+                  <p>
+                    A fresh local stack has no accounts at all, so you couldn't log in. This optionally
+                    creates your first one right after setup.
+                  </p>
+                  <p>
+                    A "role" is the user's permission level, "platform admin" is a super-user, and an
+                    "organization" is a workspace/company — ServerHoster only offers the ones this app
+                    actually uses.
+                  </p>
+                </InfoHint>
+              </h4>
               <label className="checkbox-row">
                 <input
                   type="checkbox"
@@ -1065,7 +1127,15 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
             </div>
             {plan.plan.roles.length > 0 && (
               <div className="form-group">
-                <label>Role</label>
+                <label className="label-with-hint">
+                  Role
+                  <InfoHint side="left">
+                    <p>
+                      The user's permission level in the app (for example admin vs member). This list
+                      comes from what this app's own database defines.
+                    </p>
+                  </InfoHint>
+                </label>
                 <select value={role} onChange={(e) => setRole(e.target.value)}>
                   {plan.plan.roles.map((r) => (
                     <option key={r} value={r}>
@@ -1084,6 +1154,12 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
                 onChange={(e) => setMakePlatformAdmin(e.target.checked)}
               />
               <span>Make platform admin</span>
+              <InfoHint side="right">
+                <p>
+                  Gives this user top-level super-admin access across the whole app. Only offered
+                  because this app has an admin table.
+                </p>
+              </InfoHint>
             </label>
           )}
           {plan.plan.org_support.organizations && (
@@ -1091,6 +1167,12 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
               <label className="checkbox-row">
                 <input type="checkbox" checked={createOrg} onChange={(e) => setCreateOrg(e.target.checked)} />
                 <span>Create organization</span>
+                <InfoHint side="right">
+                  <p>
+                    Also create a workspace/company and make this user its owner. Only offered because
+                    this app uses organizations.
+                  </p>
+                </InfoHint>
               </label>
               {createOrg && (
                 <div className="form-row">
@@ -1111,7 +1193,15 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
             </>
           )}
           <div className="res-secret-block">
-            <strong className="res-secret-block-title">Operations preview</strong>
+            <strong className="res-secret-block-title res-title-with-hint">
+              Operations preview
+              <InfoHint side="right">
+                <p>
+                  Exactly what will be written to the local database when you click Create — shown up
+                  front so there are no surprises.
+                </p>
+              </InfoHint>
+            </strong>
             <ul className="res-ops-list">
               {plan.plan.operations.map((op, i) => (
                 <li key={i} className={op.optional ? "optional" : ""}>

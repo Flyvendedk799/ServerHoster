@@ -10,6 +10,7 @@ import { ResourceStacks } from "../components/ResourceStacks";
 import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
 import { SqlFileInput } from "../components/SqlFileInput";
 import { CardSkeleton } from "../components/ui/Skeleton";
+import { InfoHint } from "../components/ui/InfoHint";
 import {
   listResourceRecognitions,
   runResourceRecognition,
@@ -121,6 +122,15 @@ function recognitionProfileLabel(profile: DatabaseRecognition["detected"]["profi
   if (profile === "mongo") return "MongoDB";
   if (profile === "redis") return "Redis";
   return "No database";
+}
+
+function recognitionStateHint(state: DatabaseRecognition["state"]): string {
+  if (state === "satisfied") return "All good — this app's database is connected and everything lines up.";
+  if (state === "missing") return "This app looks like it needs a database, but none is connected yet.";
+  if (state === "partial") return "A database is connected, but the setup isn't finished.";
+  if (state === "conflict")
+    return "Two settings disagree — usually a manual setting is overriding the database you linked.";
+  return "Database status for this app.";
 }
 
 function primaryRecognitionAction(recognition: DatabaseRecognition): RecognitionAction | null {
@@ -608,12 +618,36 @@ export function DatabasesPage() {
         <div className="database-summary-item">
           <Link2 size={18} />
           <strong>{services.filter((service) => service.linked_database_id).length}</strong>
-          <span>Service links</span>
+          <span>
+            Service links
+            <InfoHint title="Service links" side="bottom">
+              <p>
+                How many of your apps are connected to a database. When you link one, ServerHoster
+                automatically hands the app the database's address (a setting called{" "}
+                <code>DATABASE_URL</code>) the next time it starts — so you never copy or paste it
+                yourself.
+              </p>
+              <p>If an app already sets its own <code>DATABASE_URL</code>, ServerHoster leaves it alone.</p>
+            </InfoHint>
+          </span>
         </div>
-        <div className="database-summary-item">
+        <div className={`database-summary-item${embedded.length ? " attention" : ""}`}>
           <HardDrive size={18} />
           <strong>{embedded.length}</strong>
-          <span>Embedded (unmanaged)</span>
+          <span>
+            Embedded (unmanaged)
+            <InfoHint title="Embedded databases" side="bottom">
+              <p>
+                Some apps ship with a small built-in database file (called SQLite) tucked inside the
+                app itself. It works, but ServerHoster isn't looking after it — there are no automatic
+                backups, and the data can be lost if the app's container is rebuilt.
+              </p>
+              <p>
+                "Promoting" it copies the data into a proper managed database, so you get backups, a
+                data browser, and one-click links.
+              </p>
+            </InfoHint>
+          </span>
         </div>
       </section>
 
@@ -623,6 +657,18 @@ export function DatabasesPage() {
             <div className="row">
               <Search size={16} />
               <h3>Recognition</h3>
+              <InfoHint title="How recognition works" side="right">
+                <p>
+                  For each app, ServerHoster looks at what kind of database the code seems to need,
+                  then checks what's actually connected — and tells you if the two don't line up.
+                </p>
+                <p>
+                  <strong>Satisfied</strong> — all good. <strong>Missing</strong> — the app needs a
+                  database but none is connected. <strong>Partial</strong> — connected, but something's
+                  unfinished. <strong>Conflict</strong> — two settings disagree (for example, a manual
+                  setting is overriding the database you linked).
+                </p>
+              </InfoHint>
               <span className={`chip xsmall ${recognitionNeedsAttention.length ? "warn-chip" : ""}`}>
                 {recognitionNeedsAttention.length
                   ? `${recognitionNeedsAttention.length} need attention`
@@ -649,7 +695,12 @@ export function DatabasesPage() {
                         : `${recognitionProfileLabel(recognition.detected.profile)} · ${recognition.detected.confidence} confidence`}
                     </span>
                   </div>
-                  <span className={`recognition-state ${recognition.state}`}>{recognition.state}</span>
+                  <span
+                    className={`recognition-state ${recognition.state}`}
+                    data-tooltip={recognitionStateHint(recognition.state)}
+                  >
+                    {recognition.state}
+                  </span>
                   <div className="recognition-provider">
                     <span>{recognition.current_provider.label}</span>
                     {recognition.current_provider.env_key && (
@@ -707,6 +758,17 @@ export function DatabasesPage() {
             <div className="row">
               <HardDrive size={16} />
               <h3>Service persistence</h3>
+              <InfoHint title="Apps without a managed database" side="right">
+                <p>These apps don't have a ServerHoster-managed database yet. Two kinds show up:</p>
+                <p>
+                  <strong>Built-in database file</strong> — a small database (SQLite) inside the app.
+                  Promote it to copy the data into a managed database with backups.
+                </p>
+                <p>
+                  <strong>No database connected</strong> — connect a database the app already describes
+                  in its compose file, or create a fresh managed Postgres in one click.
+                </p>
+              </InfoHint>
               <span className="chip xsmall warn-chip">{embedded.length + orphans.length} unmanaged</span>
             </div>
             <p className="muted tiny">
@@ -723,8 +785,20 @@ export function DatabasesPage() {
                     <h4>{emb.service_name}</h4>
                     <div className="muted tiny font-mono">{emb.file_path}</div>
                   </div>
-                  <span className={`chip xsmall ${emb.persistent ? "" : "warn-chip"}`}>
-                    {emb.persistent ? "Volume-backed" : "Ephemeral"}
+                  <span className="row" style={{ gap: "0.3rem" }}>
+                    <span className={`chip xsmall ${emb.persistent ? "" : "warn-chip"}`}>
+                      {emb.persistent ? "Volume-backed" : "Ephemeral"}
+                    </span>
+                    <InfoHint title="Will the data survive?" side="left">
+                      <p>
+                        <strong>Volume-backed</strong> — saved to permanent storage, so the data
+                        survives restarts and redeploys.
+                      </p>
+                      <p>
+                        <strong>Ephemeral</strong> — kept only inside the running app; it's wiped the
+                        moment the app's container is rebuilt.
+                      </p>
+                    </InfoHint>
                   </span>
                 </div>
                 <div className="embedded-meta">
@@ -1021,6 +1095,13 @@ export function DatabasesPage() {
               <button onClick={() => setTransferTarget(selectedDb)}>
                 <Cloud size={16} /> Transfer to hosted
               </button>
+              <InfoHint title="Transfer to hosted" side="left">
+                <p>
+                  Copies this database into an outside hosted database (like one in the cloud) — handy
+                  when you're ready to move your local data to production.
+                </p>
+                <p>The destination has to already exist and be empty (or willing to accept overwrites).</p>
+              </InfoHint>
             </div>
           </header>
 
@@ -1057,13 +1138,31 @@ export function DatabasesPage() {
           {consoleTab === "overview" && (
             <div className="database-console-strip">
               <div>
-                <span>Connection</span>
+                <span>
+                  Connection
+                  <InfoHint title="Connection string" side="bottom">
+                    <p>
+                      The full address apps use to reach this database — the username, password, host,
+                      and database name all in one line. Linked apps receive it automatically, so you
+                      usually won't need it by hand.
+                    </p>
+                    <p>Click to copy.</p>
+                  </InfoHint>
+                </span>
                 <button className="connection-copy" onClick={() => void copyConnection(selectedDb)}>
                   {selectedDb.connection_string}
                 </button>
               </div>
               <div>
-                <span>Linked services</span>
+                <span>
+                  Linked services
+                  <InfoHint title="Linked services" side="bottom">
+                    <p>
+                      How many of your apps are currently set up to use this database. Add or remove
+                      connections from the <strong>Linking</strong> tab.
+                    </p>
+                  </InfoHint>
+                </span>
                 <strong>{linkedServices.length || "None"}</strong>
               </div>
               <div>
@@ -1158,7 +1257,17 @@ export function DatabasesPage() {
 
           {consoleTab === "backups" && (
             <div className="sub-section">
-              <h4 className="metric-label">Recent Backups</h4>
+              <h4 className="metric-label">
+                Recent Backups
+                <InfoHint title="Backups & restore" side="right">
+                  <p>
+                    A backup is a full snapshot of the database saved on this machine. Take one anytime
+                    with <em>Manual Backup</em> above, or <em>Download</em> to keep a copy somewhere
+                    else.
+                  </p>
+                  <p>Restoring replaces everything in the database with the snapshot — the current data is overwritten.</p>
+                </InfoHint>
+              </h4>
               <div className="list">
                 {backups.length === 0 ? (
                   <p className="muted small italic">
@@ -1194,7 +1303,19 @@ export function DatabasesPage() {
 
           {consoleTab === "linking" && (
             <div className="sub-section">
-              <h4 className="metric-label">Service Linking</h4>
+              <h4 className="metric-label">
+                Service Linking
+                <InfoHint title="Linking an app to this database" side="right">
+                  <p>
+                    Linking hands the app this database's address (<code>DATABASE_URL</code>) the next
+                    time it starts — no redeploy needed for normal apps.
+                  </p>
+                  <p>
+                    If the app already sets its own <code>DATABASE_URL</code>, that one is kept and the
+                    link is skipped — which is why it then shows as a "conflict" under Recognition.
+                  </p>
+                </InfoHint>
+              </h4>
               <p className="muted tiny" style={{ marginTop: "-0.4rem", marginBottom: "0.75rem" }}>
                 Linking auto-injects <code>DATABASE_URL</code> on the next service start.
               </p>
@@ -1225,7 +1346,16 @@ export function DatabasesPage() {
 
           {consoleTab === "sql" && (selectedDb.engine === "postgres" || selectedDb.engine === "mysql") && (
             <div className="seed-section">
-              <h4 className="metric-label">Seed SQL</h4>
+              <h4 className="metric-label">
+                Seed SQL
+                <InfoHint title="Seed SQL" side="right">
+                  <p>
+                    Runs the SQL below straight against this database — handy for creating tables or
+                    adding starter data. Load a <code>.sql</code> file or paste commands.
+                  </p>
+                  <p>There's no undo, so take a backup first if the database already holds data you care about.</p>
+                </InfoHint>
+              </h4>
               <SqlFileInput
                 onLoaded={(sql, filename) => {
                   setSeedSql(sql);
@@ -1326,8 +1456,21 @@ export function DatabasesPage() {
           line-height: 1;
         }
         .databases-page .database-summary-item span {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.3rem;
           color: var(--text-muted);
           font-size: 0.75rem;
+        }
+        .databases-page .database-summary-item.attention {
+          border-color: color-mix(in srgb, var(--warn, #d97706) 40%, var(--border-subtle));
+          background: color-mix(in srgb, var(--warn, #d97706) 7%, var(--bg-card));
+        }
+        .databases-page .database-summary-item.attention svg { color: var(--warn, #d97706); }
+        .databases-page .metric-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
         }
         .databases-page .active-border { border-color: var(--accent) !important; }
         .databases-page .connection-string { 

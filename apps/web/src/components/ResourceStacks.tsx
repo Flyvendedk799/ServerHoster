@@ -18,6 +18,7 @@ import { confirmDialog } from "../lib/confirm";
 import { toast } from "../lib/toast";
 import { connectLogs } from "../lib/ws";
 import { StatusBadge } from "./StatusBadge";
+import { InfoHint } from "./ui/InfoHint";
 import { ResourceBootstrapModal } from "./ResourceProvisionModal";
 import {
   getResourceEnvRequirements,
@@ -213,6 +214,20 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
         <div className="row">
           <Boxes size={16} />
           <h3>Stacks</h3>
+          <InfoHint title="Local Supabase stacks" side="right">
+            <p>
+              A full copy of Supabase running on your own machine — its database, user logins (auth),
+              file storage, and edge functions — built straight from the app's code.
+            </p>
+            <p>
+              Your tables come from the app's migration files. None of your hosted/cloud Supabase data
+              is ever copied here.
+            </p>
+            <p>
+              <strong>API</strong> is the address your app talks to. <strong>Studio</strong> is
+              Supabase's built-in web dashboard for browsing the data.
+            </p>
+          </InfoHint>
           <span className="chip xsmall">{resources.length} local Supabase</span>
         </div>
         <p className="muted tiny">
@@ -384,9 +399,21 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
                 </span>
               )}
             </div>
-            <button className="ghost xsmall" onClick={() => setBootstrapTarget(selected)}>
-              <UserPlus size={13} /> Bootstrap user
-            </button>
+            <div className="row" style={{ gap: "0.35rem" }}>
+              <button className="ghost xsmall" onClick={() => setBootstrapTarget(selected)}>
+                <UserPlus size={13} /> Bootstrap user
+              </button>
+              <InfoHint title="Bootstrap a first user" side="left">
+                <p>
+                  A brand-new local Supabase starts empty — no accounts at all. Bootstrapping creates
+                  your first login so you can actually sign in.
+                </p>
+                <p>
+                  If the app supports it, you can also make that user a platform admin and set up a
+                  starting organization in the same step.
+                </p>
+              </InfoHint>
+            </div>
           </header>
 
           <div className="db-console-tabs" role="tablist">
@@ -414,6 +441,20 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
 
           {tab === "functions" && (
             <div className="res-fn-table">
+              <div className="res-panel-heading">
+                <span>Edge Functions</span>
+                <InfoHint title="Edge Functions" side="right">
+                  <p>
+                    Small serverless functions that ship with the app (in its{" "}
+                    <code>supabase/functions</code> folder). ServerHoster runs them locally for you.
+                  </p>
+                  <p>
+                    <strong>Serving</strong> — running fine. <strong>Degraded</strong> — running, but
+                    missing an optional setting so some features may not work. <strong>Off</strong> —
+                    not running.
+                  </p>
+                </InfoHint>
+              </div>
               {!selectedReq || selectedReq.functions.length === 0 ? (
                 <p className="muted small italic">No Edge Functions detected for this stack.</p>
               ) : (
@@ -454,6 +495,21 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
 
           {tab === "secrets" && (
             <div className="res-secrets-panel">
+              <div className="res-panel-heading">
+                <span>Function secrets</span>
+                <InfoHint title="Function secrets" side="right">
+                  <p>
+                    Settings your functions need — usually API keys. ServerHoster fills in the Supabase
+                    ones for you; you provide any extras (like a third-party service's key).
+                  </p>
+                  <p>
+                    <strong>Generated</strong> — created for you. <strong>Provided</strong> — you
+                    entered it. <strong>Required missing</strong> — a function won't work until you add
+                    it. <strong>Optional missing</strong> — only some features need it.{" "}
+                    <strong>Disabled locally</strong> — you've chosen to skip it for local use.
+                  </p>
+                </InfoHint>
+              </div>
               <div className="list">
                 {selected.secrets.map((secret) => (
                   <div key={secret.key} className="list-item row between small">
