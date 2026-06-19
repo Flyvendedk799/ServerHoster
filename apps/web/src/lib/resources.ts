@@ -3,6 +3,10 @@ import type {
   BootstrapPlanResponse,
   BootstrapRequest,
   BootstrapResult,
+  AdoptDatabaseRequest,
+  AdoptDatabaseResponse,
+  DatabaseRecognition,
+  DatabaseRecognitionPreferenceRequest,
   DependencyScan,
   DependencyScanRunResult,
   EnvRequirementsResponse,
@@ -25,6 +29,11 @@ export type {
   BootstrapPlanResponse,
   BootstrapRequest,
   BootstrapResult,
+  AdoptDatabaseRequest,
+  AdoptDatabaseResponse,
+  DatabaseRecognition,
+  DatabaseRecognitionPreference,
+  DatabaseRecognitionPreferenceRequest,
   DependencyScan,
   DependencyScanRunResult,
   DetectionConfidence,
@@ -37,6 +46,11 @@ export type {
   ProvisionMode,
   ProvisionPlan,
   ProvisionRequest,
+  RecognitionAction,
+  RecognitionIssue,
+  RecognitionProvider,
+  RecognitionProviderKind,
+  RecognitionState,
   ResourceProfileId,
   ResourceProfileSummary,
   ResourceProvisioningEvent,
@@ -66,6 +80,44 @@ export function getResourceScan(serviceId: string, opts?: ApiOpts): Promise<Depe
 
 export function runResourceScan(serviceId: string, opts?: ApiOpts): Promise<DependencyScanRunResult> {
   return api<DependencyScanRunResult>(`/resources/scans/${serviceId}/run`, { method: "POST", ...opts });
+}
+
+export function listResourceRecognitions(
+  opts?: ApiOpts & { projectId?: string }
+): Promise<DatabaseRecognition[]> {
+  const query = opts?.projectId ? `?projectId=${encodeURIComponent(opts.projectId)}` : "";
+  return api<DatabaseRecognition[]>(`/resources/recognition${query}`, { silent: opts?.silent });
+}
+
+export function getResourceRecognition(
+  serviceId: string,
+  opts?: ApiOpts
+): Promise<DatabaseRecognition> {
+  return api<DatabaseRecognition>(`/resources/recognition/${serviceId}`, opts);
+}
+
+export function runResourceRecognition(
+  serviceId: string,
+  opts?: ApiOpts
+): Promise<DatabaseRecognition> {
+  return api<DatabaseRecognition>(`/resources/recognition/${serviceId}/run`, { method: "POST", ...opts });
+}
+
+export function setResourceRecognitionPreference(
+  serviceId: string,
+  body: DatabaseRecognitionPreferenceRequest
+): Promise<DatabaseRecognition> {
+  return api<DatabaseRecognition>(`/resources/recognition/${serviceId}/preference`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function adoptDatabase(body: AdoptDatabaseRequest): Promise<AdoptDatabaseResponse> {
+  return api<AdoptDatabaseResponse>("/resources/adopt-database", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 /** Awaited; progress streams over the websocket as resource_provisioning events. */
@@ -158,32 +210,12 @@ export function resourceConfigString(
   return typeof value === "string" && value ? value : null;
 }
 
-/** True when the URL points at a non-local host (a hosted Supabase project). */
+/** True when the URL points at a non-local host. */
 export function isNonLocalUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return !["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "host.docker.internal"].includes(url.hostname);
   } catch {
     return false;
-  }
-}
-
-const HOSTED_CHOICE_PREFIX = "survhub_use_hosted_supabase:";
-
-/** Client-side record of "Use hosted Supabase" — hides the local-stack prompt. */
-export function hostedSupabaseChosen(serviceId: string): boolean {
-  try {
-    return localStorage.getItem(`${HOSTED_CHOICE_PREFIX}${serviceId}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function setHostedSupabaseChosen(serviceId: string, chosen: boolean): void {
-  try {
-    if (chosen) localStorage.setItem(`${HOSTED_CHOICE_PREFIX}${serviceId}`, "1");
-    else localStorage.removeItem(`${HOSTED_CHOICE_PREFIX}${serviceId}`);
-  } catch {
-    /* storage unavailable — choice just won't persist */
   }
 }

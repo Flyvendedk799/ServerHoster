@@ -22,6 +22,7 @@ import { connectLogs } from "../lib/ws";
 import { useModalA11y } from "../lib/useModalA11y";
 import {
   getBootstrapPlan,
+  getResourceRecognition,
   getResourceDetail,
   getResourceLogs,
   isNonLocalUrl,
@@ -31,11 +32,13 @@ import {
   runResourceScan,
   type BootstrapPlanResponse,
   type BootstrapResult,
+  type DatabaseRecognition,
   type DependencyScanRunResult,
   type DetectionSignal,
   type ManagedResourceDetail,
   type ProvisionMode,
   type ProvisionPlan,
+  type RecognitionAction,
   type ResourceProfileId
 } from "../lib/resources";
 
@@ -91,6 +94,7 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
   const [phase, setPhase] = useState<Phase>("wizard");
   const [scan, setScan] = useState<DependencyScanRunResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [recognition, setRecognition] = useState<DatabaseRecognition | null>(null);
 
   const [mode, setMode] = useState<ProvisionMode>("schema-only");
   const [restart, setRestart] = useState(true);
@@ -123,6 +127,11 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
   // Run a fresh dependency scan on mount so the wizard shows live signals.
   useEffect(() => {
     let cancelled = false;
+    getResourceRecognition(serviceId, { silent: true })
+      .then((result) => {
+        if (!cancelled) setRecognition(result);
+      })
+      .catch(() => undefined);
     runResourceScan(serviceId, { silent: true })
       .then((result) => {
         if (cancelled) return;
@@ -282,6 +291,28 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
     );
   }
 
+  async function runRecognitionAction(action: RecognitionAction): Promise<void> {
+    if (action.id === "link-existing" && action.resource_id) {
+      await api(`/resources/${action.resource_id}/link`, {
+        method: "POST",
+        body: JSON.stringify({ serviceId })
+      });
+      toast.success("Existing resource linked");
+      onProvisioned();
+      onClose();
+      return;
+    }
+    if (action.id === "adopt-legacy" && action.database_id) {
+      await api("/resources/adopt-database", {
+        method: "POST",
+        body: JSON.stringify({ databaseId: action.database_id, serviceId })
+      });
+      toast.success("Existing database adopted");
+      onProvisioned();
+      onClose();
+    }
+  }
+
   /** Group scanned function env keys by the function dir referencing them. */
   const functionGroups = useMemo(() => {
     const groups = new Map<string, Array<{ key: string; classification: string }>>();
@@ -391,6 +422,32 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                       </span>
                     </div>
                   )}
+                  {recognition && recognition.current_provider.kind !== "none" && (
+                    <div className={`res-warning-banner ${recognition.state === "conflict" ? "danger" : ""}`}>
+                      <Database size={15} />
+                      <span>
+                        Recognition: <strong>{recognition.state}</strong> via{" "}
+                        {recognition.current_provider.label}
+                        {recognition.current_provider.env_key
+                          ? ` (${recognition.current_provider.env_key})`
+                          : ""}
+                        .
+                      </span>
+                    </div>
+                  )}
+                  {recognition &&
+                    recognition.actions
+                      .filter((action) => action.id === "link-existing" || action.id === "adopt-legacy")
+                      .slice(0, 2)
+                      .map((action) => (
+                        <div key={`${action.id}-${action.resource_id ?? action.database_id}`} className="res-no-copy-banner">
+                          <ShieldCheck size={15} />
+                          <span>{action.label} before creating a new local resource.</span>
+                          <button className="ghost tiny" onClick={() => void runRecognitionAction(action)}>
+                            {action.id === "link-existing" ? "Link" : "Adopt"}
+                          </button>
+                        </div>
+                      ))}
                   {renderSignals(plan.signals)}
                 </>
               )}

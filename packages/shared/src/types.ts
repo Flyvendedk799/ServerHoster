@@ -231,6 +231,128 @@ export interface DependencyScanRunResult {
   recommended: ProvisionPlan | null;
 }
 
+// ---- Database/resource recognition ----------------------------------------
+
+export type RecognitionState = "satisfied" | "missing" | "partial" | "conflict" | "unknown";
+
+export type RecognitionProviderKind =
+  | "managed-resource"
+  | "legacy-database"
+  | "hosted-env"
+  | "manual-env"
+  | "embedded-sqlite"
+  | "data-dir"
+  | "none";
+
+export interface RecognitionProvider {
+  kind: RecognitionProviderKind;
+  label: string;
+  profile: ResourceProfileId | "sqlite" | null;
+  source: "resource" | "legacy" | "service-env" | "project-env" | "runtime" | "docker" | "none";
+  resource_id?: string;
+  database_id?: string;
+  env_key?: string;
+  env_value_preview?: string;
+  status?: string;
+  persistent?: boolean;
+  details?: string;
+}
+
+export interface RecognitionIssue {
+  code:
+    | "no-scan"
+    | "stale-scan"
+    | "missing-provider"
+    | "env-override"
+    | "profile-mismatch"
+    | "resource-not-running"
+    | "missing-secret"
+    | "embedded-ephemeral"
+    | "embedded-sqlite"
+    | "unlinked-existing"
+    | "hosted-selected"
+    | "unknown-need";
+  severity: "info" | "warning" | "error";
+  message: string;
+  evidence?: string[];
+  action_id?: string;
+}
+
+export interface RecognitionAction {
+  id:
+    | "rescan"
+    | "link-existing"
+    | "adopt-legacy"
+    | "provision"
+    | "use-hosted"
+    | "use-local"
+    | "ignore"
+    | "promote-sqlite"
+    | "fix-env"
+    | "open-settings";
+  label: string;
+  kind:
+    | "rescan"
+    | "link-existing"
+    | "adopt-legacy"
+    | "provision"
+    | "set-preference"
+    | "promote-sqlite"
+    | "fix-env"
+    | "open-settings";
+  profile?: ResourceProfileId;
+  resource_id?: string;
+  database_id?: string;
+  preferred?: boolean;
+  destructive?: boolean;
+  disabled?: boolean;
+}
+
+export interface DatabaseRecognitionPreference {
+  mode: "auto" | "hosted" | "local" | "manual" | "ignore";
+  note?: string;
+  updated_at?: string;
+}
+
+export interface DatabaseRecognition {
+  service_id: string;
+  service_name: string;
+  project_id: string | null;
+  service_type: ServiceType;
+  detected: {
+    profile: ResourceProfileId;
+    confidence: DetectionConfidence;
+    signals: DetectionSignal[];
+    env_requirements: FunctionSecretRequirement[];
+    scan_id: string | null;
+    scan_created_at: string | null;
+    stale: boolean;
+  };
+  providers: RecognitionProvider[];
+  current_provider: RecognitionProvider;
+  state: RecognitionState;
+  issues: RecognitionIssue[];
+  actions: RecognitionAction[];
+  preference: DatabaseRecognitionPreference;
+}
+
+export interface DatabaseRecognitionPreferenceRequest {
+  mode: DatabaseRecognitionPreference["mode"];
+  note?: string;
+}
+
+export interface AdoptDatabaseRequest {
+  databaseId: string;
+  serviceId?: string;
+  name?: string;
+}
+
+export interface AdoptDatabaseResponse {
+  ok: true;
+  resource: ManagedResourceDetail;
+  recognition?: DatabaseRecognition;
+}
+
 /**
  * GET /resources and GET /resources/:id shape. Raw secret values never appear:
  * `secrets` is preview-only and env values inside `config`/`env_map` are masked.

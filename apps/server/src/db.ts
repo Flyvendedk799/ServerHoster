@@ -429,6 +429,13 @@ const migrations = [
     env_requirements_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS service_resource_preferences (
+    service_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    value_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(service_id, kind)
+  )`,
   "CREATE INDEX IF NOT EXISTS idx_managed_resources_project ON managed_resources(project_id)",
   "CREATE INDEX IF NOT EXISTS idx_service_resource_links_service ON service_resource_links(service_id)",
   "CREATE INDEX IF NOT EXISTS idx_dependency_scans_service ON dependency_scans(service_id, created_at DESC)",

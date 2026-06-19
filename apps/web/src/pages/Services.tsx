@@ -33,13 +33,11 @@ import {
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import {
-  hostedSupabaseChosen,
-  isNonLocalUrl,
+  listResourceRecognitions,
   listResources,
-  listResourceScans,
-  runResourceScan,
-  setHostedSupabaseChosen,
-  type DependencyScan,
+  runResourceRecognition,
+  setResourceRecognitionPreference,
+  type DatabaseRecognition,
   type ManagedResourceDetail,
   type ResourceProfileId
 } from "../lib/resources";
@@ -345,17 +343,13 @@ export function ServicesPage() {
   const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
   const [forceRestartingId, setForceRestartingId] = useState<string | null>(null);
   const [alwaysOnBusyId, setAlwaysOnBusyId] = useState<string | null>(null);
-  const [scans, setScans] = useState<Map<string, DependencyScan>>(new Map());
+  const [recognitions, setRecognitions] = useState<Map<string, DatabaseRecognition>>(new Map());
   const [resources, setResources] = useState<ManagedResourceDetail[]>([]);
   const [provisionTarget, setProvisionTarget] = useState<{
     service: Service;
     profile?: ResourceProfileId;
   } | null>(null);
   const [rescanningId, setRescanningId] = useState<string | null>(null);
-  /** Services whose service-level env points at a non-local (hosted) Supabase. */
-  const [hostedEnvServices, setHostedEnvServices] = useState<Set<string>>(new Set());
-  /** Bump to re-evaluate the client-side "use hosted Supabase" choices. */
-  const [, setHostedChoiceVersion] = useState(0);
 
   async function load(): Promise<void> {
     try {
@@ -383,10 +377,9 @@ export function ServicesPage() {
       })
         .then((rows) => setEnvRequirements(new Map(rows.map((r) => [r.service_id, r.requirements]))))
         .catch(() => undefined);
-      listResourceScans({ silent: true })
+      listResourceRecognitions({ silent: true })
         .then((rows) => {
-          setScans(new Map(rows.map((scan) => [scan.service_id, scan])));
-          void detectHostedSupabaseEnv(rows);
+          setRecognitions(new Map(rows.map((recognition) => [recognition.service_id, recognition])));
         })
         .catch(() => undefined);
       listResources({ silent: true })
@@ -431,43 +424,6 @@ export function ServicesPage() {
     }
   }
 
-  /**
-   * Spec "Notifications": flag services whose service-level SUPABASE_URL /
-   * VITE_SUPABASE_URL points at a non-local host while a local Supabase is
-   * available (high/medium-confidence scan). Only those services' env rows
-   * are fetched, silently and best-effort.
-   */
-  async function detectHostedSupabaseEnv(rows: DependencyScan[]): Promise<void> {
-    const candidates = rows.filter(
-      (scan) => scan.profile === "supabase" && (scan.confidence === "high" || scan.confidence === "medium")
-    );
-    if (candidates.length === 0) {
-      setHostedEnvServices(new Set());
-      return;
-    }
-    const flagged = new Set<string>();
-    await Promise.all(
-      candidates.slice(0, 25).map(async (scan) => {
-        try {
-          const env = await api<Array<{ key: string; value: string; is_secret: number }>>(
-            `/services/${scan.service_id}/env`,
-            { silent: true }
-          );
-          const hosted = env.some(
-            (row) =>
-              ["SUPABASE_URL", "VITE_SUPABASE_URL"].includes(row.key) &&
-              !row.is_secret &&
-              isNonLocalUrl(row.value)
-          );
-          if (hosted) flagged.add(scan.service_id);
-        } catch {
-          /* best-effort */
-        }
-      })
-    );
-    setHostedEnvServices(flagged);
-  }
-
   /** The active supabase resource linked to a service, when one exists. */
   function serviceSupabaseResource(serviceId: string): ManagedResourceDetail | null {
     return (
@@ -479,25 +435,67 @@ export function ServicesPage() {
     );
   }
 
-  /** Latest scan when it recommends supabase with usable confidence. */
-  function supabaseScan(serviceId: string): DependencyScan | null {
-    const scan = scans.get(serviceId);
-    if (!scan || scan.profile !== "supabase") return null;
-    if (scan.confidence !== "high" && scan.confidence !== "medium") return null;
-    return scan;
+  function recognitionFor(serviceId: string): DatabaseRecognition | null {
+    return recognitions.get(serviceId) ?? null;
+  }
+
+  function actionableRecognition(serviceId: string): DatabaseRecognition | null {
+    const recognition = recognitionFor(serviceId);
+    if (!recognition) return null;
+    if (recognition.detected.profile === "manual" && recognition.current_provider.kind === "none") return null;
+    if (recognition.state === "satisfied" || recognition.preference.mode === "ignore") return null;
+    return recognition;
+  }
+
+  function profileLabel(profile: ResourceProfileId): string {
+    if (profile === "supabase") return "Local Supabase";
+    if (profile === "postgres") return "Postgres";
+    if (profile === "mysql") return "MySQL";
+    if (profile === "mongo") return "MongoDB";
+    if (profile === "redis") return "Redis";
+    return "database";
+  }
+
+  function providerProfileLabel(profile: ResourceProfileId): string {
+    return profile === "supabase" ? "Supabase" : profileLabel(profile);
+  }
+
+  function primaryRecognitionAction(
+    recognition: DatabaseRecognition
+  ): DatabaseRecognition["actions"][number] | null {
+    const priority = [
+      "fix-env",
+      "open-settings",
+      "link-existing",
+      "adopt-legacy",
+      "promote-sqlite",
+      "provision",
+      "use-hosted",
+      "use-local",
+      "ignore",
+      "rescan"
+    ];
+    return (
+      priority
+        .map((id) => recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled))
+        .find(Boolean) ??
+      priority
+        .map((id) => recognition.actions.find((action) => action.id === id && !action.disabled))
+        .find(Boolean) ??
+      null
+    );
   }
 
   async function rescanService(service: Service): Promise<void> {
     setRescanningId(service.id);
     try {
-      const result = await runResourceScan(service.id, { silent: true });
-      setScans((prev) => new Map(prev).set(service.id, result.scan));
+      const result = await runResourceRecognition(service.id, { silent: true });
+      setRecognitions((prev) => new Map(prev).set(service.id, result));
       toast.success(
-        result.recommended
-          ? `Detected ${result.recommended.profile} (${result.recommended.confidence} confidence)`
+        result.detected.profile !== "manual"
+          ? `Detected ${result.detected.profile} (${result.detected.confidence} confidence)`
           : "No backend dependency detected"
       );
-      void detectHostedSupabaseEnv([result.scan]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Dependency scan failed");
     } finally {
@@ -505,12 +503,34 @@ export function ServicesPage() {
     }
   }
 
-  function chooseHostedSupabase(service: Service): void {
-    setHostedSupabaseChosen(service.id, true);
-    setHostedChoiceVersion((v) => v + 1);
-    toast.info(
-      `${service.name} keeps its hosted Supabase env. You can provision a local stack later from this card or the Databases page.`
-    );
+  async function chooseHostedProvider(service: Service): Promise<void> {
+    try {
+      const recognition = await setResourceRecognitionPreference(service.id, {
+        mode: "hosted",
+        note: "Operator chose hosted/manual database env from the service card."
+      });
+      setRecognitions((prev) => new Map(prev).set(service.id, recognition));
+      toast.info(`${service.name} keeps its hosted/manual database env.`);
+    } catch {
+      /* toasted */
+    }
+  }
+
+  async function preferLocalProvider(service: Service): Promise<void> {
+    try {
+      const recognition = await setResourceRecognitionPreference(service.id, {
+        mode: "local",
+        note: "Operator chose the local managed database/resource from the service card."
+      });
+      setRecognitions((prev) => new Map(prev).set(service.id, recognition));
+      if (recognition.issues.some((issue) => issue.code === "env-override")) {
+        toast.info("Local preference saved. Remove the overriding service env to actually use it.");
+      } else {
+        toast.success(`${service.name} now prefers its local managed database/resource.`);
+      }
+    } catch {
+      /* toasted */
+    }
   }
 
   useEffect(() => {
@@ -881,9 +901,105 @@ export function ServicesPage() {
     }
   }
 
+  async function runRecognitionPrimaryAction(service: Service, recognition: DatabaseRecognition): Promise<void> {
+    const preferred = primaryRecognitionAction(recognition);
+    if (!preferred) {
+      setEditingService(service);
+      return;
+    }
+    if (preferred.id === "fix-env" || preferred.id === "open-settings") {
+      setEditingService(service);
+      return;
+    }
+    if (preferred.id === "use-hosted") {
+      await chooseHostedProvider(service);
+      return;
+    }
+    if (preferred.id === "use-local") {
+      await preferLocalProvider(service);
+      return;
+    }
+    if (preferred.id === "ignore") {
+      try {
+        const updated = await setResourceRecognitionPreference(service.id, {
+          mode: "ignore",
+          note: "Operator marked database recognition as not needed from the service card."
+        });
+        setRecognitions((prev) => new Map(prev).set(service.id, updated));
+        toast.info(`${service.name} database recognition is ignored.`);
+      } catch {
+        /* toasted */
+      }
+      return;
+    }
+    if (preferred.id === "rescan") {
+      await rescanService(service);
+      return;
+    }
+    if (preferred.id === "link-existing" && preferred.resource_id) {
+      try {
+        await api(`/resources/${preferred.resource_id}/link`, {
+          method: "POST",
+          body: JSON.stringify({ serviceId: service.id })
+        });
+        toast.success(`Linked ${preferred.label.replace(/^Link existing /, "")} to ${service.name}`);
+        await load();
+      } catch {
+        /* toasted */
+      }
+      return;
+    }
+    if (preferred.id === "adopt-legacy" && preferred.database_id) {
+      try {
+        await api("/resources/adopt-database", {
+          method: "POST",
+          body: JSON.stringify({ databaseId: preferred.database_id, serviceId: service.id })
+        });
+        toast.success(`Adopted database for ${service.name}`);
+        await load();
+      } catch {
+        /* toasted */
+      }
+      return;
+    }
+    if (preferred.id === "promote-sqlite") {
+      const embedded = embeddedDbs.get(service.id);
+      if (embedded) setPromoteTarget(embedded);
+      else await quickAddDatabase(service);
+      return;
+    }
+    const profile = preferred.profile ?? recognition.detected.profile;
+    if (profile === "supabase") {
+      setProvisionTarget({ service, profile: "supabase" });
+      return;
+    }
+    if (profile === "postgres") {
+      await quickAddDatabase(service);
+      return;
+    }
+    setProvisioningId(service.id);
+    try {
+      await api("/resources/provision", {
+        method: "POST",
+        body: JSON.stringify({
+          serviceId: service.id,
+          profile,
+          restart: true
+        })
+      });
+      toast.success(`${profileLabel(profile)} linked to ${service.name}`);
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setProvisioningId(null);
+    }
+  }
+
   function databaseServiceForStack(stack: ServiceStack): Service | null {
     return (
-      stack.services.find((service) => supabaseScan(service.id) && !serviceSupabaseResource(service.id)) ??
+      stack.services.find((service) => actionableRecognition(service.id)?.detected.profile === "supabase") ??
+      stack.services.find((service) => actionableRecognition(service.id)?.detected.profile !== "manual") ??
       stack.services.find((service) => embeddedDbs.has(service.id)) ??
       stack.services.find((service) => {
         const orphan = orphans.get(service.id);
@@ -898,8 +1014,9 @@ export function ServicesPage() {
   function openDatabaseFlowForStack(stack: ServiceStack): void {
     const service = databaseServiceForStack(stack);
     if (!service) return;
-    if (supabaseScan(service.id) && !serviceSupabaseResource(service.id)) {
-      setProvisionTarget({ service, profile: "supabase" });
+    const recognition = actionableRecognition(service.id);
+    if (recognition) {
+      void runRecognitionPrimaryAction(service, recognition);
       return;
     }
     const embedded = embeddedDbs.get(service.id);
@@ -919,7 +1036,20 @@ export function ServicesPage() {
   function databaseActionLabel(stack: ServiceStack): string {
     const service = databaseServiceForStack(stack);
     if (!service) return "Add database";
-    if (supabaseScan(service.id) && !serviceSupabaseResource(service.id)) return "Add Local Supabase";
+    const recognition = actionableRecognition(service.id);
+    if (recognition) {
+      const preferred = primaryRecognitionAction(recognition);
+      if (preferred?.id === "link-existing") return "Link existing";
+      if (preferred?.id === "adopt-legacy") return "Adopt database";
+      if (preferred?.id === "fix-env") return "Fix env";
+      if (preferred?.id === "open-settings") return "Review settings";
+      if (preferred?.id === "use-hosted") return "Use hosted env";
+      if (preferred?.id === "use-local") return "Prefer local";
+      if (preferred?.id === "ignore") return "Ignore";
+      if (preferred?.id === "rescan") return "Rescan";
+      if (recognition.current_provider.kind === "embedded-sqlite") return "Promote data";
+      return `Add ${profileLabel(recognition.detected.profile)}`;
+    }
     if (embeddedDbs.has(service.id)) return "Promote data";
     const orphan = orphans.get(service.id);
     const offer = orphan ? detectedDatabaseOffer(orphan.code_signals.map((signal) => signal.driver)) : null;
@@ -2192,92 +2322,67 @@ export function ServicesPage() {
                                       )}
 
                                       {(() => {
-                                        // Dependency-aware prompt (Database-Tracker Phase 6):
-                                        // linked stack chip > Supabase prompt > Postgres/SQLite
-                                        // prompt > nothing.
-                                        const linkedSupabase = serviceSupabaseResource(service.id);
-                                        if (linkedSupabase) {
+                                        // Dependency-aware prompt: one backend recognition report decides
+                                        // satisfied/missing/conflict across resources, legacy DBs, env, and SQLite.
+                                        const recognition = recognitionFor(service.id);
+                                        const actionable = actionableRecognition(service.id);
+                                        if (actionable) {
+                                          const profile = actionable.detected.profile;
+                                          const topIssue = actionable.issues[0];
+                                          const isSupabase = profile === "supabase";
+                                          const headline =
+                                            actionable.state === "conflict"
+                                              ? `${profileLabel(profile)} configuration conflict`
+                                              : actionable.current_provider.kind === "embedded-sqlite"
+                                                ? "SQLite detected — review persistence"
+                                                : `${profileLabel(profile)} ${actionable.state === "missing" ? "needed" : "needs attention"}`;
+                                          const detail =
+                                            topIssue?.message ??
+                                            `ServerHoster detected ${profileLabel(profile)} signals and needs a provider check.`;
                                           return (
-                                            <div className="res-linked-chip-row">
-                                              <Link
-                                                to="/databases"
-                                                className={`res-linked-chip ${linkedSupabase.status}`}
-                                                data-tooltip="Open the stack console on the Databases page"
-                                              >
-                                                <DatabaseIcon size={12} />
-                                                Local Supabase · {linkedSupabase.status}
-                                              </Link>
-                                            </div>
-                                          );
-                                        }
-                                        const sbScan = supabaseScan(service.id);
-                                        if (sbScan && hostedSupabaseChosen(service.id)) {
-                                          return (
-                                            <div className="res-linked-chip-row">
-                                              <button
-                                                type="button"
-                                                className="res-linked-chip hosted"
-                                                onClick={() => {
-                                                  setHostedSupabaseChosen(service.id, false);
-                                                  setHostedChoiceVersion((v) => v + 1);
-                                                }}
-                                                data-tooltip="You chose hosted Supabase for this app. Click to reconsider the local stack."
-                                              >
-                                                Hosted Supabase (chosen)
-                                              </button>
-                                            </div>
-                                          );
-                                        }
-                                        if (sbScan) {
-                                          const otherDrivers = Array.from(
-                                            new Set(
-                                              (orphans.get(service.id)?.code_signals ?? [])
-                                                .map((s) => s.driver)
-                                                .filter((d) => !/supabase/i.test(d))
-                                            )
-                                          );
-                                          return (
-                                            <div className="res-supabase-banner">
+                                            <div className={isSupabase ? "res-supabase-banner" : "db-suggest-banner"}>
                                               <DatabaseIcon size={14} />
-                                              <div className="res-supabase-text">
-                                                <strong>Supabase app detected</strong>
-                                                <span>
-                                                  Run a local Supabase stack from this repo's migrations. No
-                                                  hosted data will be copied.
+                                              <div className={isSupabase ? "res-supabase-text" : "db-suggest-text"}>
+                                                <strong>{headline}</strong>
+                                                <span>{detail}</span>
+                                                <span className="muted tiny">
+                                                  Current: {actionable.current_provider.label}
+                                                  {actionable.current_provider.env_key
+                                                    ? ` via ${actionable.current_provider.env_key}`
+                                                    : ""}
                                                 </span>
-                                                {hostedEnvServices.has(service.id) && (
-                                                  <span className="res-hosted-note">
-                                                    <AlertTriangle size={11} /> This app currently points at
-                                                    hosted Supabase — a local stack is available.
+                                                {actionable.issues.slice(1, 3).map((issue) => (
+                                                  <span key={`${issue.code}-${issue.message}`} className="res-hosted-note">
+                                                    <AlertTriangle size={11} /> {issue.message}
                                                   </span>
-                                                )}
-                                                {otherDrivers.length > 0 && (
-                                                  <span className="muted tiny">
-                                                    Also detected: {otherDrivers.slice(0, 4).join(", ")}
-                                                    {otherDrivers.length > 4 ? "…" : ""}
-                                                  </span>
-                                                )}
+                                                ))}
                                                 <span className="res-supabase-actions">
-                                                  <button
-                                                    className="ghost tiny"
-                                                    onClick={() =>
-                                                      setProvisionTarget({ service, profile: "supabase" })
-                                                    }
-                                                  >
-                                                    Review requirements
-                                                  </button>
-                                                  <button
-                                                    className="ghost tiny"
-                                                    onClick={() => chooseHostedSupabase(service)}
-                                                  >
-                                                    Use hosted Supabase
-                                                  </button>
-                                                  <button
-                                                    className="ghost tiny"
-                                                    onClick={() => void quickAddDatabase(service)}
-                                                  >
-                                                    Use plain Postgres anyway
-                                                  </button>
+                                                  {isSupabase && (
+                                                    <button
+                                                      className="ghost tiny"
+                                                      onClick={() =>
+                                                        setProvisionTarget({ service, profile: "supabase" })
+                                                      }
+                                                    >
+                                                      Review requirements
+                                                    </button>
+                                                  )}
+                                                  {actionable.providers.some((p) => p.kind === "hosted-env") && (
+                                                    <button
+                                                      className="ghost tiny"
+                                                      onClick={() => void chooseHostedProvider(service)}
+                                                    >
+                                                      Use hosted/manual env
+                                                    </button>
+                                                  )}
+                                                  {isSupabase && (
+                                                    <button
+                                                      className="ghost tiny"
+                                                      onClick={() => void quickAddDatabase(service)}
+                                                    >
+                                                      Use plain Postgres anyway
+                                                    </button>
+                                                  )}
                                                   <button
                                                     className="ghost tiny"
                                                     disabled={rescanningId === service.id}
@@ -2293,12 +2398,57 @@ export function ServicesPage() {
                                               </div>
                                               <button
                                                 className="primary xsmall"
-                                                onClick={() =>
-                                                  setProvisionTarget({ service, profile: "supabase" })
-                                                }
+                                                disabled={provisioningId === service.id}
+                                                onClick={() => void runRecognitionPrimaryAction(service, actionable)}
                                               >
-                                                Add Local Supabase
+                                                {provisioningId === service.id ? (
+                                                  <>
+                                                    <Loader2 size={12} className="animate-spin" /> Working…
+                                                  </>
+                                                ) : (
+                                                  databaseActionLabel({
+                                                    id: stack.id,
+                                                    title: stack.title,
+                                                    services: [service],
+                                                    databases: []
+                                                  })
+                                                )}
                                               </button>
+                                            </div>
+                                          );
+                                        }
+                                        const linkedSupabase = serviceSupabaseResource(service.id);
+                                        if (linkedSupabase) {
+                                          return (
+                                            <div className="res-linked-chip-row">
+                                              <Link
+                                                to="/databases"
+                                                className={`res-linked-chip ${linkedSupabase.status}`}
+                                                data-tooltip="Open the stack console on the Databases page"
+                                              >
+                                                <DatabaseIcon size={12} />
+                                                Local Supabase · {linkedSupabase.status}
+                                              </Link>
+                                            </div>
+                                          );
+                                        }
+                                        if (
+                                          recognition?.state === "satisfied" &&
+                                          recognition.current_provider.kind !== "none" &&
+                                          recognition.detected.profile !== "manual"
+                                        ) {
+                                          return (
+                                            <div className="res-linked-chip-row">
+                                              <Link
+                                                to="/databases"
+                                                className={`res-linked-chip ${recognition.current_provider.kind === "hosted-env" ? "hosted" : "running"}`}
+                                                data-tooltip={recognition.current_provider.details ?? "Open database recognition on the Databases page"}
+                                              >
+                                                <DatabaseIcon size={12} />
+                                                {recognition.current_provider.kind === "hosted-env"
+                                                  ? `Hosted ${providerProfileLabel(recognition.detected.profile)}`
+                                                  : `${profileLabel(recognition.detected.profile)} · ${recognition.current_provider.label}`}
+                                              </Link>
                                             </div>
                                           );
                                         }

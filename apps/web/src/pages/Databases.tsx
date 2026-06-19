@@ -7,8 +7,17 @@ import { CreateDatabaseModal } from "../components/CreateDatabaseModal";
 import { PromoteEmbeddedDbModal, type EmbeddedDb } from "../components/PromoteEmbeddedDbModal";
 import { TransferDatabaseModal } from "../components/TransferDatabaseModal";
 import { ResourceStacks } from "../components/ResourceStacks";
+import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
 import { SqlFileInput } from "../components/SqlFileInput";
 import { CardSkeleton } from "../components/ui/Skeleton";
+import {
+  listResourceRecognitions,
+  runResourceRecognition,
+  setResourceRecognitionPreference,
+  type DatabaseRecognition,
+  type RecognitionAction,
+  type ResourceProfileId
+} from "../lib/resources";
 import {
   AlertTriangle,
   Cloud,
@@ -24,6 +33,7 @@ import {
   RefreshCw,
   RotateCw,
   ScrollText,
+  Search,
   Shield,
   Sparkles,
   Square,
@@ -88,6 +98,39 @@ function formatCell(value: unknown): string {
   return s.length > 80 ? `${s.slice(0, 77)}…` : s;
 }
 
+function recognitionProfileLabel(profile: DatabaseRecognition["detected"]["profile"]): string {
+  if (profile === "supabase") return "Supabase";
+  if (profile === "postgres") return "Postgres";
+  if (profile === "mysql") return "MySQL";
+  if (profile === "mongo") return "MongoDB";
+  if (profile === "redis") return "Redis";
+  return "No database";
+}
+
+function primaryRecognitionAction(recognition: DatabaseRecognition): RecognitionAction | null {
+  const priority = [
+    "fix-env",
+    "open-settings",
+    "link-existing",
+    "adopt-legacy",
+    "promote-sqlite",
+    "provision",
+    "use-hosted",
+    "use-local",
+    "ignore",
+    "rescan"
+  ];
+  return (
+    priority
+      .map((id) => recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled))
+      .find(Boolean) ??
+    priority
+      .map((id) => recognition.actions.find((action) => action.id === id && !action.disabled))
+      .find(Boolean) ??
+    null
+  );
+}
+
 function groupRowsByProject(
   rows: DatabaseRow[],
   projects: Project[]
@@ -114,7 +157,13 @@ export function DatabasesPage() {
   const [services, setServices] = useState<Service[]>([]);
   const [embedded, setEmbedded] = useState<EmbeddedDb[]>([]);
   const [orphans, setOrphans] = useState<OrphanService[]>([]);
+  const [recognitions, setRecognitions] = useState<DatabaseRecognition[]>([]);
   const [promoteTarget, setPromoteTarget] = useState<EmbeddedDb | null>(null);
+  const [provisionTarget, setProvisionTarget] = useState<{
+    serviceId: string;
+    serviceName: string;
+    profile: ResourceProfileId;
+  } | null>(null);
   const [transferTarget, setTransferTarget] = useState<DatabaseRow | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [selectedDbId, setSelectedDbId] = useState<string>("");
@@ -144,14 +193,16 @@ export function DatabasesPage() {
   async function load(userInitiated = false): Promise<void> {
     if (userInitiated) setRefreshing(true);
     try {
-      const [dbs, projs, svcs] = await Promise.all([
+      const [dbs, projs, svcs, recs] = await Promise.all([
         api<DatabaseRow[]>("/databases"),
         api<Project[]>("/projects"),
-        api<Service[]>("/services")
+        api<Service[]>("/services"),
+        listResourceRecognitions({ silent: true }).catch(() => [])
       ]);
       setRows(dbs);
       setProjects(projs);
       setServices(svcs);
+      setRecognitions(recs);
     } catch {
       /* toasted */
     }
@@ -390,11 +441,95 @@ export function DatabasesPage() {
     }
   }
 
+  async function runRecognitionAction(recognition: DatabaseRecognition, action: RecognitionAction): Promise<void> {
+    try {
+      if (action.id === "rescan") {
+        const updated = await runResourceRecognition(recognition.service_id, { silent: true });
+        setRecognitions((prev) =>
+          prev.map((item) => (item.service_id === updated.service_id ? updated : item))
+        );
+        toast.success(`Rescanned ${recognition.service_name}`);
+        return;
+      }
+      if (action.id === "use-hosted" || action.id === "use-local" || action.id === "ignore") {
+        const mode = action.id === "use-hosted" ? "hosted" : action.id === "use-local" ? "local" : "ignore";
+        const updated = await setResourceRecognitionPreference(recognition.service_id, {
+          mode,
+          note: `Operator chose "${action.label}" from database recognition.`
+        });
+        setRecognitions((prev) =>
+          prev.map((item) => (item.service_id === updated.service_id ? updated : item))
+        );
+        if (mode === "local" && updated.issues.some((issue) => issue.code === "env-override")) {
+          toast.info("Local preference saved. Remove the overriding service env to actually use it.");
+        } else {
+          toast.success(action.label);
+        }
+        return;
+      }
+      if (action.id === "link-existing" && action.resource_id) {
+        await api(`/resources/${action.resource_id}/link`, {
+          method: "POST",
+          body: JSON.stringify({ serviceId: recognition.service_id })
+        });
+        toast.success(`Linked resource to ${recognition.service_name}`);
+        await load();
+        return;
+      }
+      if (action.id === "adopt-legacy" && action.database_id) {
+        await api("/resources/adopt-database", {
+          method: "POST",
+          body: JSON.stringify({ databaseId: action.database_id, serviceId: recognition.service_id })
+        });
+        toast.success(`Adopted database for ${recognition.service_name}`);
+        await load();
+        return;
+      }
+      if (action.id === "promote-sqlite") {
+        const embeddedMatch = embedded.find((item) => item.service_id === recognition.service_id);
+        if (embeddedMatch) setPromoteTarget(embeddedMatch);
+        return;
+      }
+      if (action.id === "provision") {
+        const profile = action.profile ?? recognition.detected.profile;
+        if (profile === "manual") {
+          toast.info("No database profile was detected for this service.");
+          return;
+        }
+        if (profile === "supabase") {
+          setProvisionTarget({
+            serviceId: recognition.service_id,
+            serviceName: recognition.service_name,
+            profile
+          });
+          return;
+        }
+        await api("/resources/provision", {
+          method: "POST",
+          body: JSON.stringify({ serviceId: recognition.service_id, profile, restart: true })
+        });
+        toast.success(`${recognitionProfileLabel(profile)} linked to ${recognition.service_name}`);
+        await load();
+        return;
+      }
+      if (action.id === "fix-env" || action.id === "open-settings") {
+        toast.info("Open the service settings to remove or update overriding database env.");
+        return;
+      }
+      toast.info("Open the service card to finish this action.");
+    } catch {
+      /* toasted */
+    }
+  }
+
   const selectedDb = rows.find((r) => r.id === selectedDbId);
   const runningCount = rows.filter((row) => row.container_status?.state === "running").length;
   const linkedServices = selectedDb
     ? services.filter((service) => service.linked_database_id === selectedDb.id)
     : [];
+  const recognitionNeedsAttention = recognitions.filter(
+    (r) => r.state === "missing" || r.state === "conflict" || r.state === "partial"
+  );
 
   return (
     <div className="databases-page">
@@ -441,6 +576,87 @@ export function DatabasesPage() {
           <span>Embedded (unmanaged)</span>
         </div>
       </section>
+
+      {recognitions.length > 0 && (
+        <section className="recognition-section">
+          <header className="embedded-header">
+            <div className="row">
+              <Search size={16} />
+              <h3>Recognition</h3>
+              <span className={`chip xsmall ${recognitionNeedsAttention.length ? "warn-chip" : ""}`}>
+                {recognitionNeedsAttention.length
+                  ? `${recognitionNeedsAttention.length} need attention`
+                  : "all clear"}
+              </span>
+            </div>
+            <p className="muted tiny">
+              Service-level database truth from repository signals, linked resources, legacy databases,
+              environment variables, and embedded SQLite.
+            </p>
+          </header>
+          <div className="recognition-grid">
+            {recognitions.map((recognition) => {
+              const issue = recognition.issues[0];
+              const evidence = issue?.evidence?.[0];
+              const primaryAction = primaryRecognitionAction(recognition);
+              return (
+                <div key={recognition.service_id} className={`recognition-row ${recognition.state}`}>
+                  <div className="recognition-main">
+                    <strong>{recognition.service_name}</strong>
+                    <span className="muted tiny">
+                      {recognition.detected.profile === "manual"
+                        ? "No database dependency detected"
+                        : `${recognitionProfileLabel(recognition.detected.profile)} · ${recognition.detected.confidence} confidence`}
+                    </span>
+                  </div>
+                  <span className={`recognition-state ${recognition.state}`}>{recognition.state}</span>
+                  <div className="recognition-provider">
+                    <span>{recognition.current_provider.label}</span>
+                    {recognition.current_provider.env_key && (
+                      <code>{recognition.current_provider.env_key}</code>
+                    )}
+                  </div>
+                  <div className="recognition-issue">
+                    {issue ? (
+                      <>
+                        {issue.severity !== "info" && <AlertTriangle size={12} />}
+                        <span>
+                          {issue.message}
+                          {evidence ? <small>{evidence}</small> : null}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="muted tiny">No issues detected.</span>
+                    )}
+                  </div>
+                  <div className="recognition-actions">
+                    <button
+                      className="ghost xsmall"
+                      onClick={() =>
+                        void runRecognitionAction(recognition, {
+                          id: "rescan",
+                          label: "Rescan",
+                          kind: "rescan"
+                        })
+                      }
+                    >
+                      <RefreshCw size={12} /> Rescan
+                    </button>
+                    {primaryAction && primaryAction.id !== "rescan" && (
+                      <button
+                        className="primary xsmall"
+                        onClick={() => void runRecognitionAction(recognition, primaryAction)}
+                      >
+                        {primaryAction.label}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Rich stacks (local Supabase) — never rendered as plain databases. */}
       <ResourceStacks services={services} />
@@ -994,6 +1210,18 @@ export function DatabasesPage() {
           onPromoted={() => void load()}
         />
       )}
+      {provisionTarget && (
+        <ResourceProvisionModal
+          serviceId={provisionTarget.serviceId}
+          serviceName={provisionTarget.serviceName}
+          profile={provisionTarget.profile}
+          onClose={() => setProvisionTarget(null)}
+          onProvisioned={() => {
+            setProvisionTarget(null);
+            void load();
+          }}
+        />
+      )}
       {transferTarget && (
         <TransferDatabaseModal
           databaseId={transferTarget.id}
@@ -1124,6 +1352,152 @@ export function DatabasesPage() {
           background: color-mix(in srgb, var(--warn, #d97706) 18%, transparent);
           color: var(--warn, #d97706);
           border-color: color-mix(in srgb, var(--warn, #d97706) 40%, transparent);
+        }
+        .databases-page .recognition-section {
+          margin-bottom: 2rem;
+          padding: 1rem 1.25rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-md);
+          background: var(--bg-card);
+        }
+        .databases-page .recognition-section h3 {
+          margin: 0;
+          font-size: 0.95rem;
+        }
+        .databases-page .recognition-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 0.55rem;
+          margin-top: 1rem;
+        }
+        .databases-page .recognition-row {
+          display: grid;
+          grid-template-columns: minmax(160px, 1.3fr) auto minmax(150px, 1fr) minmax(220px, 1.5fr) auto;
+          gap: 0.75rem;
+          align-items: center;
+          min-width: 0;
+          padding: 0.75rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-sm);
+          background: var(--bg-sunken);
+        }
+        .databases-page .recognition-row.conflict {
+          border-color: color-mix(in srgb, var(--danger, #dc2626) 42%, var(--border-subtle));
+        }
+        .databases-page .recognition-row.missing,
+        .databases-page .recognition-row.partial {
+          border-color: color-mix(in srgb, var(--warn, #d97706) 35%, var(--border-subtle));
+        }
+        .databases-page .recognition-main {
+          display: flex;
+          flex-direction: column;
+          gap: 0.18rem;
+          min-width: 0;
+        }
+        .databases-page .recognition-main strong,
+        .databases-page .recognition-provider span,
+        .databases-page .recognition-issue span {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .databases-page .recognition-state {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 5.8rem;
+          padding: 0.22rem 0.55rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: 999px;
+          font-size: 0.7rem;
+          font-weight: 800;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          background: var(--bg-card);
+        }
+        .databases-page .recognition-state.satisfied {
+          color: var(--success, #16a34a);
+          border-color: color-mix(in srgb, var(--success, #16a34a) 42%, transparent);
+          background: color-mix(in srgb, var(--success, #16a34a) 10%, transparent);
+        }
+        .databases-page .recognition-state.missing,
+        .databases-page .recognition-state.partial {
+          color: var(--warn, #d97706);
+          border-color: color-mix(in srgb, var(--warn, #d97706) 42%, transparent);
+          background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent);
+        }
+        .databases-page .recognition-state.conflict {
+          color: var(--danger, #dc2626);
+          border-color: color-mix(in srgb, var(--danger, #dc2626) 42%, transparent);
+          background: color-mix(in srgb, var(--danger, #dc2626) 10%, transparent);
+        }
+        .databases-page .recognition-provider {
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
+          min-width: 0;
+          color: var(--text-primary);
+          font-size: 0.78rem;
+        }
+        .databases-page .recognition-provider code {
+          display: inline-block;
+          width: fit-content;
+          max-width: 100%;
+          padding: 0.1rem 0.3rem;
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-sm);
+          color: var(--text-muted);
+          background: var(--bg-card);
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .databases-page .recognition-issue {
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+          min-width: 0;
+          color: var(--text-muted);
+          font-size: 0.74rem;
+        }
+        .databases-page .recognition-issue svg {
+          flex: 0 0 auto;
+          color: var(--warn, #d97706);
+        }
+        .databases-page .recognition-issue > span {
+          display: flex;
+          flex-direction: column;
+          gap: 0.12rem;
+          min-width: 0;
+          white-space: normal;
+        }
+        .databases-page .recognition-issue small {
+          color: var(--text-muted);
+          font-size: 0.68rem;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .databases-page .recognition-row.conflict .recognition-issue svg {
+          color: var(--danger, #dc2626);
+        }
+        .databases-page .recognition-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 0.35rem;
+          flex-wrap: wrap;
+        }
+        @media (max-width: 980px) {
+          .databases-page .recognition-row {
+            grid-template-columns: minmax(0, 1fr) auto;
+          }
+          .databases-page .recognition-provider,
+          .databases-page .recognition-issue,
+          .databases-page .recognition-actions {
+            grid-column: 1 / -1;
+          }
+          .databases-page .recognition-actions {
+            justify-content: flex-start;
+          }
         }
         .databases-page .db-project-group { margin-bottom: 1.5rem; }
         .databases-page .db-project-group-header {

@@ -36,6 +36,13 @@ import {
 import { getProfile, listProfiles } from "../services/resources/profiles.js";
 import { supabaseResourceAction } from "../services/resources/profiles/supabase.js";
 import { getLatestScan, listLatestScans, runDependencyScan } from "../services/resources/scan.js";
+import {
+  adoptDatabaseAsResource,
+  listRecognitions,
+  recognizeService,
+  runRecognitionScan,
+  setRecognitionPreference
+} from "../services/resources/recognition.js";
 import { listResourceSecrets, setResourceSecret } from "../services/resources/secrets.js";
 import { scanFunctionSecrets } from "../services/resources/secretsScan.js";
 import { refreshLoginIngress } from "../services/cloudflare.js";
@@ -94,6 +101,17 @@ const linkSchema = z.object({
 });
 
 const unlinkSchema = z.object({ serviceId: z.string().min(1) });
+
+const recognitionPreferenceSchema = z.object({
+  mode: z.enum(["auto", "hosted", "local", "manual", "ignore"]),
+  note: z.string().optional()
+});
+
+const adoptDatabaseSchema = z.object({
+  databaseId: z.string().min(1),
+  serviceId: z.string().min(1).optional(),
+  name: z.string().min(1).optional()
+});
 
 /** Config keys that never leave the control plane (Security Requirements). */
 const INTERNAL_CONFIG_KEYS = new Set(["db_url"]);
@@ -192,7 +210,7 @@ function envRequirementsView(
 }
 
 /** Profiles backed by a legacy `databases` row (config_json.database_id). */
-const LEGACY_DB_PROFILES = new Set(["postgres", "mysql", "mongo"]);
+const LEGACY_DB_PROFILES = new Set(["postgres", "mysql", "mongo", "redis"]);
 
 /**
  * Start/stop/restart dispatch per profile. Supabase resources go through the
@@ -244,6 +262,39 @@ export function registerResourceRoutes(ctx: AppContext): void {
   ctx.app.post("/resources/scans/:serviceId/run", async (req) => {
     const { serviceId } = req.params as { serviceId: string };
     return runDependencyScan(ctx, serviceId);
+  });
+
+  ctx.app.get("/resources/recognition", async (req) => {
+    const query = req.query as { projectId?: string };
+    return listRecognitions(ctx, { projectId: query.projectId });
+  });
+
+  ctx.app.get("/resources/recognition/:serviceId", async (req) => {
+    const { serviceId } = req.params as { serviceId: string };
+    return recognizeService(ctx, serviceId);
+  });
+
+  ctx.app.post("/resources/recognition/:serviceId/run", async (req) => {
+    const { serviceId } = req.params as { serviceId: string };
+    return runRecognitionScan(ctx, serviceId);
+  });
+
+  ctx.app.post("/resources/recognition/:serviceId/preference", async (req) => {
+    const { serviceId } = req.params as { serviceId: string };
+    const p = recognitionPreferenceSchema.parse(req.body);
+    setRecognitionPreference(ctx, serviceId, p);
+    return recognizeService(ctx, serviceId);
+  });
+
+  ctx.app.post("/resources/adopt-database", async (req) => {
+    const p = adoptDatabaseSchema.parse(req.body);
+    const resource = await adoptDatabaseAsResource(ctx, p);
+    refreshPublicResourceIngress(ctx);
+    return {
+      ok: true,
+      resource: serializeResource(ctx, resource),
+      recognition: p.serviceId ? await recognizeService(ctx, p.serviceId) : undefined
+    };
   });
 
   ctx.app.get("/resources", async () => {

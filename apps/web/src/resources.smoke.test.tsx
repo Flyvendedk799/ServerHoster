@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * UI smoke for the Database-Tracker Phase 6 surface (Verification Matrix):
- * - a LearnAI-like service shows "Add Local Supabase", not "Add Postgres"
+ * - recognition for a LearnAI-like service shows "Add Local Supabase", not "Add Postgres"
  * - the provision modal renders detection / secrets / bootstrap steps
  * - the resource status view (Stacks) shows URLs and degraded functions
  */
@@ -95,6 +95,112 @@ const scanRecord = {
   created_at: "2026-06-10T00:00:00.000Z"
 };
 
+const noneProvider = {
+  kind: "none",
+  label: "No database provider",
+  profile: null,
+  source: "none"
+};
+
+const supabaseRecognition = {
+  service_id: "svc1",
+  service_name: "learnai",
+  project_id: "p1",
+  service_type: "process",
+  detected: {
+    profile: "supabase",
+    confidence: "high",
+    signals,
+    env_requirements: scanRecord.env_requirements,
+    scan_id: "scan1",
+    scan_created_at: "2026-06-10T00:00:00.000Z",
+    stale: false
+  },
+  providers: [noneProvider],
+  current_provider: noneProvider,
+  state: "missing",
+  issues: [
+    {
+      code: "missing-provider",
+      severity: "warning",
+      message: "No Supabase provider is linked for this service.",
+      action_id: "provision"
+    }
+  ],
+  actions: [
+    {
+      id: "provision",
+      label: "Provision Local Supabase",
+      kind: "provision",
+      profile: "supabase",
+      preferred: true
+    },
+    { id: "rescan", label: "Rescan", kind: "rescan" }
+  ],
+  preference: { mode: "auto" }
+};
+
+const redisRecognition = {
+  ...supabaseRecognition,
+  detected: {
+    ...supabaseRecognition.detected,
+    profile: "redis",
+    signals: [{ kind: "package", value: "redis", source_file: "package.json", confidence: "high" }],
+    env_requirements: []
+  },
+  issues: [
+    {
+      code: "missing-provider",
+      severity: "warning",
+      message: "No Redis provider is linked for this service.",
+      action_id: "provision"
+    }
+  ],
+  actions: [
+    { id: "provision", label: "Provision Redis", kind: "provision", profile: "redis", preferred: true },
+    { id: "rescan", label: "Rescan", kind: "rescan" }
+  ]
+};
+
+const hostedSupabaseProvider = {
+  kind: "hosted-env",
+  label: "Hosted Supabase URL",
+  profile: "supabase",
+  source: "service-env",
+  env_key: "VITE_SUPABASE_URL",
+  env_value_preview: "https://project.supabase.co"
+};
+
+const localSupabaseProvider = {
+  kind: "managed-resource",
+  label: "learnai-supabase",
+  profile: "supabase",
+  source: "resource",
+  resource_id: "r1",
+  status: "running"
+};
+
+const hostedConflictRecognition = {
+  ...supabaseRecognition,
+  providers: [hostedSupabaseProvider, localSupabaseProvider],
+  current_provider: hostedSupabaseProvider,
+  state: "conflict",
+  issues: [
+    {
+      code: "env-override",
+      severity: "error",
+      message: "Service-level env overrides the linked local provider, so the service may not use the local database.",
+      evidence: ["VITE_SUPABASE_URL", "learnai-supabase"],
+      action_id: "fix-env"
+    }
+  ],
+  actions: [
+    { id: "use-hosted", label: "Use hosted/manual env", kind: "set-preference", preferred: true },
+    { id: "fix-env", label: "Remove or update overriding service env", kind: "fix-env", preferred: true },
+    { id: "rescan", label: "Rescan", kind: "rescan" }
+  ]
+};
+
 const stackResource = {
   id: "r1",
   project_id: "p1",
@@ -168,8 +274,10 @@ const envRequirements = {
  */
 let resourcesFixture: unknown[] = [];
 let scansFixture: unknown[] = [scanRecord];
+let recognitionsFixture: unknown[] = [supabaseRecognition];
 let orphanServicesFixture: unknown[] = [];
 let provisionRequests: Array<{ path: string; body: unknown }> = [];
+let preferenceRequests: Array<{ path: string; body: unknown }> = [];
 
 /** Route-keyed fetch mock; unknown GETs return []. */
 function jsonResponse(body: unknown): Response {
@@ -194,6 +302,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (path === "/resources/scans") return jsonResponse(scansFixture);
   if (path === "/resources/scans/svc1/run")
     return jsonResponse({ scan: scanRecord, plans: [supabasePlan], recommended: supabasePlan });
+  if (path === "/resources/recognition") return jsonResponse(recognitionsFixture);
+  if (path === "/resources/recognition/svc1" || path === "/resources/recognition/svc1/run")
+    return jsonResponse(recognitionsFixture[0] ?? supabaseRecognition);
+  if (path === "/resources/recognition/svc1/preference") {
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    preferenceRequests.push({ path, body });
+    const updated = {
+      ...(recognitionsFixture[0] ?? supabaseRecognition),
+      preference: { mode: body.mode ?? "auto", note: body.note }
+    };
+    recognitionsFixture = [updated];
+    return jsonResponse(updated);
+  }
   if (path === "/resources") return jsonResponse(resourcesFixture);
   if (path === "/resources/provision") {
     provisionRequests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
@@ -240,21 +361,22 @@ describe("Resources / Stacks smoke", () => {
     cleanup();
     resourcesFixture = [];
     scansFixture = [scanRecord];
+    recognitionsFixture = [supabaseRecognition];
     orphanServicesFixture = [];
     provisionRequests = [];
+    preferenceRequests = [];
   });
 
-  it("offers Add Local Supabase for a LearnAI-like service", async () => {
+  it("offers Add Local Supabase from recognition for a LearnAI-like service", async () => {
     resourcesFixture = [];
     render(
       <MemoryRouter>
         <ServicesPage />
       </MemoryRouter>
     );
-    expect(await screen.findByText("Supabase app detected")).toBeTruthy();
+    expect(await screen.findByText("Local Supabase needed")).toBeTruthy();
     expect((await screen.findAllByText("Add Local Supabase")).length).toBeGreaterThan(0);
-    // Escape hatches are present.
-    expect(screen.getByText("Use hosted Supabase")).toBeTruthy();
+    // Escape hatch is present.
     expect(screen.getByText("Use plain Postgres anyway")).toBeTruthy();
     // The misleading generic prompt is gone for this card.
     expect(screen.queryByText("Add Postgres")).toBeNull();
@@ -262,23 +384,14 @@ describe("Resources / Stacks smoke", () => {
 
   it("offers Add Redis for a Redis driver and provisions the redis profile", async () => {
     scansFixture = [];
-    orphanServicesFixture = [
-      {
-        service_id: "svc1",
-        service_name: "learnai",
-        project_id: "p1",
-        status: "stopped",
-        reason: "no-database-url",
-        code_signals: [{ driver: "Redis", ecosystem: "node", source_file: "package.json" }]
-      }
-    ];
+    recognitionsFixture = [redisRecognition];
     render(
       <MemoryRouter>
         <ServicesPage />
       </MemoryRouter>
     );
 
-    expect(await screen.findByText("Redis cache detected")).toBeTruthy();
+    expect(await screen.findByText("Redis needed")).toBeTruthy();
     const buttons = await screen.findAllByText("Add Redis");
     const button = buttons[buttons.length - 1];
     expect(screen.queryByText("Add Postgres")).toBeNull();
@@ -289,6 +402,27 @@ describe("Resources / Stacks smoke", () => {
         { path: "/resources/provision", body: { serviceId: "svc1", profile: "redis", restart: true } }
       ])
     );
+  });
+
+  it("stores hosted/manual recognition choices through the server preference endpoint", async () => {
+    recognitionsFixture = [hostedConflictRecognition];
+    render(
+      <MemoryRouter>
+        <ServicesPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText("Local Supabase configuration conflict")).toBeTruthy();
+    fireEvent.click(screen.getByText("Use hosted/manual env"));
+
+    await waitFor(() => {
+      expect(preferenceRequests).toHaveLength(1);
+      expect(preferenceRequests[0]).toMatchObject({
+        path: "/resources/recognition/svc1/preference",
+        body: { mode: "hosted" }
+      });
+    });
+    expect(Array.from(store.keys()).some((key) => key.includes("hosted_supabase"))).toBe(false);
   });
 
   it("provision modal walks detection → secrets → bootstrap → confirm", async () => {
