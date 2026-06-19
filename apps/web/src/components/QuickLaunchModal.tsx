@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import {
+  Database,
   FolderOpen,
   GitBranch,
   Globe2,
@@ -8,6 +9,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Sparkles,
   Terminal
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -40,6 +42,12 @@ type LocalProjectScan = {
   warnings: string[];
 };
 
+type DatabaseSetupMode = "auto" | "review" | "skip";
+type DatabaseSetupResult = {
+  status: "skipped" | "review" | "ready" | "blocked" | "failed" | "no-database-detected";
+  message: string;
+};
+
 export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [source, setSource] = useState<"local" | "github">("local");
@@ -51,6 +59,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [command, setCommand] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [candidateEnv, setCandidateEnv] = useState<Record<string, string> | null>(null);
+  const [databaseMode, setDatabaseMode] = useState<DatabaseSetupMode>("auto");
   const [scan, setScan] = useState<LocalProjectScan | null>(null);
   const [scanning, setScanning] = useState(false);
   const [projectId, setProjectId] = useState("");
@@ -138,7 +147,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
         ]);
       }
 
-      const result = await api<any>(
+      const result = await api<{ service?: { id?: string }; databaseSetup?: DatabaseSetupResult }>(
         source === "local" ? "/services/deploy-from-local" : "/services/deploy-from-github",
         {
           method: "POST",
@@ -153,7 +162,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
             env: source === "local" && candidateEnv ? candidateEnv : undefined,
             port: port ? Number(port) : undefined,
             startAfterDeploy: true,
-            enableQuickTunnel: exposure === "online"
+            enableQuickTunnel: exposure === "online",
+            databaseSetup: { mode: databaseMode, restart: true }
           })
         }
       );
@@ -165,6 +175,13 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
       }
 
       setBuildLog((prev) => [...prev, "Service registered. Waiting for activation..."]);
+      const setup = result.databaseSetup;
+      if (setup) {
+        setBuildLog((prev) => [...prev, `Database setup: ${setup.message}`]);
+        if (setup.status === "failed" || setup.status === "blocked") {
+          toast.error(`Database setup needs attention: ${setup.message}`);
+        }
+      }
 
       if (exposure === "local") {
         toast.success("Local launch registered");
@@ -390,6 +407,45 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                 </div>
               </div>
 
+              <div className="form-group">
+                <label>Database setup</label>
+                <div className="database-mode-grid">
+                  <button
+                    type="button"
+                    className={databaseMode === "auto" ? "active" : ""}
+                    onClick={() => setDatabaseMode("auto")}
+                  >
+                    <Sparkles size={16} />
+                    <span>
+                      <strong>Auto</strong>
+                      <small>Detect, create, or connect local DB</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={databaseMode === "review" ? "active" : ""}
+                    onClick={() => setDatabaseMode("review")}
+                  >
+                    <Search size={16} />
+                    <span>
+                      <strong>Review</strong>
+                      <small>Scan and decide later</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={databaseMode === "skip" ? "active" : ""}
+                    onClick={() => setDatabaseMode("skip")}
+                  >
+                    <Database size={16} />
+                    <span>
+                      <strong>Skip</strong>
+                      <small>No database changes</small>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               <div className="form-row">
                 <div className="form-group">
                   <label>App Name</label>
@@ -496,8 +552,13 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
           .mode-toggle button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
           .mode-toggle span { display: grid; gap: 0.2rem; }
           .mode-toggle small { color: var(--text-muted); font-size: 0.72rem; }
+          .database-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; }
+          .database-mode-grid button { justify-content: flex-start; align-items: flex-start; text-align: left; background: var(--bg-sunken); }
+          .database-mode-grid button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+          .database-mode-grid span { display: grid; gap: 0.2rem; min-width: 0; }
+          .database-mode-grid small { color: var(--text-muted); font-size: 0.7rem; line-height: 1.2; }
           .animate-spin { animation: spin 1s linear infinite; }
-          @media (max-width: 640px) { .mode-toggle { grid-template-columns: 1fr; } }
+          @media (max-width: 640px) { .mode-toggle, .database-mode-grid { grid-template-columns: 1fr; } }
         `
           }}
         />

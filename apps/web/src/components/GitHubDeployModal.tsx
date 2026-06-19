@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Database, Search, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
@@ -17,6 +18,12 @@ type Props = {
   onDeployed: () => void;
 };
 
+type DatabaseSetupMode = "auto" | "review" | "skip";
+type DatabaseSetupResult = {
+  status: "skipped" | "review" | "ready" | "blocked" | "failed" | "no-database-detected";
+  message: string;
+};
+
 export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
@@ -30,7 +37,8 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
     repoUrl: "",
     branch: "main",
     port: "",
-    autoPull: true
+    autoPull: true,
+    databaseMode: "auto" as DatabaseSetupMode
   });
   const ref = useRef<HTMLDivElement>(null);
 
@@ -68,14 +76,21 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
     if (!form.name || !form.repoUrl) return;
     setDeploying(true);
     try {
-      await api("/services/deploy-from-github", {
+      const result = await api<{ databaseSetup?: DatabaseSetupResult }>("/services/deploy-from-github", {
         method: "POST",
         body: JSON.stringify({
           ...form,
-          port: form.port ? Number(form.port) : undefined
+          port: form.port ? Number(form.port) : undefined,
+          databaseSetup: { mode: form.databaseMode }
         })
       });
-      toast.success("Deployment pipeline initiated");
+      if (result.databaseSetup?.status === "failed" || result.databaseSetup?.status === "blocked") {
+        toast.error(`Deployment queued, database setup needs attention: ${result.databaseSetup.message}`);
+      } else if (result.databaseSetup?.status === "ready") {
+        toast.success("Deployment queued with database setup ready");
+      } else {
+        toast.success("Deployment pipeline initiated");
+      }
       onDeployed();
       onClose();
     } catch {
@@ -234,6 +249,45 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
                 />
               </div>
 
+              <div className="form-group">
+                <label>Database setup</label>
+                <div className="database-mode-grid">
+                  <button
+                    type="button"
+                    className={`database-mode-option ${form.databaseMode === "auto" ? "active" : ""}`}
+                    onClick={() => setForm({ ...form, databaseMode: "auto" })}
+                  >
+                    <Sparkles size={15} />
+                    <span>
+                      <strong>Auto</strong>
+                      <small>Detect, create, or connect local DB</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`database-mode-option ${form.databaseMode === "review" ? "active" : ""}`}
+                    onClick={() => setForm({ ...form, databaseMode: "review" })}
+                  >
+                    <Search size={15} />
+                    <span>
+                      <strong>Review</strong>
+                      <small>Scan and decide after deploy</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`database-mode-option ${form.databaseMode === "skip" ? "active" : ""}`}
+                    onClick={() => setForm({ ...form, databaseMode: "skip" })}
+                  >
+                    <Database size={15} />
+                    <span>
+                      <strong>Skip</strong>
+                      <small>No database changes</small>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               <label className="toggle-group">
                 <input
                   type="checkbox"
@@ -278,6 +332,12 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
           __html: `
         .repo-item:hover { background: var(--bg-sunken); color: var(--accent-light); }
         .font-semibold { font-weight: 600; }
+        .database-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; }
+        .database-mode-option { justify-content: flex-start; align-items: flex-start; gap: 0.5rem; padding: 0.65rem; text-align: left; background: var(--bg-sunken); }
+        .database-mode-option.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+        .database-mode-option span { display: grid; gap: 0.15rem; min-width: 0; }
+        .database-mode-option small { color: var(--text-muted); font-size: 0.68rem; line-height: 1.2; }
+        @media (max-width: 640px) { .database-mode-grid { grid-template-columns: 1fr; } }
       `
         }}
       />

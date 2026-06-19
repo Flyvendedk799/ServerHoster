@@ -35,6 +35,16 @@ import {
 } from "../services/deploy.js";
 import { resolveServiceProjectId } from "../services/projects.js";
 import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
+import { applyServiceDatabaseSetup } from "../services/databaseSetup.js";
+
+const databaseSetupSchema = z
+  .object({
+    mode: z.enum(["skip", "review", "auto", "create", "link"]).default("skip"),
+    profile: z.enum(["supabase", "postgres", "redis", "mysql", "mongo"]).optional(),
+    databaseId: z.string().optional(),
+    restart: z.boolean().optional()
+  })
+  .optional();
 
 const serviceSchema = z.object({
   projectId: z.string().optional(),
@@ -50,7 +60,8 @@ const serviceSchema = z.object({
   startMode: z.enum(["manual", "auto"]).default("manual"),
   stopWithHoster: z.boolean().default(true),
   healthcheckPath: z.string().optional(),
-  quickTunnelEnabled: z.number().int().min(0).max(1).default(0).optional()
+  quickTunnelEnabled: z.number().int().min(0).max(1).default(0).optional(),
+  databaseSetup: databaseSetupSchema
 });
 
 const envSchema = z.object({
@@ -74,7 +85,8 @@ const directDeploySchema = z.object({
   domain: z.string().optional(),
   autoPull: z.boolean().default(true),
   enableQuickTunnel: z.boolean().default(false),
-  serveBuiltDist: z.boolean().default(false)
+  serveBuiltDist: z.boolean().default(false),
+  databaseSetup: databaseSetupSchema
 });
 
 const localDeploySchema = z.object({
@@ -86,7 +98,8 @@ const localDeploySchema = z.object({
   env: z.record(z.string()).optional(),
   port: z.number().int().optional(),
   startAfterDeploy: z.boolean().default(false),
-  enableQuickTunnel: z.boolean().default(false)
+  enableQuickTunnel: z.boolean().default(false),
+  databaseSetup: databaseSetupSchema
 });
 
 const localProjectScanSchema = z.object({
@@ -626,6 +639,10 @@ export function registerServiceRoutes(ctx: AppContext): void {
     });
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
 
+    const databaseSetup = await applyServiceDatabaseSetup(ctx, serviceId, p.databaseSetup, {
+      defaultRestart: p.startAfterDeploy
+    });
+
     if (p.enableQuickTunnel && p.startAfterDeploy && deployment.status === "success") {
       try {
         const { startQuickTunnel } = await import("../services/cloudflare.js");
@@ -641,7 +658,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     }
 
     const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId);
-    return { service, deployment };
+    return { service, deployment, databaseSetup };
   });
 
   ctx.app.post("/services", async (req) => {
@@ -699,7 +716,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
         row.created_at,
         row.updated_at
       );
-    return row;
+    const databaseSetup = await applyServiceDatabaseSetup(ctx, serviceId, p.databaseSetup, {
+      defaultRestart: false
+    });
+    const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId);
+    return { ...(service as Record<string, unknown>), database_setup: databaseSetup };
   });
 
   ctx.app.delete("/services/:id", async (req) => {
@@ -1425,7 +1446,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
       }
     }
 
+    const databaseSetup = await applyServiceDatabaseSetup(ctx, serviceId, p.databaseSetup, {
+      defaultRestart: p.startAfterDeploy
+    });
+
     const service = ctx.db.prepare("SELECT * FROM services WHERE id = ?").get(serviceId);
-    return { service, deployment };
+    return { service, deployment, databaseSetup };
   });
 }
