@@ -43,6 +43,7 @@ import {
 } from "../lib/resources";
 import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
 import { ServiceSettingsModal } from "../components/ServiceSettingsModal";
+import { ServiceSecretModal } from "../components/ServiceSecretModal";
 import { GitHubDeployModal } from "../components/GitHubDeployModal";
 import { CreateServiceModal } from "../components/CreateServiceModal";
 import { TemplateModal } from "../components/TemplateModal";
@@ -319,6 +320,7 @@ export function ServicesPage() {
   const [loadError, setLoadError] = useState(false);
 
   const [editingService, setEditingService] = useState<Service | null>(null);
+  const [secretTarget, setSecretTarget] = useState<{ service: Service; initialKey?: string } | null>(null);
   const [editingOperatorGroup, setEditingOperatorGroup] = useState<OperatorServiceGroup | "new" | null>(
     null
   );
@@ -2617,11 +2619,13 @@ export function ServicesPage() {
                                             </div>
                                             <button
                                               className="ghost xsmall"
-                                              onClick={() => setEditingService(service)}
-                                              data-tooltip="Add service or project environment variables"
-                                              aria-label={`Open environment settings for ${service.name}`}
+                                              onClick={() =>
+                                                setSecretTarget({ service, initialKey: preview[0] })
+                                              }
+                                              data-tooltip="Add the missing value as a service or shared secret"
+                                              aria-label={`Add missing secret for ${service.name}`}
                                             >
-                                              Add env
+                                              Add secret
                                             </button>
                                           </div>
                                         );
@@ -2779,6 +2783,15 @@ export function ServicesPage() {
 
                                       <button
                                         className="ghost xsmall"
+                                        onClick={() => setSecretTarget({ service })}
+                                        aria-label={`Open secrets for ${service.name}`}
+                                        data-tooltip="Add or update service secrets"
+                                      >
+                                        <KeyRound size={14} /> Secrets
+                                      </button>
+
+                                      <button
+                                        className="ghost xsmall"
                                         onClick={() => openServiceTerminal(service, "shell")}
                                         aria-label={`Open console for ${service.name}`}
                                         data-tooltip="Open interactive console"
@@ -2867,6 +2880,14 @@ export function ServicesPage() {
           service={editingService}
           onClose={() => setEditingService(null)}
           onUpdated={() => void load()}
+        />
+      )}
+      {secretTarget && (
+        <ServiceSecretModal
+          service={secretTarget.service}
+          initialKey={secretTarget.initialKey}
+          onClose={() => setSecretTarget(null)}
+          onSaved={() => void load()}
         />
       )}
       {editingOperatorGroup && (

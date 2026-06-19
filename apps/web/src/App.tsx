@@ -6,6 +6,7 @@ import {
   Server,
   FolderKanban,
   Database,
+  KeyRound,
   Activity,
   Globe,
   Terminal,
@@ -23,6 +24,7 @@ import { DashboardPage } from "./pages/Dashboard";
 import { ServicesPage } from "./pages/Services";
 import { ServiceLogsPage } from "./pages/ServiceLogs";
 import { DatabasesPage } from "./pages/Databases";
+import { SecretsPage } from "./pages/Secrets";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
@@ -115,6 +117,7 @@ const routeLabels: Record<string, string> = {
   dashboard: "Dashboard",
   services: "Services",
   projects: "Projects",
+  secrets: "Secrets",
   databases: "Databases",
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
@@ -293,6 +296,15 @@ export function App() {
             {!collapsed && <span>Projects</span>}
           </NavLink>
           <NavLink
+            to="/secrets"
+            aria-label="Secrets"
+            title={collapsed ? "Secrets" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <KeyRound size={16} />
+            {!collapsed && <span>Secrets</span>}
+          </NavLink>
+          <NavLink
             to="/databases"
             aria-label="Databases"
             title={collapsed ? "Databases" : undefined}
@@ -429,6 +441,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <ProjectsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/secrets"
+                  element={
+                    <ProtectedRoute>
+                      <SecretsPage />
                     </ProtectedRoute>
                   }
                 />

@@ -353,6 +353,59 @@ export interface AdoptDatabaseResponse {
   recognition?: DatabaseRecognition;
 }
 
+// ---- Secrets ---------------------------------------------------------------
+
+export type SecretScope = "service" | "shared";
+
+export interface SecretLinkedService {
+  id: string;
+  name: string;
+  status: ServiceStatus;
+  needs_redeploy: true;
+}
+
+export interface SecretInventoryItem {
+  id: string;
+  key: string;
+  scope: SecretScope;
+  value_preview: string;
+  project_id: string | null;
+  project_name: string | null;
+  service_id: string | null;
+  service_name: string | null;
+  linked_services: SecretLinkedService[];
+  system?: boolean;
+}
+
+export interface SecretInventoryResponse {
+  secrets: SecretInventoryItem[];
+}
+
+export interface UpsertServiceSecretRequest {
+  serviceId: string;
+  key: string;
+  value: string;
+}
+
+export interface UpsertSharedSecretRequest {
+  projectId: string;
+  key: string;
+  value: string;
+}
+
+export interface PromoteServiceSecretRequest {
+  serviceEnvId: string;
+  projectId?: string;
+}
+
+export interface SecretMutationResponse {
+  ok: true;
+  secret: SecretInventoryItem;
+  affected_services: SecretLinkedService[];
+  redeploy_required: true;
+  message: string;
+}
+
 /**
  * GET /resources and GET /resources/:id shape. Raw secret values never appear:
  * `secrets` is preview-only and env values inside `config`/`env_map` are masked.

@@ -1002,7 +1002,12 @@ export function registerServiceRoutes(ctx: AppContext): void {
         "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 0)"
       )
       .run(rowId, serviceId, p.key, storedValue, p.isSecret ? 1 : 0);
-    return { ok: true, id: rowId };
+    return {
+      ok: true,
+      id: rowId,
+      redeploy_required: true,
+      message: "Service env changed. Redeploy or restart this service before the new value is live."
+    };
   });
 
   ctx.app.delete("/services/:id/env/:envId", async (req) => {
@@ -1012,7 +1017,11 @@ export function registerServiceRoutes(ctx: AppContext): void {
     ctx.db
       .prepare("DELETE FROM env_vars WHERE id = ? AND service_id = ? AND COALESCE(system, 0) = 0")
       .run(envId, id);
-    return { ok: true };
+    return {
+      ok: true,
+      redeploy_required: true,
+      message: "Service env changed. Redeploy or restart this service before the deletion is live."
+    };
   });
 
   ctx.app.get("/services/:id/logs", async (req) => {

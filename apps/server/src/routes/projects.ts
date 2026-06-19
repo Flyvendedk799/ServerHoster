@@ -8,6 +8,7 @@ import { restartService, startService, stopService } from "../services/runtime.j
 import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
 import { reconcileGenericAppProjects } from "../services/projects.js";
 import { removeDatabase, type DatabaseRow } from "../services/databases.js";
+import { decryptSecret, encryptSecret, maskSecret } from "../security.js";
 
 const projectSchema = z.object({
   name: z.string().min(1),
@@ -183,9 +184,18 @@ export function registerProjectRoutes(ctx: AppContext): void {
   // --- Project env vars (inherited by all services in the project) ---------
   ctx.app.get("/projects/:id/env", async (req) => {
     const { id } = req.params as { id: string };
-    return ctx.db
+    const rows = ctx.db
       .prepare("SELECT id, key, value, is_secret FROM project_env_vars WHERE project_id = ? ORDER BY key ASC")
-      .all(id);
+      .all(id) as Array<{ id: string; key: string; value: string; is_secret: number }>;
+    return rows.map((row) => {
+      const value = row.is_secret ? decryptSecret(row.value, ctx.config.secretKey) : row.value;
+      return {
+        id: row.id,
+        key: row.key,
+        value: row.is_secret ? maskSecret(value) : value,
+        is_secret: row.is_secret
+      };
+    });
   });
 
   ctx.app.post("/projects/:id/env", async (req) => {
@@ -194,18 +204,27 @@ export function registerProjectRoutes(ctx: AppContext): void {
       .object({ key: z.string().min(1), value: z.string(), isSecret: z.boolean().default(false) })
       .parse(req.body);
     const rowId = nanoid();
+    const storedValue = p.isSecret ? encryptSecret(p.value, ctx.config.secretKey) : p.value;
     ctx.db
       .prepare(
         "INSERT INTO project_env_vars (id, project_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, is_secret = excluded.is_secret"
       )
-      .run(rowId, id, p.key, p.value, p.isSecret ? 1 : 0);
-    return { ok: true };
+      .run(rowId, id, p.key, storedValue, p.isSecret ? 1 : 0);
+    return {
+      ok: true,
+      redeploy_required: true,
+      message: "Project env changed. Redeploy or restart linked services before the new value is live."
+    };
   });
 
   ctx.app.delete("/projects/:id/env/:key", async (req) => {
     const { id, key } = req.params as { id: string; key: string };
     ctx.db.prepare("DELETE FROM project_env_vars WHERE project_id = ? AND key = ?").run(id, key);
-    return { ok: true };
+    return {
+      ok: true,
+      redeploy_required: true,
+      message: "Project env changed. Redeploy or restart linked services before the deletion is live."
+    };
   });
 
   ctx.app.get("/project-templates", async () => ({

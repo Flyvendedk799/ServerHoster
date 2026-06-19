@@ -37,6 +37,7 @@ const API_PREFIXES = [
   "/service-groups",
   "/services",
   "/databases",
+  "/secrets",
   "/resources",
   "/deployments",
   "/proxy",

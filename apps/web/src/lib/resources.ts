@@ -18,7 +18,12 @@ import type {
   ResourceProfileSummary,
   ResourceRemoveResponse,
   ResourceSecretsUpdateRequest,
-  ResourceSecretsUpdateResponse
+  ResourceSecretsUpdateResponse,
+  SecretInventoryResponse,
+  SecretMutationResponse,
+  UpsertServiceSecretRequest,
+  UpsertSharedSecretRequest,
+  PromoteServiceSecretRequest
 } from "../../../../packages/shared/src/types";
 
 // Re-export the shared resource types so pages/components have one import
@@ -58,7 +63,15 @@ export type {
   ResourceSecretState,
   ResourceStatus,
   ResourceStatusEvent,
-  ServiceResourceLink
+  ServiceResourceLink,
+  SecretInventoryItem,
+  SecretInventoryResponse,
+  SecretLinkedService,
+  SecretMutationResponse,
+  SecretScope,
+  UpsertServiceSecretRequest,
+  UpsertSharedSecretRequest,
+  PromoteServiceSecretRequest
 } from "../../../../packages/shared/src/types";
 
 type ApiOpts = { silent?: boolean };
@@ -167,6 +180,43 @@ export function updateResourceSecrets(
   return api<ResourceSecretsUpdateResponse>(`/resources/${id}/secrets`, {
     method: "POST",
     body: JSON.stringify(body)
+  });
+}
+
+export function listSecrets(opts?: ApiOpts): Promise<SecretInventoryResponse> {
+  return api<SecretInventoryResponse>("/secrets", opts);
+}
+
+export function upsertServiceSecret(body: UpsertServiceSecretRequest): Promise<SecretMutationResponse> {
+  return api<SecretMutationResponse>("/secrets/service", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function upsertSharedSecret(body: UpsertSharedSecretRequest): Promise<SecretMutationResponse> {
+  return api<SecretMutationResponse>("/secrets/shared", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function promoteServiceSecret(body: PromoteServiceSecretRequest): Promise<SecretMutationResponse> {
+  return api<SecretMutationResponse>("/secrets/promote", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function deleteServiceSecret(id: string): Promise<Omit<SecretMutationResponse, "secret">> {
+  return api<Omit<SecretMutationResponse, "secret">>(`/secrets/service/${id}`, {
+    method: "DELETE"
+  });
+}
+
+export function deleteSharedSecret(id: string): Promise<Omit<SecretMutationResponse, "secret">> {
+  return api<Omit<SecretMutationResponse, "secret">>(`/secrets/shared/${id}`, {
+    method: "DELETE"
   });
 }
 

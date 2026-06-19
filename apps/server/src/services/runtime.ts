@@ -21,6 +21,7 @@ import { buildConnectionString, getDatabase } from "./databases.js";
 import { getResourceEnvForService } from "./resources/runtimeEnv.js";
 import { getSetting, setSetting, deleteSetting } from "./settings.js";
 import { ensurePersistedPaths, resolvePersistedDockerBinds } from "./persistence.js";
+import { decryptSecret } from "../security.js";
 
 type DockerRestartPolicy = "no" | "unless-stopped";
 
@@ -73,9 +74,11 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
   const projectEnv: Record<string, string> = {};
   if (service?.project_id) {
     const rows = ctx.db
-      .prepare("SELECT key, value FROM project_env_vars WHERE project_id = ?")
-      .all(service.project_id) as Array<{ key: string; value: string }>;
-    for (const r of rows) projectEnv[r.key] = r.value;
+      .prepare("SELECT key, value, is_secret FROM project_env_vars WHERE project_id = ?")
+      .all(service.project_id) as Array<{ key: string; value: string; is_secret: number }>;
+    for (const r of rows) {
+      projectEnv[r.key] = r.is_secret ? decryptSecret(r.value, ctx.config.secretKey) : r.value;
+    }
   }
   // A project-wide PORT must never leak into individual services: each service
   // has its own port column that the proxy and healthchecks target. A shared

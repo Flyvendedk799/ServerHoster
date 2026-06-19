@@ -10,6 +10,7 @@ import {
   Activity,
   GitBranch,
   Globe,
+  KeyRound,
   SunMoon
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -70,6 +71,14 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       category: "Navigation",
       shortcut: "G B",
       action: () => navigate("/databases")
+    },
+    {
+      id: "secrets",
+      name: "Secrets & Env",
+      icon: KeyRound,
+      category: "Navigation",
+      shortcut: "G E",
+      action: () => navigate("/secrets")
     },
     {
       id: "deps",
