@@ -82,6 +82,8 @@ const localDeploySchema = z.object({
   name: z.string().min(1),
   localPath: z.string().min(1),
   command: z.string().optional(),
+  workingDir: z.string().optional(),
+  env: z.record(z.string()).optional(),
   port: z.number().int().optional(),
   startAfterDeploy: z.boolean().default(false),
   enableQuickTunnel: z.boolean().default(false)
@@ -96,6 +98,8 @@ type DevServerCandidate = {
   label: string;
   command: string;
   source: string;
+  workingDir?: string;
+  env?: Record<string, string>;
   port?: number;
   recommended?: boolean;
 };
@@ -119,8 +123,133 @@ function extractPort(command: string): number | undefined {
 }
 
 function pushCandidate(candidates: DevServerCandidate[], candidate: DevServerCandidate): void {
-  if (candidates.some((item) => item.command === candidate.command)) return;
+  if (
+    candidates.some(
+      (item) => item.command === candidate.command && (item.workingDir ?? "") === (candidate.workingDir ?? "")
+    )
+  )
+    return;
   candidates.push(candidate);
+}
+
+function workspacePackageManager(root: string): "npm" | "pnpm" | "yarn" | "bun" {
+  if (fs.existsSync(path.join(root, "pnpm-lock.yaml")) || fs.existsSync(path.join(root, "pnpm-workspace.yaml"))) {
+    return "pnpm";
+  }
+  if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
+  if (fs.existsSync(path.join(root, "bun.lockb")) || fs.existsSync(path.join(root, "bun.lock"))) return "bun";
+  return "npm";
+}
+
+function runScriptCommand(pm: "npm" | "pnpm" | "yarn" | "bun", scriptName: string): string {
+  if (pm === "pnpm") return `pnpm run ${scriptName}`;
+  if (pm === "yarn") return `yarn run ${scriptName}`;
+  if (pm === "bun") return `bun run ${scriptName}`;
+  return `npm run ${scriptName}`;
+}
+
+function workspaceFilterCommand(
+  pm: "npm" | "pnpm" | "yarn" | "bun",
+  packageName: string | undefined,
+  scriptName: string
+): string | null {
+  if (!packageName) return null;
+  if (pm === "pnpm") return `pnpm --filter ${packageName} run ${scriptName}`;
+  if (pm === "yarn") return `yarn workspace ${packageName} run ${scriptName}`;
+  if (pm === "npm") return `npm --workspace ${packageName} run ${scriptName}`;
+  return null;
+}
+
+function readPackageJsonForScan(filePath: string): {
+  name?: string;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+} | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+      name?: string;
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findWorkspacePackageDirs(root: string): string[] {
+  const roots = ["apps", "services"];
+  const dirs: string[] = [];
+  for (const segment of roots) {
+    const base = path.join(root, segment);
+    if (!fs.existsSync(base)) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(base, entry.name);
+      if (fs.existsSync(path.join(dir, "package.json"))) dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
+function objectStringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string") out[key] = raw;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function manifestCandidates(root: string): DevServerCandidate[] {
+  const manifestPath = path.join(root, "serverhoster.json");
+  if (!fs.existsSync(manifestPath)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const services = (parsed as { services?: unknown }).services;
+  if (!Array.isArray(services)) return [];
+  const candidates: DevServerCandidate[] = [];
+  services.forEach((raw, index) => {
+    if (!raw || typeof raw !== "object") return;
+    const service = raw as {
+      name?: unknown;
+      command?: unknown;
+      workingDir?: unknown;
+      port?: unknown;
+      env?: unknown;
+    };
+    if (typeof service.command !== "string") return;
+    const name = typeof service.name === "string" && service.name.trim() ? service.name.trim() : `Service ${index + 1}`;
+    const workingDir =
+      typeof service.workingDir === "string" && service.workingDir.trim()
+        ? path.resolve(root, service.workingDir)
+        : root;
+    const rel = path.relative(root, workingDir);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return;
+    const port = typeof service.port === "number" && Number.isInteger(service.port) ? service.port : undefined;
+    candidates.push({
+      id: `manifest-${index}-${name}`.replace(/[^a-zA-Z0-9_-]+/g, "-"),
+      label: name,
+      command: service.command,
+      source: "serverhoster.json",
+      workingDir,
+      env: objectStringMap(service.env),
+      port,
+      recommended: index === 0
+    });
+  });
+  return candidates;
 }
 
 function scanLocalProject(localPath: string): {
@@ -143,6 +272,8 @@ function scanLocalProject(localPath: string): {
   const hasRequirements = files.includes("requirements.txt");
   const hasPyproject = files.includes("pyproject.toml");
   const hasGodotProject = files.includes("project.godot");
+  const declaredCandidates = manifestCandidates(resolved);
+  for (const candidate of declaredCandidates) pushCandidate(candidates, candidate);
 
   if (fs.existsSync(packagePath)) {
     try {
@@ -205,6 +336,31 @@ function scanLocalProject(localPath: string): {
       warnings.push(
         `package.json could not be parsed: ${error instanceof Error ? error.message : String(error)}`
       );
+    }
+  }
+
+  const workspaceDirs = findWorkspacePackageDirs(resolved);
+  if (workspaceDirs.length > 0) {
+    const pm = workspacePackageManager(resolved);
+    const preferred = ["dev", "start", "serve", "preview", "watch"];
+    for (const dir of workspaceDirs) {
+      const pkg = readPackageJsonForScan(path.join(dir, "package.json"));
+      if (!pkg?.scripts) continue;
+      const rel = path.relative(resolved, dir).split(path.sep).join("/");
+      for (const scriptName of preferred) {
+        const scriptValue = pkg.scripts[scriptName];
+        if (!scriptValue) continue;
+        const filterCommand = workspaceFilterCommand(pm, pkg.name, scriptName);
+        pushCandidate(candidates, {
+          id: `workspace-${rel}-${scriptName}`.replace(/[^a-zA-Z0-9_-]+/g, "-"),
+          label: `${rel}: ${scriptName}`,
+          command: filterCommand ?? runScriptCommand(pm, scriptName),
+          source: scriptValue,
+          workingDir: filterCommand ? resolved : dir,
+          port: extractPort(scriptValue),
+          recommended: candidates.length === 0 && (scriptName === "dev" || scriptName === "start")
+        });
+      }
     }
   }
 
@@ -285,9 +441,11 @@ function scanLocalProject(localPath: string): {
     warnings.push("No obvious dev server script was found. Add a command manually before launching.");
   }
 
-  const buildType = hasDockerfile
-    ? "docker"
-    : fs.existsSync(packagePath)
+  const buildType = declaredCandidates.length > 0
+      ? "manifest"
+    : hasDockerfile
+      ? "docker"
+      : fs.existsSync(packagePath)
       ? "node"
       : hasRequirements || hasPyproject
         ? "python"
@@ -453,8 +611,18 @@ export function registerServiceRoutes(ctx: AppContext): void {
         p.enableQuickTunnel ? 1 : 0
       );
 
+    if (p.env) {
+      for (const [key, value] of Object.entries(p.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+        ctx.db
+          .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, 0)")
+          .run(nanoid(), serviceId, key, value);
+      }
+    }
+
     const deployment = await deployFromLocalPath(ctx, serviceId, p.localPath, "manual", {
-      command: p.command
+      command: p.command,
+      workingDir: p.workingDir
     });
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy: p.startAfterDeploy });
 

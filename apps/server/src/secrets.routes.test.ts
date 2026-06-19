@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { nanoid } from "nanoid";
 import { buildApp } from "./app.js";
 import { nowIso } from "./lib/core.js";
@@ -45,9 +48,11 @@ async function login(ctx: Ctx): Promise<string> {
 }
 
 test("secret routes require auth, mask values, and inject decrypted runtime env", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-secret-detect-"));
   const ctx = await buildApp();
   try {
     const { projectId, serviceId } = seedProjectAndService(ctx);
+    ctx.db.prepare("UPDATE services SET working_dir = ? WHERE id = ?").run(tmp, serviceId);
     enablePasswordAuth(ctx);
     const unauthorized = await ctx.app.inject({ method: "GET", url: "/secrets" });
     assert.equal(unauthorized.statusCode, 401);
@@ -148,7 +153,76 @@ test("secret routes require auth, mask values, and inject decrypted runtime env"
       { key: promoted.secret.key, scope: promoted.secret.scope, redeploy: promoted.redeploy_required },
       { key: "PLATFORM_API_KEY", scope: "shared", redeploy: true }
     );
+
+    const plainServiceSecret = "plain-service-secret-value-12345";
+    ctx.db
+      .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, 0)")
+      .run(nanoid(), serviceId, "ANTHROPIC_API_KEY", plainServiceSecret);
+    const plainSharedSecret = "plain-shared-secret-value-67890";
+    ctx.db
+      .prepare(
+        "INSERT OR REPLACE INTO project_env_vars (id, project_id, key, value, is_secret) VALUES (?, ?, ?, ?, 0)"
+      )
+      .run(nanoid(), projectId, "STRIPE_SECRET_KEY", plainSharedSecret);
+    fs.writeFileSync(
+      path.join(tmp, ".env.local"),
+      [
+        "PLATFORM_API_KEY=repo-hardcoded-platform-key-abcdef",
+        "NEXT_PUBLIC_API_URL=http://localhost:3191",
+        "OPENAI_API_KEY=example"
+      ].join("\n")
+    );
+
+    const visible = await ctx.app.inject({
+      method: "GET",
+      url: "/secrets",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(visible.statusCode, 200);
+    assert.ok(!visible.body.includes(plainServiceSecret), "plain service secret must be masked");
+    assert.ok(!visible.body.includes(plainSharedSecret), "plain shared secret must be masked");
+    assert.ok(!visible.body.includes("repo-hardcoded-platform-key-abcdef"), "repo detected secret must be masked");
+    const visibleBody = visible.json() as {
+      secrets: Array<{ id: string; key: string; storage?: string; source_file?: string }>;
+    };
+    const plainService = visibleBody.secrets.find(
+      (secret) => secret.key === "ANTHROPIC_API_KEY" && secret.storage === "plain-env"
+    );
+    assert.ok(plainService, "plain service env that looks secret appears in inventory");
+    assert.ok(
+      visibleBody.secrets.some(
+        (secret) => secret.key === "STRIPE_SECRET_KEY" && secret.storage === "plain-env"
+      ),
+      "plain shared env that looks secret appears in inventory"
+    );
+    assert.ok(
+      visibleBody.secrets.some(
+        (secret) =>
+          secret.key === "PLATFORM_API_KEY" &&
+          secret.storage === "repo-detected" &&
+          secret.source_file === ".env.local"
+      ),
+      "repo .env secret-like values appear as read-only detections"
+    );
+    assert.ok(
+      !visibleBody.secrets.some((secret) => secret.key === "NEXT_PUBLIC_API_URL"),
+      "public env values are not misclassified as secrets"
+    );
+
+    const protect = await ctx.app.inject({
+      method: "POST",
+      url: `/secrets/service/${plainService.id}/protect`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(protect.statusCode, 200);
+    const protectedRow = ctx.db
+      .prepare("SELECT value, is_secret FROM env_vars WHERE id = ?")
+      .get(plainService.id) as { value: string; is_secret: number };
+    assert.equal(protectedRow.is_secret, 1);
+    assert.notEqual(protectedRow.value, plainServiceSecret);
+    assert.ok(!protectedRow.value.includes(plainServiceSecret), "protected env value is encrypted at rest");
   } finally {
     await gracefulShutdown(ctx);
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

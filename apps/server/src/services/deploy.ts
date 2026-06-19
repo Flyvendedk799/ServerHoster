@@ -1517,10 +1517,21 @@ export async function deployFromLocalPath(
   serviceId: string,
   localPath: string,
   trigger: DeployTrigger = "manual",
-  options: { command?: string } = {}
+  options: { command?: string; workingDir?: string } = {}
 ) {
   if (!fs.existsSync(localPath)) throw new Error(`Local path does not exist: ${localPath}`);
   if (!fs.statSync(localPath).isDirectory()) throw new Error(`Path is not a directory: ${localPath}`);
+  const explicitWorkingDir = options.workingDir ? path.resolve(options.workingDir) : undefined;
+  if (explicitWorkingDir) {
+    if (!fs.existsSync(explicitWorkingDir) || !fs.statSync(explicitWorkingDir).isDirectory()) {
+      throw new Error(`Working directory does not exist: ${explicitWorkingDir}`);
+    }
+    const root = path.resolve(localPath);
+    const rel = path.relative(root, explicitWorkingDir);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error("Working directory must stay inside the deployed project");
+    }
+  }
 
   const deploymentId = nanoid();
   const startedAt = nowIso();
@@ -1553,7 +1564,13 @@ export async function deployFromLocalPath(
     const command = options.command !== undefined ? options.command : detectedCommand;
     ctx.db
       .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
-      .run(inferred.type, command, nodeTarget?.workingDir ?? pythonDir ?? localPath, nowIso(), serviceId);
+      .run(
+        inferred.type,
+        command,
+        explicitWorkingDir ?? nodeTarget?.workingDir ?? pythonDir ?? localPath,
+        nowIso(),
+        serviceId
+      );
 
     emitBuildLog(ctx, serviceId, deploymentId, `Detected build type: ${buildType}\n`);
     const result = await runBuildPipeline(ctx, serviceId, localPath, { deploymentId, nodeTarget, pythonDir });
@@ -1572,7 +1589,8 @@ export async function deployFromLocalPath(
         effectiveBuildType,
         effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? localPath
       );
-      const runtimeWorkingDir = effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? localPath;
+      const runtimeWorkingDir =
+        explicitWorkingDir ?? effectiveNodeTarget?.workingDir ?? effectivePythonDir ?? localPath;
       const runtimeCommand =
         effectiveNodeTarget?.command ??
         (effectivePythonDir ? pythonEntryCommand(effectivePythonDir) : effectiveInferred.command);

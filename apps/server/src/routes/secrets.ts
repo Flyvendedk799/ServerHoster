@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
@@ -77,12 +80,14 @@ function serviceById(ctx: AppContext, serviceId: string): ServiceRow {
 }
 
 function serviceSecretItem(ctx: AppContext, row: EnvSecretRow) {
-  const value = decryptSecret(row.value, ctx.config.secretKey);
+  const value = inventoryValue(ctx, row);
   return {
     id: row.id,
     key: row.key,
     scope: "service" as const,
     value_preview: maskSecret(value),
+    storage: storageForRow(row),
+    source_file: null,
     project_id: row.project_id ?? null,
     project_name: row.project_name ?? null,
     service_id: row.service_id ?? null,
@@ -96,20 +101,250 @@ function serviceSecretItem(ctx: AppContext, row: EnvSecretRow) {
 }
 
 function sharedSecretItem(ctx: AppContext, row: EnvSecretRow, linkedServices?: ServiceRow[]) {
-  const value = decryptSecret(row.value, ctx.config.secretKey);
+  const value = inventoryValue(ctx, row);
   const services = linkedServices ?? (row.project_id ? servicesForProject(ctx, row.project_id) : []);
   return {
     id: row.id,
     key: row.key,
     scope: "shared" as const,
     value_preview: maskSecret(value),
+    storage: storageForRow(row),
+    source_file: null,
     project_id: row.project_id ?? null,
     project_name: row.project_name ?? null,
     service_id: null,
     service_name: null,
-    linked_services: services.map(serviceLink),
+  linked_services: services.map(serviceLink),
     system: false
   };
+}
+
+type SecretInventoryItem = {
+  id: string;
+  key: string;
+  scope: "service" | "shared";
+  value_preview: string;
+  storage?: "encrypted" | "plain-env" | "repo-detected";
+  source_file?: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  service_id: string | null;
+  service_name: string | null;
+  linked_services: ReturnType<typeof serviceLink>[];
+  system?: boolean;
+};
+
+const PUBLIC_SECRET_KEY_EXCEPTIONS = [
+  /^NEXT_PUBLIC_/,
+  /^PUBLIC_/,
+  /^VITE_/,
+  /(^|_)PUBLISHABLE_KEY$/,
+  /(^|_)PUBLIC_KEY$/,
+  /(^|_)ANON_KEY$/,
+  /(^|_)URL$/,
+  /(^|_)URI$/
+];
+
+const SECRET_KEY_PATTERNS = [
+  /(^|_)API_KEY$/,
+  /(^|_)SECRET(_|$)/,
+  /(^|_)TOKEN$/,
+  /(^|_)ACCESS_KEY(_|$)/,
+  /(^|_)PRIVATE_KEY$/,
+  /^OPENAI_/,
+  /^ANTHROPIC_/,
+  /^PLATFORM_API_KEY$/,
+  /^STRIPE_/,
+  /^RESEND_/,
+  /^SENDGRID_/,
+  /^CLERK_SECRET_/,
+  /^SUPABASE_SERVICE_ROLE_KEY$/,
+  /^AWS_/,
+  /^R2_/,
+  /^S3_/
+];
+
+const REPO_SECRET_SKIP_DIRS = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "vendor"
+]);
+
+const REPO_SECRET_MAX_DEPTH = 5;
+const REPO_SECRET_MAX_FILE_BYTES = 96 * 1024;
+
+function looksLikeSecretKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  if (!normalized) return false;
+  if (PUBLIC_SECRET_KEY_EXCEPTIONS.some((pattern) => pattern.test(normalized))) return false;
+  return SECRET_KEY_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function looksLikeRealSecretValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length < 8) return false;
+  const lowered = trimmed.toLowerCase();
+  if (
+    /^(changeme|change-me|example|placeholder|replace_me|replace-me|todo|undefined|null)$/i.test(trimmed) ||
+    lowered.includes("your_") ||
+    lowered.includes("your-") ||
+    lowered.includes("not-used") ||
+    lowered.includes("dummy") ||
+    lowered.includes("example")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function inventoryValue(ctx: AppContext, row: Pick<EnvSecretRow, "value" | "is_secret">): string {
+  return row.is_secret ? decryptSecret(row.value, ctx.config.secretKey) : row.value;
+}
+
+function storageForRow(row: Pick<EnvSecretRow, "is_secret">): "encrypted" | "plain-env" {
+  return row.is_secret ? "encrypted" : "plain-env";
+}
+
+function shouldShowEnvRow(row: Pick<EnvSecretRow, "key" | "is_secret" | "value">): boolean {
+  if (row.is_secret) return true;
+  return looksLikeSecretKey(row.key) && looksLikeRealSecretValue(row.value);
+}
+
+function assertInventoryRow(row: EnvSecretRow, label: string): void {
+  if (shouldShowEnvRow(row)) return;
+  throw new Error(`${label} not found`);
+}
+
+function envFileValue(raw: string): string {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed.replace(/\s+#.*$/, "").trim();
+}
+
+function isEnvFileName(name: string): boolean {
+  if (name === ".env") return true;
+  if (!name.startsWith(".env.")) return false;
+  return !/\.(example|sample|template|dist)$/i.test(name);
+}
+
+function repoSecretId(serviceId: string, sourceFile: string, key: string, line: number): string {
+  return `repo:${crypto
+    .createHash("sha256")
+    .update(`${serviceId}:${sourceFile}:${key}:${line}`)
+    .digest("hex")
+    .slice(0, 20)}`;
+}
+
+function scanRootForService(ctx: AppContext, service: { id: string; working_dir?: string | null }): string | null {
+  if (!service.working_dir) return null;
+  const workingDir = path.resolve(service.working_dir);
+  const cloneRoot = path.resolve(path.join(ctx.config.projectsDir, service.id));
+  if (workingDir === cloneRoot || workingDir.startsWith(`${cloneRoot}${path.sep}`)) return cloneRoot;
+  return fs.existsSync(workingDir) ? workingDir : null;
+}
+
+function listRepoDetectedSecrets(ctx: AppContext): SecretInventoryItem[] {
+  const services = ctx.db
+    .prepare(
+      `SELECT s.id, s.name, s.status, s.project_id, s.working_dir, p.name AS project_name
+       FROM services s
+       LEFT JOIN projects p ON p.id = s.project_id
+       ORDER BY s.created_at DESC`
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    status: string;
+    project_id: string | null;
+    working_dir: string | null;
+    project_name: string | null;
+  }>;
+
+  const detections: SecretInventoryItem[] = [];
+  const seen = new Set<string>();
+
+  for (const service of services) {
+    const root = scanRootForService(ctx, service);
+    if (!root || !fs.existsSync(root)) continue;
+
+    const walk = (dir: string, depth: number): void => {
+      if (depth > REPO_SECRET_MAX_DEPTH) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (REPO_SECRET_SKIP_DIRS.has(entry.name)) continue;
+          walk(full, depth + 1);
+          continue;
+        }
+        if (!isEnvFileName(entry.name)) continue;
+
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(full);
+        } catch {
+          continue;
+        }
+        if (stat.size > REPO_SECRET_MAX_FILE_BYTES) continue;
+
+        let content = "";
+        try {
+          content = fs.readFileSync(full, "utf8");
+        } catch {
+          continue;
+        }
+
+        const sourceFile = path.relative(root, full) || entry.name;
+        const lines = content.split(/\r?\n/);
+        lines.forEach((line, index) => {
+          const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/);
+          if (!match) return;
+          const key = match[1];
+          const value = envFileValue(match[2]);
+          if (!looksLikeSecretKey(key) || !looksLikeRealSecretValue(value)) return;
+          const dedupeKey = `${service.id}:${sourceFile}:${key}:${index + 1}`;
+          if (seen.has(dedupeKey)) return;
+          seen.add(dedupeKey);
+          detections.push({
+            id: repoSecretId(service.id, sourceFile, key, index + 1),
+            key,
+            scope: "service",
+            value_preview: maskSecret(value),
+            storage: "repo-detected",
+            source_file: sourceFile,
+            project_id: service.project_id,
+            project_name: service.project_name,
+            service_id: service.id,
+            service_name: service.name,
+            linked_services: [serviceLink(service)],
+            system: false
+          });
+        });
+      }
+    };
+
+    walk(root, 0);
+  }
+
+  return detections;
 }
 
 function getSharedSecretById(ctx: AppContext, id: string): EnvSecretRow {
@@ -118,10 +353,11 @@ function getSharedSecretById(ctx: AppContext, id: string): EnvSecretRow {
       `SELECT pev.id, pev.key, pev.value, pev.is_secret, pev.project_id, p.name AS project_name
        FROM project_env_vars pev
        LEFT JOIN projects p ON p.id = pev.project_id
-       WHERE pev.id = ? AND pev.is_secret = 1`
+       WHERE pev.id = ?`
     )
     .get(id) as EnvSecretRow | undefined;
   if (!row) throw new Error("Shared secret not found");
+  assertInventoryRow(row, "Shared secret");
   return row;
 }
 
@@ -134,10 +370,11 @@ function getServiceSecretById(ctx: AppContext, id: string): EnvSecretRow {
        FROM env_vars ev
        LEFT JOIN services s ON s.id = ev.service_id
        LEFT JOIN projects p ON p.id = s.project_id
-       WHERE ev.id = ? AND ev.is_secret = 1`
+       WHERE ev.id = ?`
     )
     .get(id) as EnvSecretRow | undefined;
   if (!row) throw new Error("Service secret not found");
+  assertInventoryRow(row, "Service secret");
   return row;
 }
 
@@ -151,7 +388,6 @@ export function registerSecretRoutes(ctx: AppContext): void {
          FROM env_vars ev
          LEFT JOIN services s ON s.id = ev.service_id
          LEFT JOIN projects p ON p.id = s.project_id
-         WHERE ev.is_secret = 1
          ORDER BY ev.key ASC, s.name ASC`
       )
       .all() as EnvSecretRow[];
@@ -160,14 +396,14 @@ export function registerSecretRoutes(ctx: AppContext): void {
         `SELECT pev.id, pev.key, pev.value, pev.is_secret, pev.project_id, p.name AS project_name
          FROM project_env_vars pev
          LEFT JOIN projects p ON p.id = pev.project_id
-         WHERE pev.is_secret = 1
          ORDER BY pev.key ASC, p.name ASC`
       )
       .all() as EnvSecretRow[];
     return {
       secrets: [
-        ...sharedRows.map((row) => sharedSecretItem(ctx, row)),
-        ...serviceRows.map((row) => serviceSecretItem(ctx, row))
+        ...sharedRows.filter(shouldShowEnvRow).map((row) => sharedSecretItem(ctx, row)),
+        ...serviceRows.filter(shouldShowEnvRow).map((row) => serviceSecretItem(ctx, row)),
+        ...listRepoDetectedSecrets(ctx)
       ]
     };
   });
@@ -243,7 +479,7 @@ export function registerSecretRoutes(ctx: AppContext): void {
     const service = serviceById(ctx, source.service_id);
     const projectId = body.projectId ?? service.project_id;
     if (!projectId) throw new Error("Service has no project for shared secrets");
-    const value = decryptSecret(source.value, ctx.config.secretKey);
+    const value = inventoryValue(ctx, source);
     const stored = encryptSecret(value, ctx.config.secretKey);
     const existing = ctx.db
       .prepare("SELECT id FROM project_env_vars WHERE project_id = ? AND key = ? LIMIT 1")
@@ -289,6 +525,29 @@ export function registerSecretRoutes(ctx: AppContext): void {
     };
   });
 
+  ctx.app.post("/secrets/service/:id/protect", async (req) => {
+    const { id } = req.params as { id: string };
+    const row = getServiceSecretById(ctx, id);
+    if (row.system) throw new Error("System-managed secrets cannot be changed here");
+    if (!row.is_secret) {
+      ctx.db
+        .prepare("UPDATE env_vars SET value = ?, is_secret = 1 WHERE id = ?")
+        .run(encryptSecret(row.value, ctx.config.secretKey), id);
+    }
+    const updated = getServiceSecretById(ctx, id);
+    const affected =
+      updated.service_id && updated.service_name && updated.service_status
+        ? [serviceLink({ id: updated.service_id, name: updated.service_name, status: updated.service_status })]
+        : [];
+    return {
+      ok: true,
+      secret: serviceSecretItem(ctx, updated),
+      affected_services: affected,
+      redeploy_required: true,
+      message: "Secret encrypted at rest. Redeploy or restart affected services before the new value is live."
+    };
+  });
+
   ctx.app.delete("/secrets/shared/:id", async (req) => {
     const { id } = req.params as { id: string };
     const row = getSharedSecretById(ctx, id);
@@ -299,6 +558,25 @@ export function registerSecretRoutes(ctx: AppContext): void {
       affected_services: linked.map(serviceLink),
       redeploy_required: true,
       message: "Shared secret deleted. Redeploy or restart linked services before the deletion is live."
+    };
+  });
+
+  ctx.app.post("/secrets/shared/:id/protect", async (req) => {
+    const { id } = req.params as { id: string };
+    const row = getSharedSecretById(ctx, id);
+    if (!row.is_secret) {
+      ctx.db
+        .prepare("UPDATE project_env_vars SET value = ?, is_secret = 1 WHERE id = ?")
+        .run(encryptSecret(row.value, ctx.config.secretKey), id);
+    }
+    const updated = getSharedSecretById(ctx, id);
+    const linked = updated.project_id ? servicesForProject(ctx, updated.project_id) : [];
+    return {
+      ok: true,
+      secret: sharedSecretItem(ctx, updated, linked),
+      affected_services: linked.map(serviceLink),
+      redeploy_required: true,
+      message: "Shared secret encrypted at rest. Redeploy or restart linked services before the new value is live."
     };
   });
 }

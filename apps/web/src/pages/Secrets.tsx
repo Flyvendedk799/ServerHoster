@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertTriangle,
   KeyRound,
+  Lock,
   Loader2,
   Plus,
   RefreshCw,
@@ -17,6 +18,8 @@ import {
   deleteSharedSecret,
   listSecrets,
   promoteServiceSecret,
+  protectServiceSecret,
+  protectSharedSecret,
   upsertServiceSecret,
   upsertSharedSecret,
   type SecretInventoryItem,
@@ -87,9 +90,10 @@ export function SecretsPage() {
   }, []);
 
   const grouped = useMemo(() => {
-    const shared = secrets.filter((secret) => secret.scope === "shared");
-    const service = secrets.filter((secret) => secret.scope === "service");
-    return { shared, service };
+    const detected = secrets.filter((secret) => secret.storage === "repo-detected");
+    const shared = secrets.filter((secret) => secret.scope === "shared" && secret.storage !== "repo-detected");
+    const service = secrets.filter((secret) => secret.scope === "service" && secret.storage !== "repo-detected");
+    return { shared, service, detected };
   }, [secrets]);
 
   async function save(event: FormEvent): Promise<void> {
@@ -132,7 +136,7 @@ export function SecretsPage() {
   }
 
   async function promote(secret: SecretInventoryItem): Promise<void> {
-    if (secret.scope !== "service") return;
+    if (secret.scope !== "service" || secret.storage === "repo-detected") return;
     setBusyKey(`promote:${secret.id}`);
     try {
       const result = await promoteServiceSecret({
@@ -150,7 +154,27 @@ export function SecretsPage() {
     }
   }
 
+  async function protect(secret: SecretInventoryItem): Promise<void> {
+    if (secret.storage !== "plain-env") return;
+    setBusyKey(`protect:${secret.id}`);
+    try {
+      const result =
+        secret.scope === "shared"
+          ? await protectSharedSecret(secret.id)
+          : await protectServiceSecret(secret.id);
+      toast.success(`${secret.key} encrypted at rest`);
+      toast.warning(result.message);
+      setNotice({ message: result.message, services: result.affected_services });
+      await load();
+    } catch {
+      /* toasted */
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
   async function remove(secret: SecretInventoryItem): Promise<void> {
+    if (secret.storage === "repo-detected") return;
     const ok = await confirmDialog({
       title: `Delete ${secret.key}?`,
       message:
@@ -190,9 +214,23 @@ export function SecretsPage() {
               {scopeLabel(secret.scope)}
             </span>
             {secret.system && <span className="chip xsmall">System</span>}
+            {secret.storage === "plain-env" && (
+              <span className="chip xsmall warn-chip">
+                <AlertTriangle size={12} />
+                Plain env
+              </span>
+            )}
+            {secret.storage === "repo-detected" && (
+              <span className="chip xsmall warn-chip">
+                <AlertTriangle size={12} />
+                Detected
+              </span>
+            )}
           </div>
           <div className="muted small">
-            {secret.scope === "shared"
+            {secret.storage === "repo-detected" && secret.source_file
+              ? `Detected in ${secret.source_file}`
+              : secret.scope === "shared"
               ? secret.project_name ?? "Project secret"
               : `${secret.service_name ?? "Service secret"}${secret.project_name ? ` in ${secret.project_name}` : ""}`}
           </div>
@@ -215,7 +253,22 @@ export function SecretsPage() {
         </div>
 
         <div className="secret-actions">
-          {secret.scope === "service" && !secret.system && secret.project_id && (
+          {secret.storage === "plain-env" && (
+            <button
+              className="ghost xsmall"
+              onClick={() => void protect(secret)}
+              disabled={busy}
+              data-tooltip="Encrypt this existing env value at rest"
+            >
+              {busyKey === `protect:${secret.id}` ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Lock size={14} />
+              )}
+              Encrypt
+            </button>
+          )}
+          {secret.scope === "service" && !secret.system && secret.project_id && secret.storage !== "repo-detected" && (
             <button
               className="ghost xsmall"
               onClick={() => void promote(secret)}
@@ -233,8 +286,14 @@ export function SecretsPage() {
           <button
             className="ghost xsmall text-danger"
             onClick={() => void remove(secret)}
-            disabled={busy || secret.system}
-            data-tooltip={secret.system ? "System-managed secrets cannot be deleted here" : "Delete secret"}
+            disabled={busy || secret.system || secret.storage === "repo-detected"}
+            data-tooltip={
+              secret.storage === "repo-detected"
+                ? "Detected repo values are read-only here"
+                : secret.system
+                  ? "System-managed secrets cannot be deleted here"
+                  : "Delete secret"
+            }
           >
             {busyKey === `delete:${secret.id}` ? (
               <Loader2 size={14} className="animate-spin" />
@@ -394,6 +453,21 @@ export function SecretsPage() {
                   <div className="secret-empty">No service secrets yet.</div>
                 ) : (
                   grouped.service.map(renderSecret)
+                )}
+              </div>
+
+              <div className="secret-group">
+                <div className="secret-group-head">
+                  <div>
+                    <h3>Detected Secrets</h3>
+                    <p className="muted small">Secret-like values found in service repository env files.</p>
+                  </div>
+                  <span className="chip xsmall">{grouped.detected.length}</span>
+                </div>
+                {grouped.detected.length === 0 ? (
+                  <div className="secret-empty">No hardcoded secret-looking values detected.</div>
+                ) : (
+                  grouped.detected.map(renderSecret)
                 )}
               </div>
             </>

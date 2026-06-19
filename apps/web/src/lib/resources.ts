@@ -208,6 +208,18 @@ export function promoteServiceSecret(body: PromoteServiceSecretRequest): Promise
   });
 }
 
+export function protectServiceSecret(id: string): Promise<SecretMutationResponse> {
+  return api<SecretMutationResponse>(`/secrets/service/${id}/protect`, {
+    method: "POST"
+  });
+}
+
+export function protectSharedSecret(id: string): Promise<SecretMutationResponse> {
+  return api<SecretMutationResponse>(`/secrets/shared/${id}/protect`, {
+    method: "POST"
+  });
+}
+
 export function deleteServiceSecret(id: string): Promise<Omit<SecretMutationResponse, "secret">> {
   return api<Omit<SecretMutationResponse, "secret">>(`/secrets/service/${id}`, {
     method: "DELETE"

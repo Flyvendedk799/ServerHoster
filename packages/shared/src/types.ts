@@ -369,6 +369,8 @@ export interface SecretInventoryItem {
   key: string;
   scope: SecretScope;
   value_preview: string;
+  storage?: "encrypted" | "plain-env" | "repo-detected";
+  source_file?: string | null;
   project_id: string | null;
   project_name: string | null;
   service_id: string | null;

@@ -23,7 +23,7 @@ type Props = {
 };
 
 export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved }: Props) {
-  const [scope, setScope] = useState<SecretScope>("service");
+  const [scope, setScope] = useState<SecretScope>(service.project_id ? "shared" : "service");
   const [key, setKey] = useState(initialKey);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,6 +33,10 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
   useEffect(() => {
     setKey(initialKey);
   }, [initialKey]);
+
+  useEffect(() => {
+    setScope(service.project_id ? "shared" : "service");
+  }, [service.id, service.project_id]);
 
   async function save(event?: FormEvent): Promise<void> {
     event?.preventDefault();

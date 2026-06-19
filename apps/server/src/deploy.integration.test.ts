@@ -594,6 +594,39 @@ test("scan-local-project detects npm dev servers", async () => {
       2
     )
   );
+  fs.writeFileSync(path.join(tmp, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n  - services/*\n");
+  fs.mkdirSync(path.join(tmp, "apps", "web"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "apps", "web", "package.json"),
+    JSON.stringify(
+      {
+        name: "@scan/web",
+        private: true,
+        scripts: {
+          dev: "next dev -p 3004"
+        },
+        dependencies: { next: "^14.0.0" }
+      },
+      null,
+      2
+    )
+  );
+  fs.mkdirSync(path.join(tmp, "services", "api"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "services", "api", "package.json"),
+    JSON.stringify(
+      {
+        name: "@scan/api",
+        private: true,
+        scripts: {
+          start: "tsx src/main.ts"
+        },
+        dependencies: { fastify: "^5.0.0" }
+      },
+      null,
+      2
+    )
+  );
 
   const ctx = await buildApp();
   try {
@@ -618,7 +651,7 @@ test("scan-local-project detects npm dev servers", async () => {
     const body = res.json() as {
       name: string;
       buildType: string;
-      candidates: Array<{ command: string; port?: number; recommended?: boolean }>;
+      candidates: Array<{ command: string; workingDir?: string; port?: number; recommended?: boolean }>;
     };
     assert.equal(body.name, path.basename(tmp).toLowerCase());
     assert.equal(body.buildType, "node");
@@ -628,6 +661,106 @@ test("scan-local-project detects npm dev servers", async () => {
       )
     );
     assert.ok(body.candidates.some((candidate) => candidate.command === "npm run start"));
+    assert.ok(
+      body.candidates.some(
+        (candidate) =>
+          candidate.command === "pnpm --filter @scan/web run dev" &&
+          candidate.workingDir === tmp &&
+          candidate.port === 3004
+      ),
+      "workspace web package candidate is surfaced"
+    );
+    assert.ok(
+      body.candidates.some(
+        (candidate) =>
+          candidate.command === "pnpm --filter @scan/api run start" && candidate.workingDir === tmp
+      ),
+      "workspace API package candidate is surfaced"
+    );
+  } finally {
+    await gracefulShutdown(ctx);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("scan-local-project surfaces serverhoster manifest services", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-manifest-scan-"));
+  fs.mkdirSync(path.join(tmp, "apps", "web"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "services", "api"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, "serverhoster.json"),
+    JSON.stringify(
+      {
+        services: [
+          {
+            name: "Gamehub API",
+            command: "pnpm --filter @playforge/api start",
+            workingDir: "services/api",
+            port: 3191,
+            env: {
+              DATABASE_URL: "postgres://localhost:5432/playforge",
+              CORS_ORIGINS: "http://localhost:3004"
+            }
+          },
+          {
+            name: "Gamehub Web",
+            command: "pnpm --filter @playforge/web start",
+            workingDir: "apps/web",
+            port: 3004,
+            env: {
+              NEXT_PUBLIC_API_URL: "http://localhost:3191"
+            }
+          }
+        ]
+      },
+      null,
+      2
+    )
+  );
+
+  const ctx = await buildApp();
+  try {
+    ctx.db.prepare("DELETE FROM sessions").run();
+    ctx.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
+      .run();
+    const login = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { password: "test-pass" }
+    });
+    const token = login.json().token as string;
+
+    const res = await ctx.app.inject({
+      method: "POST",
+      url: "/services/scan-local-project",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { localPath: tmp }
+    });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as {
+      buildType: string;
+      candidates: Array<{ label: string; command: string; workingDir?: string; port?: number; env?: Record<string, string> }>;
+    };
+    assert.equal(body.buildType, "manifest");
+    assert.ok(
+      body.candidates.some(
+        (candidate) =>
+          candidate.label === "Gamehub API" &&
+          candidate.command === "pnpm --filter @playforge/api start" &&
+          candidate.workingDir === path.join(tmp, "services", "api") &&
+          candidate.port === 3191 &&
+          candidate.env?.DATABASE_URL === "postgres://localhost:5432/playforge"
+      )
+    );
+    assert.ok(
+      body.candidates.some(
+        (candidate) =>
+          candidate.label === "Gamehub Web" &&
+          candidate.workingDir === path.join(tmp, "apps", "web") &&
+          candidate.env?.NEXT_PUBLIC_API_URL === "http://localhost:3191"
+      )
+    );
   } finally {
     await gracefulShutdown(ctx);
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -685,6 +818,8 @@ test("deploy-from-local stores selected command and tunnel mode", async () => {
         name: `local-svc-${Date.now()}`,
         localPath: tmp,
         command: "npm run dev",
+        workingDir: tmp,
+        env: { NEXT_PUBLIC_API_URL: "http://localhost:3191" },
         port: 5177,
         startAfterDeploy: false,
         enableQuickTunnel: true
@@ -706,6 +841,10 @@ test("deploy-from-local stores selected command and tunnel mode", async () => {
     assert.equal(body.service.working_dir, tmp);
     assert.equal(body.service.quick_tunnel_enabled, 1);
     assert.equal(body.service.status, "stopped");
+    const envRow = ctx.db
+      .prepare("SELECT value, is_secret FROM env_vars WHERE service_id = ? AND key = ?")
+      .get(body.service.id, "NEXT_PUBLIC_API_URL") as { value: string; is_secret: number };
+    assert.deepEqual(envRow, { value: "http://localhost:3191", is_secret: 0 });
 
     cleanupDeployArtifacts(ctx, body.service.id, projectId);
   } finally {

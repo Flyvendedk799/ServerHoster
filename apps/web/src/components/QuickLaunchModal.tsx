@@ -27,6 +27,8 @@ type DevServerCandidate = {
   label: string;
   command: string;
   source: string;
+  workingDir?: string;
+  env?: Record<string, string>;
   port?: number;
   recommended?: boolean;
 };
@@ -47,6 +49,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
   const [name, setName] = useState("");
   const [port, setPort] = useState("");
   const [command, setCommand] = useState("");
+  const [workingDir, setWorkingDir] = useState("");
+  const [candidateEnv, setCandidateEnv] = useState<Record<string, string> | null>(null);
   const [scan, setScan] = useState<LocalProjectScan | null>(null);
   const [scanning, setScanning] = useState(false);
   const [projectId, setProjectId] = useState("");
@@ -101,6 +105,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
       const recommended = result.candidates.find((item) => item.recommended) ?? result.candidates[0];
       if (recommended) {
         setCommand(recommended.command);
+        setWorkingDir(recommended.workingDir ?? "");
+        setCandidateEnv(recommended.env ?? null);
         if (!port && recommended.port) setPort(String(recommended.port));
       }
       toast.success(
@@ -143,6 +149,8 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
             repoUrl: source === "github" ? repoUrl.trim() : undefined,
             autoPull: source === "github" ? true : undefined,
             command: source === "local" ? command.trim() : undefined,
+            workingDir: source === "local" && workingDir ? workingDir : undefined,
+            env: source === "local" && candidateEnv ? candidateEnv : undefined,
             port: port ? Number(port) : undefined,
             startAfterDeploy: true,
             enableQuickTunnel: exposure === "online"
@@ -297,11 +305,15 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                     {scan.candidates.map((candidate) => (
                       <button
                         key={candidate.id}
-                        className={`candidate-item ${command === candidate.command ? "active" : ""}`}
+                        className={`candidate-item ${
+                          command === candidate.command && workingDir === (candidate.workingDir ?? "") ? "active" : ""
+                        }`}
                         aria-label={`Use ${candidate.label}: ${candidate.command || "Dockerfile service"}`}
                         data-tooltip="Use this launch command"
                         onClick={() => {
                           setCommand(candidate.command);
+                          setWorkingDir(candidate.workingDir ?? "");
+                          setCandidateEnv(candidate.env ?? null);
                           if (!port && candidate.port) setPort(String(candidate.port));
                         }}
                       >
@@ -309,6 +321,7 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                         <span>
                           <strong>{candidate.label}</strong>
                           <code>{candidate.command || "Dockerfile service"}</code>
+                          {candidate.workingDir && <small>{candidate.workingDir}</small>}
                         </span>
                         {candidate.recommended && <span className="badge accent">Recommended</span>}
                       </button>
@@ -322,7 +335,11 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                   <label>Dev Server Command</label>
                   <input
                     value={command}
-                    onChange={(event) => setCommand(event.target.value)}
+                    onChange={(event) => {
+                      setCommand(event.target.value);
+                      setWorkingDir("");
+                      setCandidateEnv(null);
+                    }}
                     placeholder="npm run dev"
                   />
                 </div>
