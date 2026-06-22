@@ -1035,6 +1035,35 @@ export function collectIngressRoutes(ctx: AppContext): IngressRoute[] {
   if (apiHostname && !seen.has(apiHostname)) {
     routes.push({ domain: apiHostname, port: ctx.config.apiPort });
   }
+  // Operator-defined PATH-scoped routes (JSON in the `api_path_routes` setting):
+  // route a path prefix on an existing domain to a DIFFERENT port, ordered before
+  // that domain's generic rule (buildIngressConfig/orderTunnelConfigIngress put
+  // path rules first). This lets a same-origin API (e.g. `/v1`) live on the API
+  // service while the app shell stays on the web service — and, crucially, routes
+  // WebSocket + SSE traffic straight to the API at the edge, which a Next.js
+  // rewrite cannot do (it can't upgrade WebSockets). Wrapped in try/catch so a
+  // malformed setting can never break ingress generation for every other domain.
+  const apiPathRoutesRaw = getSetting(ctx, "api_path_routes");
+  if (apiPathRoutesRaw) {
+    try {
+      const parsed = JSON.parse(apiPathRoutesRaw) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          const r = entry as { domain?: unknown; path?: unknown; port?: unknown };
+          if (
+            typeof r.domain === "string" &&
+            typeof r.path === "string" &&
+            typeof r.port === "number" &&
+            Number.isInteger(r.port)
+          ) {
+            routes.push({ domain: r.domain.toLowerCase(), path: r.path, port: r.port });
+          }
+        }
+      }
+    } catch {
+      /* malformed JSON — ignore so the rest of the ingress still generates */
+    }
+  }
   return routes;
 }
 
