@@ -416,6 +416,7 @@ export function ServicesPage() {
   const [redeployingGitId, setRedeployingGitId] = useState<string | null>(null);
   const [forceRestartingId, setForceRestartingId] = useState<string | null>(null);
   const [alwaysOnBusyId, setAlwaysOnBusyId] = useState<string | null>(null);
+  const [dbStartBusyId, setDbStartBusyId] = useState<string | null>(null);
   const [recognitions, setRecognitions] = useState<Map<string, DatabaseRecognition>>(new Map());
   const [resources, setResources] = useState<ManagedResourceDetail[]>([]);
   const [provisionTarget, setProvisionTarget] = useState<{
@@ -737,6 +738,21 @@ export function ServicesPage() {
           message: "LocalSURV could not complete the action. Check the latest logs."
         }
       }));
+    }
+  }
+
+  // Start a service's linked database container from the service card, so a
+  // user who sees "database not running" can fix it without leaving the page.
+  async function startLinkedDatabase(databaseId: string, databaseName: string): Promise<void> {
+    setDbStartBusyId(databaseId);
+    try {
+      await api(`/databases/${databaseId}/start`, { method: "POST" });
+      await load();
+      toast.success(`Database "${databaseName}" started`);
+    } catch {
+      toast.error(`Could not start database "${databaseName}". Open the Databases page for details.`);
+    } finally {
+      setDbStartBusyId(null);
     }
   }
 
@@ -2724,6 +2740,55 @@ export function ServicesPage() {
                                             <button className="link xsmall" onClick={() => void editPaths()}>
                                               Edit
                                             </button>
+                                          </div>
+                                        );
+                                      })()}
+
+                                      {(() => {
+                                        // A linked database that isn't running means the app can't
+                                        // reach its data — surface it plainly with a one-click fix.
+                                        if (!service.linked_database_id) return null;
+                                        const linkedDb = databases.find(
+                                          (d) => d.id === service.linked_database_id
+                                        );
+                                        if (!linkedDb) return null;
+                                        const dbState = linkedDb.container_status?.state ?? "stopped";
+                                        if (dbState === "running") return null;
+                                        const missingContainer = dbState === "not-found";
+                                        const busy = dbStartBusyId === linkedDb.id;
+                                        return (
+                                          <div className="db-down-banner">
+                                            <AlertTriangle size={14} />
+                                            <div className="db-down-text">
+                                              <strong>Database isn’t running</strong>
+                                              <span>
+                                                {missingContainer
+                                                  ? `Your app’s database “${linkedDb.name}” no longer exists. Re-create it on the Databases page, then start this service.`
+                                                  : `Your app keeps its data in “${linkedDb.name}”, which is currently ${dbState}. Sign-ups, logins and anything that saves data will fail until it’s running again.`}
+                                              </span>
+                                            </div>
+                                            {missingContainer ? (
+                                              <Link to="/databases" className="ghost xsmall">
+                                                Open Databases
+                                              </Link>
+                                            ) : (
+                                              <button
+                                                className="ghost xsmall db-down-action"
+                                                disabled={busy}
+                                                onClick={() =>
+                                                  void startLinkedDatabase(linkedDb.id, linkedDb.name)
+                                                }
+                                                data-tooltip="Start this app’s database container"
+                                                aria-label={`Start database for ${service.name}`}
+                                              >
+                                                {busy ? (
+                                                  <Loader2 size={14} className="animate-spin" />
+                                                ) : (
+                                                  <DatabaseIcon size={14} />
+                                                )}
+                                                Start database
+                                              </button>
+                                            )}
                                           </div>
                                         );
                                       })()}

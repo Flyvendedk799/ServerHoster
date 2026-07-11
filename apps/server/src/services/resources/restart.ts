@@ -1,5 +1,5 @@
 import type { AppContext } from "../../types.js";
-import { applyPostDeployServiceState, deployFromGit, stopServiceIfRunning } from "../deploy.js";
+import { applyPostDeployServiceState, deployFromGit } from "../deploy.js";
 import { restartService } from "../runtime.js";
 
 /**
@@ -36,7 +36,6 @@ const defaultActions: RestartActions = {
     await restartService(ctx, serviceId);
   },
   async redeploy(ctx, serviceId, repoUrl, branch, startAfterDeploy) {
-    await stopServiceIfRunning(ctx, serviceId);
     const deployment = await deployFromGit(ctx, serviceId, repoUrl, branch, "manual");
     await applyPostDeployServiceState(ctx, serviceId, deployment, { startAfterDeploy });
     return deployment;

@@ -5627,3 +5627,45 @@ a.list-row:hover .row-chevron,
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
+
+/* "Database isn't running" banner on a service card — shown when a service's
+   linked database container is down, with a one-click start. Mirrors
+   .res-warning-banner.danger so it reads as "your app is broken right now". */
+.db-down-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  margin-top: 0.5rem;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius-md);
+  background: var(--red-dim);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+.db-down-banner > svg {
+  color: var(--red);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.db-down-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+}
+.db-down-text strong {
+  font-weight: 600;
+}
+.db-down-text span {
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.db-down-banner .db-down-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  white-space: nowrap;
+}

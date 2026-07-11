@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import simpleGit from "simple-git";
 import type { AppContext } from "../types.js";
-import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "./deploy.js";
+import { deployFromGit, applyPostDeployServiceState } from "./deploy.js";
 import { insertLog, serializeError } from "../lib/core.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 
@@ -187,7 +187,6 @@ export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
         "info",
         `GitOps: Detected remote commit change (${previous} -> ${remoteHash.slice(0, 7)}). Triggering redeploy.`
       );
-      await stopServiceIfRunning(ctx, row.id);
       const deployment = await deployFromGit(ctx, row.id, row.github_repo_url, branch, "gitops-poller");
       await applyPostDeployServiceState(ctx, row.id, deployment, { startAfterDeploy: true });
     } catch (error) {

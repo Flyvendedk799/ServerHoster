@@ -30,8 +30,7 @@ import { killTerminalSession } from "../services/terminals.js";
 import {
   applyPostDeployServiceState,
   deployFromGit,
-  deployFromLocalPath,
-  stopServiceIfRunning
+  deployFromLocalPath
 } from "../services/deploy.js";
 import { resolveServiceProjectId } from "../services/projects.js";
 import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
@@ -877,7 +876,6 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const needsBuild = !!svc && svc.type !== "docker" && !String(svc.command ?? "").trim();
     if (!needsBuild || !svc?.github_repo_url) return null;
     const branch = svc.github_branch || "main";
-    await stopServiceIfRunning(ctx, id);
     const deployment = await deployFromGit(ctx, id, svc.github_repo_url, branch, "manual");
     await applyPostDeployServiceState(ctx, id, deployment, { startAfterDeploy: true });
     return { deployed: true, deployment };

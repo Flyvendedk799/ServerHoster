@@ -180,6 +180,60 @@ test("POST /services/:id/force-restart: recovers a service wedged at 'stopping'"
   }
 });
 
+test("POST /services/:id/force-restart: does not break an active deployment lock", async () => {
+  const ctx = await buildApp();
+  try {
+    const token = await authedToken(ctx);
+    const id = seedService(ctx, `svc-deploying-${Date.now()}`, 3101);
+    ctx.db.prepare("UPDATE services SET status = 'running' WHERE id = ?").run(id);
+    ctx.actionLocks.add(id);
+    ctx.activeDeploys.add(id);
+
+    const forced = await ctx.app.inject({
+      method: "POST",
+      url: `/services/${id}/force-restart`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(forced.statusCode, 500);
+    assert.match((forced.json() as { error?: string }).error ?? "", /deployment is already in progress/i);
+    assert.equal(ctx.actionLocks.has(id), true, "force restart must not clear a real deploy lock");
+    const status = (
+      ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string }
+    ).status;
+    assert.equal(status, "running");
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("POST /services/:id/redeploy: active deploy is rejected before stopping service", async () => {
+  const ctx = await buildApp();
+  try {
+    const token = await authedToken(ctx);
+    const id = seedService(ctx, `svc-redeploying-${Date.now()}`, 3102);
+    ctx.db
+      .prepare(
+        "UPDATE services SET status = 'running', github_repo_url = ?, github_branch = 'main' WHERE id = ?"
+      )
+      .run("https://github.com/example/repo", id);
+    ctx.actionLocks.add(id);
+    ctx.activeDeploys.add(id);
+
+    const redeploy = await ctx.app.inject({
+      method: "POST",
+      url: `/services/${id}/redeploy`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(redeploy.statusCode, 500);
+    const status = (
+      ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string }
+    ).status;
+    assert.equal(status, "running", "redeploy must fail without stopping the currently running service");
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
 test("PATCH /services/:id: rejects invalid port", async () => {
   const ctx = await buildApp();
   try {

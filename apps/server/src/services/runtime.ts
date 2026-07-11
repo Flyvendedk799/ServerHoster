@@ -18,7 +18,13 @@ import type { AppContext, RuntimeProcess } from "../types.js";
 import { createNotification } from "./notifications.js";
 
 const exec = promisify(execFile);
-import { buildConnectionString, getDatabase } from "./databases.js";
+import {
+  buildConnectionString,
+  containerAction,
+  containerNameForDatabase,
+  getContainerStatus,
+  getDatabase
+} from "./databases.js";
 import { getResourceEnvForService } from "./resources/runtimeEnv.js";
 import { getSetting, setSetting, deleteSetting } from "./settings.js";
 import { ensurePersistedPaths, resolvePersistedDockerBinds } from "./persistence.js";
@@ -900,9 +906,75 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
   insertLog(ctx, serviceId, "info", "Service stopped.");
 }
 
+/**
+ * Before a service launches, make sure its linked managed database container is
+ * actually up. A managed DB normally carries an `unless-stopped` policy and
+ * survives daemon restarts on its own, but it can still be down — the policy
+ * drifted to "no", someone stopped it, or it crashed without restarting. When
+ * that happens the app boots straight into "can't reach database" errors (the
+ * exact failure we hit with a Postgres container that was left with no restart
+ * policy). Starting the DB on demand here — and re-asserting its durability —
+ * closes that gap. Throws (blocking the start with an actionable log) only when
+ * the DB container is missing entirely or refuses to start.
+ */
+export async function ensureLinkedDatabaseRunning(ctx: AppContext, serviceId: string): Promise<void> {
+  const row = ctx.db.prepare("SELECT linked_database_id FROM services WHERE id = ?").get(serviceId) as
+    | { linked_database_id?: string | null }
+    | undefined;
+  const dbId = row?.linked_database_id;
+  if (!dbId) return;
+
+  const db = getDatabase(ctx, dbId);
+  if (!db) {
+    // Dangling link: the managed DB row was deleted. Don't block the start (the
+    // service may connect elsewhere) but make the mismatch visible.
+    insertLog(ctx, serviceId, "warn", `Linked database ${dbId} no longer exists — skipping database start.`);
+    return;
+  }
+
+  let state: string;
+  try {
+    state = (await getContainerStatus(ctx, db)).state;
+  } catch (error) {
+    insertLog(ctx, serviceId, "warn", `Could not inspect linked database "${db.name}": ${serializeError(error)}`);
+    return;
+  }
+
+  const container = ctx.docker.getContainer(db.container_id || containerNameForDatabase(db));
+
+  if (state === "running") {
+    // Already up — keep it durable so it comes back after the next restart.
+    await ensureDockerRestartPolicy(ctx, serviceId, container, "unless-stopped").catch(() => {});
+    return;
+  }
+
+  if (state === "not-found") {
+    const message =
+      `Linked database "${db.name}" container is missing — recreate the database from the ` +
+      `Databases page, then start this service again.`;
+    insertLog(ctx, serviceId, "error", message);
+    throw new Error(message);
+  }
+
+  // exited / created / dead / paused — bring it up, then make it durable.
+  insertLog(ctx, serviceId, "info", `Linked database "${db.name}" is ${state} — starting it before the service...`);
+  try {
+    await containerAction(ctx, db, "start");
+    await ensureDockerRestartPolicy(ctx, serviceId, container, "unless-stopped").catch(() => {});
+    insertLog(ctx, serviceId, "info", `Linked database "${db.name}" is now running.`);
+  } catch (error) {
+    const message = `Could not start linked database "${db.name}": ${serializeError(error)}`;
+    insertLog(ctx, serviceId, "error", message);
+    throw new Error(message);
+  }
+}
+
 async function startServiceRuntime(ctx: AppContext, serviceId: string): Promise<void> {
   // Start dependencies first (already-running ones are skipped).
   await startDependencies(ctx, serviceId, new Set());
+  // A linked managed database must be reachable before the service launches,
+  // otherwise the app boots straight into connection errors.
+  await ensureLinkedDatabaseRunning(ctx, serviceId);
   const service = getService(ctx, serviceId);
   if (service.type === "docker") {
     await startDockerService(ctx, serviceId);
@@ -1049,6 +1121,9 @@ export async function forceStopService(ctx: AppContext, serviceId: string): Prom
 export async function forceRestartService(ctx: AppContext, serviceId: string): Promise<void> {
   // Validate existence up front so a bad id fails before we break the lock.
   getService(ctx, serviceId);
+  if (ctx.activeDeploys.has(serviceId)) {
+    throw new Error("Deployment is already in progress. Wait for it to finish before force restarting.");
+  }
   if (ctx.actionLocks.delete(serviceId)) {
     insertLog(ctx, serviceId, "warn", "Force restart cleared a stuck action lock.");
   }
@@ -1086,9 +1161,110 @@ async function listLiveAdoptableContainers(ctx: AppContext): Promise<Set<string>
   return live;
 }
 
+/**
+ * On boot, re-assert that every *managed* database container carries the
+ * `unless-stopped` restart policy. Managed DBs are created durable, but a
+ * policy can drift (older rows, a manual `docker update`, an adopted external
+ * container). Re-asserting it here means the Docker daemon brings these DBs
+ * back automatically after a host/daemon restart — the same guarantee services
+ * get — so an app never boots to a dead database again. We only fix the policy,
+ * never start a stopped container: that respects a database a user deliberately
+ * stopped, and ensureLinkedDatabaseRunning starts it on demand when its service
+ * next launches. Returns the set of container ids/names it handled so the
+ * broader self-heal sweep can skip them.
+ */
+async function reconcileManagedDatabasesOnBoot(ctx: AppContext): Promise<Set<string>> {
+  const managedKeys = new Set<string>();
+  let rows: Array<{ id: string }>;
+  try {
+    rows = ctx.db.prepare("SELECT id FROM databases").all() as Array<{ id: string }>;
+  } catch {
+    return managedKeys; // databases table absent (older schema) — nothing to reconcile.
+  }
+  for (const { id } of rows) {
+    const db = getDatabase(ctx, id);
+    if (!db) continue;
+    const name = containerNameForDatabase(db);
+    if (db.container_id) managedKeys.add(db.container_id);
+    if (name) managedKeys.add(name);
+    try {
+      const container = ctx.docker.getContainer(db.container_id || name);
+      const info = await container.inspect();
+      const policy = info.HostConfig?.RestartPolicy?.Name ?? "no";
+      if (policy !== "unless-stopped") {
+        await container.update({ RestartPolicy: { Name: "unless-stopped" } } as any);
+        ctx.app.log.info({ databaseId: id }, `Reset restart policy to unless-stopped for managed database "${db.name}".`);
+      }
+    } catch {
+      // Container missing or Docker unavailable — surfaced via the database health UI.
+    }
+  }
+  return managedKeys;
+}
+
+// Container images that are databases worth keeping alive. Matched against the
+// image tag reported by `docker ps`, so an app image that merely depends on a
+// DB won't match.
+const DATABASE_IMAGE_PATTERN = /(?:^|\/)(?:postgres|postgis|pgvector|mysql|mariadb|mongo|redis|valkey)\b/i;
+
+/**
+ * On boot, self-heal *any* database container on the host — including ones
+ * survhub never created (a hand-rolled `docker run`, a stray compose DB). These
+ * are exactly the containers that bite us: created without a restart policy
+ * they stay down after a host/daemon restart, and the app boots straight into
+ * "can't reach database" errors — what happened to leader-db on :5433. For each
+ * such container we:
+ *   - set `unless-stopped` if it lacks a durable policy, so Docker brings it
+ *     back on its own next time;
+ *   - start it now *only if* it was down because it had no policy. A DB that is
+ *     stopped but already `unless-stopped` was stopped on purpose (Docker
+ *     honoured that across the reboot), so we leave it alone.
+ * Managed DBs are handled precisely by reconcileManagedDatabasesOnBoot and
+ * skipped here; Supabase's own stack is left to the Supabase CLI.
+ */
+async function selfHealDatabaseContainersOnBoot(ctx: AppContext, managedKeys: Set<string>): Promise<void> {
+  let containers: Array<{ Id?: string; Names?: string[]; Image?: string }>;
+  try {
+    containers = (await ctx.docker.listContainers({ all: true })) as typeof containers;
+  } catch {
+    return; // Docker unreachable — nothing to heal.
+  }
+  for (const c of containers) {
+    if (!DATABASE_IMAGE_PATTERN.test(c.Image ?? "")) continue;
+    const name = (c.Names ?? [])[0]?.replace(/^\//, "") ?? "";
+    if (managedKeys.has(c.Id ?? "") || managedKeys.has(name)) continue; // handled precisely above
+    if (/^supabase[_-]/i.test(name)) continue; // owned by the Supabase CLI / resource layer
+    try {
+      const container = ctx.docker.getContainer(c.Id ?? name);
+      const info = await container.inspect();
+      const notDurable = (info.HostConfig?.RestartPolicy?.Name || "no") !== "unless-stopped";
+      const running = info.State?.Status === "running";
+      if (notDurable) {
+        await container.update({ RestartPolicy: { Name: "unless-stopped" } } as any);
+        ctx.app.log.info({ container: name }, `Self-heal: set restart policy unless-stopped on database container "${name}".`);
+      }
+      if (!running && notDurable) {
+        await container.start();
+        ctx.app.log.info(
+          { container: name },
+          `Self-heal: started database container "${name}" that had been left without a restart policy.`
+        );
+      }
+    } catch {
+      // Container vanished mid-scan or Docker refused the update — best effort.
+    }
+  }
+}
+
 export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void> {
   // Clear stale tunnel URLs from any previous session
   ctx.db.prepare("UPDATE services SET tunnel_url = NULL WHERE tunnel_url IS NOT NULL").run();
+
+  // Make sure databases survive future restarts on their own: managed DBs
+  // precisely, then any other DB container on the host (e.g. a hand-rolled
+  // `docker run`) via the self-heal sweep.
+  const managedDbKeys = await reconcileManagedDatabasesOnBoot(ctx);
+  await selfHealDatabaseContainersOnBoot(ctx, managedDbKeys);
 
   const adopted = await listLiveAdoptableContainers(ctx);
 

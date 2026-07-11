@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   detectNodeLaunchTarget,
   findDockerfile,
+  localDockerImageTag,
   nodeInstallCommands,
   nodeVersionWarning,
   resolveDockerFallbackBuildType,
@@ -168,6 +169,11 @@ test("nodeInstallCommands: clean dir → a single install, no ci", () => {
   } finally {
     fs.rmSync(clean, { recursive: true, force: true });
   }
+});
+
+test("localDockerImageTag: trims nanoid punctuation so Docker accepts the image reference", () => {
+  assert.equal(localDockerImageTag("IObCkWUnevOxg4akqbVX-"), "survhub-build-iobckwunevoxg4akqbvx:latest");
+  assert.equal(localDockerImageTag("___"), "survhub-build-service:latest");
 });
 
 test("nodeVersionWarning: flags a host/.nvmrc major mismatch, silent when matching", () => {

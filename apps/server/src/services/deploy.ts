@@ -147,6 +147,15 @@ export function nodeInstallCommands(pm: NodePackageManager, installCwd: string):
   return hasModules ? ["npm install", "npm rebuild"] : ["npm install"];
 }
 
+export function localDockerImageTag(serviceId: string): string {
+  const suffix =
+    serviceId
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "service";
+  return `survhub-build-${suffix}:latest`;
+}
+
 function nodeBuildCommand(pm: NodePackageManager): string {
   if (pm === "pnpm") return "pnpm run --if-present build";
   if (pm === "yarn") return "yarn run build";
@@ -1111,8 +1120,7 @@ export async function runBuildPipeline(
   } else if (buildType === "docker") {
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
-    const imageSafeServiceId = serviceId.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
-    const imageTag = `survhub-build-${imageSafeServiceId}:latest`;
+    const imageTag = localDockerImageTag(serviceId);
     const dockerfileArg = dockerfile ? ` -f ${JSON.stringify(dockerfile)}` : "";
     const buildCommand = `docker build${dockerfileArg} -t ${imageTag} .`;
     if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, `\n$ ${buildCommand}\n`, "stdout");
@@ -1189,7 +1197,20 @@ export function deployFromGit(
   // poller tick, a webhook, and a manual redeploy can't run concurrent git
   // pulls / installs in the same working tree and corrupt it. Throws
   // "Service action already in progress" if something else holds the lock.
-  return withLock(ctx, serviceId, () => deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger));
+  if (ctx.activeDeploys.has(serviceId)) throw new Error("Deployment is already in progress");
+  ctx.activeDeploys.add(serviceId);
+  return withLock(ctx, serviceId, () => deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger)).finally(
+    () => ctx.activeDeploys.delete(serviceId)
+  );
+}
+
+function redeployBuildType(ctx: AppContext, serviceId: string, detected: BuildType, projectPath: string): BuildType {
+  if (detected !== "docker") return detected;
+  const service = ctx.db.prepare("SELECT type, command FROM services WHERE id = ?").get(serviceId) as
+    | { type?: string | null; command?: string | null }
+    | undefined;
+  if (service?.type !== "process" || !String(service.command ?? "").trim()) return detected;
+  return resolveDockerFallbackBuildType(projectPath) ?? detected;
 }
 
 async function deployFromGitLocked(
@@ -1243,6 +1264,8 @@ async function deployFromGitLocked(
         .run(effectiveBranch, nowIso(), serviceId);
       ctx.db.prepare("UPDATE deployments SET branch = ? WHERE id = ?").run(effectiveBranch, deploymentId);
     }
+    await stopServiceIfRunning(ctx, serviceId);
+
     // Remove any persisted-upload symlinks from the previous deploy so the git
     // checkout/reset below can restore tracked files cleanly instead of choking
     // on a symlink pointing into the data volume. Re-established after the reset.
@@ -1295,7 +1318,15 @@ async function deployFromGitLocked(
         }
       }
     }
-    const buildType = resolveBuildType(targetPath);
+    const detectedBuildType = resolveBuildType(targetPath);
+    const buildType = redeployBuildType(ctx, serviceId, detectedBuildType, targetPath);
+    if (buildType !== detectedBuildType) {
+      const msg =
+        `Existing process service already has a run command; skipping Dockerfile on redeploy ` +
+        `and using the native ${buildType} pipeline.\n`;
+      buildLog += msg;
+      emitBuildLog(ctx, serviceId, deploymentId, msg);
+    }
     const preferredDockerfile =
       buildType === "docker"
         ? fs.existsSync(path.join(targetPath, "Dockerfile.frontend"))
@@ -1321,7 +1352,8 @@ async function deployFromGitLocked(
     const result = await runBuildPipeline(ctx, serviceId, targetPath, {
       deploymentId,
       nodeTarget,
-      pythonDir
+      pythonDir,
+      buildTypeOverride: buildType
     });
     status = result.status;
     buildLog += result.buildLog;
@@ -1458,7 +1490,6 @@ export async function applyPostDeployServiceState(
       updateServiceStatus(ctx, serviceId, "stopped");
     }
   } else {
-    updateServiceStatus(ctx, serviceId, "stopped");
     const log = deployment.build_log ?? "";
     const snippet = log.length > 2000 ? `${log.slice(0, 2000)}…` : log;
     insertLog(ctx, serviceId, "error", snippet ? `Deploy failed:\n${snippet}` : "Deploy failed.");
@@ -1469,6 +1500,17 @@ export async function applyPostDeployServiceState(
       body: snippet.slice(0, 400),
       serviceId
     });
+    if (ctx.runtimeProcesses.has(serviceId)) return;
+    if (options.startAfterDeploy) {
+      try {
+        insertLog(ctx, serviceId, "warn", "Deploy failed; attempting to keep the previous service running.");
+        await startService(ctx, serviceId);
+        return;
+      } catch (error) {
+        insertLog(ctx, serviceId, "error", `Could not restart service after failed deploy: ${serializeError(error)}`);
+      }
+    }
+    updateServiceStatus(ctx, serviceId, "stopped");
   }
 }
 

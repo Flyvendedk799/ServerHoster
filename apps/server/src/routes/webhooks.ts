@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
+import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.js";
 import { parseRepoFullName } from "../services/github.js";
 import { writeAuditLog } from "../services/audit.js";
 
@@ -208,7 +208,6 @@ export function registerWebhookRoutes(ctx: AppContext): void {
       Promise.allSettled(
         matchedServices.map(async (service) => {
           try {
-            await stopServiceIfRunning(ctx, service.id);
             const deployment = await deployFromGit(
               ctx,
               service.id,

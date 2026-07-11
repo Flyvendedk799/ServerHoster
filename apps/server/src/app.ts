@@ -113,6 +113,7 @@ export async function buildApp(): Promise<AppContext> {
     terminalSessions: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
+    activeDeploys: new Set(),
     manuallyStopped: new Set(),
     config,
     shutdownTasks: []
@@ -187,7 +188,14 @@ export async function buildApp(): Promise<AppContext> {
     origin: corsOrigin,
     credentials: true
   });
-  await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+  // No blanket rate limit. This is a self-hosted, single-operator control
+  // plane — throttling normal use (clicking start/stop/restart while the UI
+  // polls status + logs) just rate-limits the owner against their own server.
+  // `global: false` keeps the plugin available so the deliberate brute-force
+  // guards on /auth/login, /auth/bootstrap, /admin/reset-admin and the GitHub
+  // webhook (their own per-route `config.rateLimit`) still apply — those
+  // protect against external attackers, not the operator.
+  await app.register(rateLimit, { global: false });
 
   // Cookie-bearing flows (none today, but session migration could add them)
   // should respect production-safe defaults pulled from config.secureCookies
@@ -209,6 +217,7 @@ export async function buildApp(): Promise<AppContext> {
     terminalSessions: new Map(),
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
+    activeDeploys: new Set(),
     manuallyStopped: new Set(),
     config,
     shutdownTasks: []

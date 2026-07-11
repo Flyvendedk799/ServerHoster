@@ -3,8 +3,7 @@ import type { AppContext } from "../types.js";
 import {
   applyPostDeployServiceState,
   deployFromGit,
-  rollbackDeployment,
-  stopServiceIfRunning
+  rollbackDeployment
 } from "../services/deploy.js";
 import { getGithubSyncStatus, getGithubSyncStatuses } from "../services/poller.js";
 
@@ -29,7 +28,6 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
 
     if (!repoUrl) throw new Error("repoUrl is required, and service has no github_repo_url");
 
-    await stopServiceIfRunning(ctx, p.serviceId);
     const deployment = await deployFromGit(ctx, p.serviceId, repoUrl, branch, "manual");
     await applyPostDeployServiceState(ctx, p.serviceId, deployment, { startAfterDeploy: true });
     return deployment;
@@ -53,7 +51,6 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
       .get(id) as { github_repo_url?: string; github_branch?: string } | undefined;
     if (!service?.github_repo_url) throw new Error("Service has no github_repo_url — cannot redeploy");
     const branch = service.github_branch || "main";
-    await stopServiceIfRunning(ctx, id);
     const deployment = await deployFromGit(ctx, id, service.github_repo_url, branch, "manual");
     await applyPostDeployServiceState(ctx, id, deployment, { startAfterDeploy: true });
     return deployment;

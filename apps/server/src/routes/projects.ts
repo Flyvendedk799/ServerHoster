@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { nowIso, serializeError } from "../lib/core.js";
 import { restartService, startService, stopService } from "../services/runtime.js";
-import { deployFromGit, applyPostDeployServiceState, stopServiceIfRunning } from "../services/deploy.js";
+import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.js";
 import { reconcileGenericAppProjects } from "../services/projects.js";
 import { removeDatabase, type DatabaseRow } from "../services/databases.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../security.js";
@@ -164,7 +164,6 @@ export function registerProjectRoutes(ctx: AppContext): void {
     const results: Array<{ serviceId: string; ok: boolean; status?: string; error?: string }> = [];
     for (const r of rows) {
       try {
-        await stopServiceIfRunning(ctx, r.id);
         const deployment = await deployFromGit(
           ctx,
           r.id,

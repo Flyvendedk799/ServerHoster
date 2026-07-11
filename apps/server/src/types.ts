@@ -45,6 +45,7 @@ export type AppContext = {
   terminalSessions: Map<string, TerminalRuntime>;
   runtimeProcesses: Map<string, RuntimeProcess>;
   actionLocks: Set<string>;
+  activeDeploys: Set<string>;
   manuallyStopped: Set<string>;
   config: AppConfig;
   shutdownTasks: Array<() => Promise<void> | void>;
