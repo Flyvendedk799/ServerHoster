@@ -8,6 +8,7 @@ import type { AppContext } from "../types.js";
 import {
   nowIso,
   parsePortMapping,
+  healthcheckPathFromCompose,
   findFreePort,
   findStaticEntry,
   assertPortAvailable,
@@ -16,6 +17,7 @@ import {
   insertLog,
   serializeError
 } from "../lib/core.js";
+import { runHostPreflight } from "../services/hostRequirements.js";
 import { refreshLoginIngress, isCloudflareConnected } from "../services/cloudflare.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security.js";
 import {
@@ -581,6 +583,26 @@ export function registerServiceRoutes(ctx: AppContext): void {
   ctx.app.get("/services/:id/env-requirements", async (req) => {
     const { id } = req.params as { id: string };
     return scanServiceEnvRequirements(ctx, id);
+  });
+
+  /**
+   * What this service needs from the HOST that isn't there. Process services run
+   * directly on the box, so a missing runtime otherwise surfaces as an opaque
+   * ENOENT mid-build; this names each gap and the command that closes it.
+   * Safe to poll — it only shells out to version/probe commands.
+   */
+  ctx.app.get("/services/:id/preflight", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const service = ctx.db.prepare("SELECT working_dir FROM services WHERE id = ?").get(id) as
+      | { working_dir?: string }
+      | undefined;
+    if (!service) return reply.code(404).send({ error: "Service not found" });
+    const root = service.working_dir || path.join(ctx.config.projectsDir, id);
+    if (!fs.existsSync(root)) {
+      // Nothing cloned yet — no requirements can be derived, which is not an error.
+      return { ok: true, missingRequired: [], results: [], reason: "not_deployed" };
+    }
+    return runHostPreflight(root);
   });
 
   ctx.app.post("/services/scan-local-project", async (req) => {
@@ -1288,15 +1310,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
         })
         .filter((v): v is string => Boolean(v));
 
-      const healthcheckPath =
-        typeof (definition.healthcheck as Record<string, unknown> | undefined)?.test === "string" ? "" : "";
+      const healthcheckPath = healthcheckPathFromCompose(definition.healthcheck);
 
       if (existing) {
         ctx.db
           .prepare(
             `UPDATE services SET
               name = ?, type = ?, command = ?, working_dir = ?, docker_image = ?, port = ?,
-              depends_on = ?, compose_service_name = ?, compose_file_hash = ?, updated_at = ?
+              depends_on = ?, compose_service_name = ?, compose_file_hash = ?,
+              healthcheck_path = ?, updated_at = ?
              WHERE id = ?`
           )
           .run(
@@ -1309,6 +1331,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
             JSON.stringify(depIds),
             serviceName,
             composeHash,
+            healthcheckPath,
             now,
             id
           );

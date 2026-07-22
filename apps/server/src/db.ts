@@ -489,7 +489,17 @@ const migrations = [
     created_at TEXT NOT NULL,
     PRIMARY KEY(group_id, service_id)
   )`,
-  "CREATE INDEX IF NOT EXISTS idx_service_group_members_service ON service_group_members(service_id)"
+  "CREATE INDEX IF NOT EXISTS idx_service_group_members_service ON service_group_members(service_id)",
+  // Path-prefix routing: one domain can now fan out to several services, e.g.
+  // "/" -> the web frontend and "/v1" -> its API, on a single origin (no CORS,
+  // no second hostname). Existing rows default to "/" and keep behaving exactly
+  // as before. The old domain-unique index has to go — it would reject the
+  // second route for the same host — so it is replaced by (domain, path_prefix).
+  // Ordering matters: the earlier `idx_proxy_routes_domain` create statement
+  // re-runs on every boot, so this DROP must come after it in the array.
+  "ALTER TABLE proxy_routes ADD COLUMN path_prefix TEXT NOT NULL DEFAULT '/'",
+  "DROP INDEX IF EXISTS idx_proxy_routes_domain",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_routes_domain_path ON proxy_routes(domain, path_prefix)"
 ];
 
 for (const statement of migrations) {

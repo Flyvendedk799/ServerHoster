@@ -70,7 +70,12 @@ export const DATABASE_DATA_PATH: Record<DatabaseRow["engine"], string> = {
 };
 
 const DATABASE_IMAGE: Record<DatabaseRow["engine"], string> = {
-  postgres: "postgres:16",
+  // pgvector/pgvector:pg16 IS postgres:16 with the `vector` extension available.
+  // Plain postgres:16 cannot run `CREATE EXTENSION vector`, which silently breaks
+  // any deployed app whose migrations use pgvector (embeddings / semantic search)
+  // — the migration fails and the service never boots. Superset image, same
+  // Postgres, so this is strictly better as a default.
+  postgres: "pgvector/pgvector:pg16",
   mysql: "mysql:8",
   redis: "redis:7",
   mongo: "mongo:8"

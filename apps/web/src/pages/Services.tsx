@@ -43,6 +43,7 @@ import {
 } from "../lib/resources";
 import { ResourceProvisionModal } from "../components/ResourceProvisionModal";
 import { InfoHint } from "../components/ui/InfoHint";
+import { HostPreflightAlert } from "../components/HostPreflightAlert";
 import { ServiceSettingsModal } from "../components/ServiceSettingsModal";
 import { ServiceSecretModal } from "../components/ServiceSecretModal";
 import { GitHubDeployModal } from "../components/GitHubDeployModal";
@@ -2823,6 +2824,8 @@ export function ServicesPage() {
                                           </div>
                                         );
                                       })()}
+
+                                      <HostPreflightAlert serviceId={service.id} />
 
                                       {(() => {
                                         const launch = launchPanelState(op, service.status);
