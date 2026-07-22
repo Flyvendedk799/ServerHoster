@@ -33,6 +33,72 @@ export function parsePortMapping(portValue: unknown): number | null {
   return Number.isFinite(hostPort) ? hostPort : null;
 }
 
+/** Normalize a proxy route prefix to a leading-slash, no-trailing-slash form. */
+export function normalizeRoutePrefix(prefix: unknown): string {
+  if (typeof prefix !== "string") return "/";
+  const trimmed = prefix.trim();
+  if (!trimmed || trimmed === "/") return "/";
+  const withLead = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLead.replace(/\/+$/, "") || "/";
+}
+
+/**
+ * Pick the proxy route whose path prefix best matches a request path, longest
+ * prefix winning, so `/v1` beats a `/` catch-all for `/v1/runs/123`.
+ *
+ * Matching is boundary-aware on purpose: a `/v1` route must claim `/v1` and
+ * `/v1/runs` but NOT `/v1beta`. A naive `startsWith` (or SQL `LIKE prefix||'%'`)
+ * would hand `/v1beta` to the wrong service.
+ */
+export function matchProxyRoute<T extends { path_prefix?: string | null }>(
+  routes: readonly T[],
+  requestPath: string
+): T | null {
+  let best: T | null = null;
+  let bestLength = -1;
+  for (const route of routes) {
+    const prefix = normalizeRoutePrefix(route.path_prefix);
+    const matches =
+      prefix === "/" || requestPath === prefix || requestPath.startsWith(`${prefix}/`);
+    if (!matches) continue;
+    if (prefix.length > bestLength) {
+      best = route;
+      bestLength = prefix.length;
+    }
+  }
+  return best;
+}
+
+/**
+ * Best-effort HTTP health path from a compose `healthcheck.test`.
+ *
+ * ServerHoster polls `healthcheck_path` over HTTP, so only URL-shaped checks
+ * carry across the import: `["CMD", "curl", "-f", "http://localhost/health"]`
+ * yields "/health". Command-style probes with no URL (`pg_isready -U app`,
+ * `redis-cli ping`) have no HTTP path and correctly yield "" — the service just
+ * gets no HTTP healthcheck rather than a bogus one.
+ */
+export function healthcheckPathFromCompose(healthcheck: unknown): string {
+  if (!healthcheck || typeof healthcheck !== "object") return "";
+  const test = (healthcheck as { test?: unknown }).test;
+  const parts = Array.isArray(test)
+    ? test.map((value) => String(value))
+    : typeof test === "string"
+      ? [test]
+      : [];
+  for (const part of parts) {
+    const match = part.match(/https?:\/\/[^\s"'`]+/);
+    if (!match) continue;
+    try {
+      // Strip a trailing shell artefact (e.g. `http://x/health"` inside CMD-SHELL).
+      return new URL(match[0].replace(/[),;]+$/, "")).pathname || "/";
+    } catch {
+      // Not a parseable URL — keep scanning the remaining parts.
+    }
+  }
+  return "";
+}
+
 export function broadcast(ctx: AppContext, event: unknown): void {
   const payload = JSON.stringify(event);
   for (const client of ctx.wsSubscribers) {

@@ -10,6 +10,7 @@ import {
   stopAllTerminalSessions
 } from "./services/terminals.js";
 import { publicResourceRouteForRequest } from "./services/resources/publicExposure.js";
+import { matchProxyRoute } from "./lib/core.js";
 
 const ctx = await buildApp();
 const server = await ctx.app.listen({ port: ctx.config.apiPort, host: ctx.config.host });
@@ -81,34 +82,70 @@ wss.on("connection", (ws: WebSocket, req) => {
 // Domain-based reverse proxy on port 80 (configurable via SURVHUB_PROXY_PORT).
 // Quick tunnels bypass this entirely; it's only needed for named-tunnel domain routing.
 const domainProxy = httpProxy.createProxyServer({});
-const port80 = http.createServer((req, res) => {
-  const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
-  const requestPath = (req.url ?? "/").split("?")[0] || "/";
+
+const hostOf = (raw: string | undefined): string => (raw ?? "").split(":")[0].toLowerCase();
+const pathOf = (raw: string | undefined): string => (raw ?? "/").split("?")[0] || "/";
+
+/**
+ * Resolve the upstream port for a request, in precedence order: public resource
+ * routes, then the operator's own proxy_routes (longest path prefix wins), then
+ * SaaS tenant custom hostnames.
+ *
+ * Shared by the HTTP handler and the WebSocket upgrade handler below so both
+ * route identically — a split-brain there would send a socket somewhere its
+ * own HTTP requests never went.
+ */
+function resolveProxyTargetPort(host: string, requestPath: string): number | null {
   const publicResourceRoute = publicResourceRouteForRequest(ctx, host, requestPath);
-  let route: { target_port?: number } | undefined = publicResourceRoute
-    ? { target_port: publicResourceRoute.targetPort }
-    : undefined;
-  route ??= ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
-    | { target_port?: number }
-    | undefined;
-  if (!route?.target_port) {
-    // SaaS tenant custom hostnames route to their owning service's port
-    // (or an explicit per-route target port).
-    route = ctx.db
-      .prepare(
-        "SELECT COALESCE(sd.target_port, s.port) AS target_port FROM saas_domains sd JOIN services s ON s.id = sd.service_id WHERE sd.hostname = ?"
-      )
-      .get(host) as { target_port?: number } | undefined;
-  }
-  if (!route?.target_port) {
+  if (publicResourceRoute?.targetPort) return publicResourceRoute.targetPort;
+
+  // Several routes may share a domain (e.g. "/" -> web, "/v1" -> api); the
+  // longest matching prefix wins.
+  const domainRoutes = ctx.db
+    .prepare("SELECT target_port, path_prefix FROM proxy_routes WHERE domain = ?")
+    .all(host) as Array<{ target_port?: number; path_prefix?: string | null }>;
+  const matched = matchProxyRoute(domainRoutes, requestPath);
+  if (matched?.target_port) return matched.target_port;
+
+  // SaaS tenant custom hostnames route to their owning service's port
+  // (or an explicit per-route target port).
+  const saasRoute = ctx.db
+    .prepare(
+      "SELECT COALESCE(sd.target_port, s.port) AS target_port FROM saas_domains sd JOIN services s ON s.id = sd.service_id WHERE sd.hostname = ?"
+    )
+    .get(host) as { target_port?: number } | undefined;
+  return saasRoute?.target_port ?? null;
+}
+
+const port80 = http.createServer((req, res) => {
+  const targetPort = resolveProxyTargetPort(hostOf(req.headers.host), pathOf(req.url));
+  if (!targetPort) {
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("No service mapped to this domain\n");
     return;
   }
-  domainProxy.web(req, res, { target: `http://127.0.0.1:${route.target_port}` }, (err) => {
+  domainProxy.web(req, res, { target: `http://127.0.0.1:${targetPort}` }, (err) => {
     if (!res.headersSent) res.writeHead(502);
     res.end(String((err as Error).message));
   });
+});
+
+// WebSocket upgrades need proxying explicitly — http-proxy's .web() does not
+// handle them. Without this, any app behind a domain that uses WebSockets (live
+// collaboration, dev HMR, log streams) fails to connect with no clear cause,
+// even though its ordinary HTTP requests route fine.
+port80.on("upgrade", (req, socket, head) => {
+  // An upgrade socket has no HTTP response to fall back on: an unhandled error
+  // here would take down the proxy process, so failures just close the socket.
+  socket.on("error", () => socket.destroy());
+  const targetPort = resolveProxyTargetPort(hostOf(req.headers.host), pathOf(req.url));
+  if (!targetPort) {
+    socket.destroy();
+    return;
+  }
+  domainProxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` }, () =>
+    socket.destroy()
+  );
 });
 try {
   await new Promise<void>((resolve, reject) => {

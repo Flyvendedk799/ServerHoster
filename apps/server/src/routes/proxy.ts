@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { nowIso } from "../lib/core.js";
+import { nowIso, matchProxyRoute, normalizeRoutePrefix } from "../lib/core.js";
 import { activeChallenges } from "../services/ssl.js";
 import { recordInboundRequest } from "../services/requestInspector.js";
 import { publicResourceRouteForRequest } from "../services/resources/publicExposure.js";
@@ -9,7 +9,10 @@ import { publicResourceRouteForRequest } from "../services/resources/publicExpos
 const proxySchema = z.object({
   serviceId: z.string(),
   domain: z.string().min(1),
-  targetPort: z.number().int()
+  targetPort: z.number().int(),
+  /** Path prefix this route claims, e.g. "/v1". Defaults to "/" (whole domain),
+   *  which is the pre-path-routing behaviour. */
+  pathPrefix: z.string().optional()
 });
 
 export function registerProxyRoutes(ctx: AppContext): void {
@@ -26,9 +29,16 @@ export function registerProxyRoutes(ctx: AppContext): void {
     const publicResourceRoute = publicResourceRouteForRequest(ctx, host, requestPath);
     const route = publicResourceRoute
       ? { service_id: publicResourceRoute.serviceId, target_port: publicResourceRoute.targetPort }
-      : (ctx.db.prepare("SELECT service_id, target_port FROM proxy_routes WHERE domain = ?").get(host) as
-          | { service_id?: string; target_port?: number }
-          | undefined);
+      : (matchProxyRoute(
+          ctx.db
+            .prepare("SELECT service_id, target_port, path_prefix FROM proxy_routes WHERE domain = ?")
+            .all(host) as Array<{
+            service_id?: string;
+            target_port?: number;
+            path_prefix?: string | null;
+          }>,
+          requestPath
+        ) ?? undefined);
     if (!route?.target_port) return;
     reply.hijack();
 
@@ -93,13 +103,20 @@ export function registerProxyRoutes(ctx: AppContext): void {
   ctx.app.post("/proxy/routes", async (req) => {
     const p = proxySchema.parse(req.body);
     const domain = p.domain.toLowerCase();
-    const existingDomain = ctx.db.prepare("SELECT id FROM proxy_routes WHERE domain = ?").get(domain);
-    if (existingDomain) {
-      throw new Error(`Proxy domain already exists: ${domain}`);
+    const pathPrefix = normalizeRoutePrefix(p.pathPrefix);
+    // Uniqueness is (domain, path_prefix): one domain may fan out to several
+    // services by path, e.g. "/" -> web and "/v1" -> api.
+    const existingRoute = ctx.db
+      .prepare("SELECT id FROM proxy_routes WHERE domain = ? AND path_prefix = ?")
+      .get(domain, pathPrefix);
+    if (existingRoute) {
+      throw new Error(`Proxy route already exists: ${domain}${pathPrefix === "/" ? "" : pathPrefix}`);
     }
+    // A port may back several prefixes on the SAME domain, but reusing it under
+    // a different domain is still a misconfiguration.
     const existingPort = ctx.db
-      .prepare("SELECT id, domain FROM proxy_routes WHERE target_port = ?")
-      .get(p.targetPort) as { id: string; domain: string } | undefined;
+      .prepare("SELECT id, domain FROM proxy_routes WHERE target_port = ? AND domain != ?")
+      .get(p.targetPort, domain) as { id: string; domain: string } | undefined;
     if (existingPort) {
       throw new Error(`Target port already mapped by ${existingPort.domain}`);
     }
@@ -108,13 +125,14 @@ export function registerProxyRoutes(ctx: AppContext): void {
       service_id: p.serviceId,
       domain,
       target_port: p.targetPort,
+      path_prefix: pathPrefix,
       created_at: nowIso()
     };
     ctx.db
       .prepare(
-        "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO proxy_routes (id, service_id, domain, target_port, path_prefix, created_at) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .run(row.id, row.service_id, row.domain, row.target_port, row.created_at);
+      .run(row.id, row.service_id, row.domain, row.target_port, row.path_prefix, row.created_at);
     return row;
   });
 
@@ -126,9 +144,12 @@ export function registerProxyRoutes(ctx: AppContext): void {
 
   ctx.app.all("/proxy/*", async (req, reply) => {
     const host = (req.headers.host ?? "").split(":")[0].toLowerCase();
-    const route = ctx.db.prepare("SELECT target_port FROM proxy_routes WHERE domain = ?").get(host) as
-      | { target_port?: number }
-      | undefined;
+    const route = matchProxyRoute(
+      ctx.db
+        .prepare("SELECT target_port, path_prefix FROM proxy_routes WHERE domain = ?")
+        .all(host) as Array<{ target_port?: number; path_prefix?: string | null }>,
+      (req.raw.url ?? "/").split("?")[0] || "/"
+    );
     if (!route?.target_port) return reply.code(404).send({ error: "No proxy route for host" });
 
     await new Promise<void>((resolve, reject) => {

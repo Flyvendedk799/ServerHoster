@@ -18,6 +18,7 @@ import type { AppContext, BuildType } from "../types.js";
 import { getServiceEnvWithLinks, startService, stopService, withLock } from "./runtime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 import { createNotification } from "./notifications.js";
+import { runHostPreflight, type HostRequirementResult } from "./hostRequirements.js";
 import { transition, markFailed } from "./deployStateMachine.js";
 import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
 import { ensurePersistedPaths, unlinkPersistedSymlinks } from "./persistence.js";
@@ -933,6 +934,33 @@ export async function runBuildPipeline(
   };
 
   if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, buildLog, "stdout");
+
+  // Host preflight. Process services run on the host, so a missing runtime shows
+  // up as an opaque ENOENT halfway through a build. Naming what's absent (and
+  // how to install it) up front turns that into a one-line fix. Advisory only —
+  // the build still proceeds, because detection is heuristic and we would rather
+  // let a working deploy through than block it on a bad guess.
+  const preflight = await runHostPreflight(projectPath);
+  if (preflight.missingRequired.length > 0) {
+    const describe = (entry: HostRequirementResult): string =>
+      `  ✗ ${entry.label}${entry.reason ? ` — ${entry.reason}` : ""}` +
+      (entry.install ? `\n      install: ${entry.install}` : "");
+    const summary =
+      `\nHost requirements missing (${preflight.missingRequired.length}):\n` +
+      `${preflight.missingRequired.map(describe).join("\n")}\n` +
+      `The build will continue, but the service is likely to fail to start until these are installed.\n`;
+    buildLog += summary;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, summary, "stderr");
+    createNotification(ctx, {
+      kind: "deployment",
+      severity: "warning",
+      title: `Missing host requirements: ${preflight.missingRequired.map((entry) => entry.label).join(", ")}`,
+      body: preflight.missingRequired
+        .map((entry) => `${entry.label}${entry.reason ? ` (${entry.reason})` : ""}${entry.install ? `\n$ ${entry.install}` : ""}`)
+        .join("\n\n"),
+      serviceId
+    });
+  }
 
   if (buildType === "node") {
     const rootPackageManager = detectNodePackageManager(projectPath);

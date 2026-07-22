@@ -5669,3 +5669,77 @@ a.list-row:hover .row-chevron,
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+/* Host preflight — missing host runtimes for process services (see
+   HostPreflightAlert.tsx). Only rendered when something is actually absent. */
+.host-preflight {
+  flex-direction: row;
+  margin-top: 10px;
+}
+
+.host-preflight-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.host-preflight-lead {
+  margin: 0 0 8px;
+  color: var(--t3);
+  font-size: 12.5px;
+}
+
+.host-preflight-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.host-preflight-name {
+  font-size: 12.5px;
+}
+
+.host-preflight-reason {
+  color: var(--t3);
+}
+
+.host-preflight-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--border-default);
+  color: var(--t3);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.host-preflight-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* The command must be able to scroll on its own — install one-liners are long
+   and would otherwise force the whole service card to scroll sideways. */
+.host-preflight-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r2, 6px);
+  background: var(--bg-code, rgba(0, 0, 0, 0.25));
+  font-size: 11.5px;
+}
+
+.host-preflight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
