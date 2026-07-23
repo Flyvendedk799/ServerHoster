@@ -46,6 +46,7 @@ import {
 } from "../supabaseCli.js";
 import { restartOrRedeployService } from "../restart.js";
 import { publicOriginForLinkedResource } from "../publicExposure.js";
+import { allocatePortOffset, applyPortOffsetToToml } from "../supabasePorts.js";
 
 /**
  * Supabase resource profile (Database-Tracker Phases 2+3).
@@ -281,6 +282,18 @@ function emitProvisionStep(ctx: AppContext, resourceId: string, step: string, me
   broadcast(ctx, { type: "resource_provisioning", resourceId, step, message });
 }
 
+/** Best-effort read of the app's existing Supabase URL (usually a hosted cloud
+ *  project) from the service .env, recorded before we rewire it to local. */
+function readEnvSupabaseUrl(workdir: string): string | null {
+  try {
+    const env = fs.readFileSync(path.join(workdir, ".env"), "utf8");
+    const match = env.match(/^\s*(?:VITE_|NEXT_PUBLIC_)?SUPABASE_URL\s*=\s*["']?([^"'\r\n]+)/m);
+    return match ? (match[1] ?? "").trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
 /** project_id from supabase/config.toml — keys the CLI's container labels/names. */
 function supabaseProjectIdFromConfig(workdir: string): string | null {
   try {
@@ -513,6 +526,40 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
         );
       }
     }
+
+    // 2b. Assign a unique host-port block BEFORE starting, so multiple Supabase
+    // stacks never collide on the CLI defaults (54321-54329) — the "port is
+    // already allocated" failure that otherwise strands an app on its cloud DB.
+    // The offset is stored on the resource, so a re-provision reuses the same
+    // ports instead of churning them.
+    const priorConfig = resourceConfig(resource);
+    const storedOffset =
+      typeof priorConfig.port_offset === "number" ? priorConfig.port_offset : undefined;
+    const portOffset = await allocatePortOffset(ctx, resource.id, storedOffset);
+    try {
+      const tomlBefore = fs.readFileSync(configToml, "utf8");
+      const tomlAfter = applyPortOffsetToToml(tomlBefore, portOffset);
+      if (tomlAfter !== tomlBefore) fs.writeFileSync(configToml, tomlAfter, "utf8");
+    } catch (error) {
+      throw new Error(`Could not assign Supabase host ports in config.toml: ${serializeError(error)}`);
+    }
+    // Record what the app pointed at BEFORE we rewire it (typically a hosted
+    // cloud project), so the UI can show "was: cloud → now: local" and the
+    // switch — and the fact that hosted data does not migrate — is legible.
+    const priorSupabaseUrl = readEnvSupabaseUrl(workdir);
+    updateResourceRuntimeState(ctx, resource.id, {
+      config: {
+        ...resourceConfig(resource),
+        port_offset: portOffset,
+        ...(priorSupabaseUrl ? { previous_supabase_url: priorSupabaseUrl } : {})
+      }
+    });
+    emitProvisionStep(
+      ctx,
+      resource.id,
+      "ports",
+      `Assigned host ports +${portOffset} (api ${54321 + portOffset}, db ${54322 + portOffset})`
+    );
 
     // 3. Start the local stack and capture its URLs/keys/ports.
     emitProvisionStep(ctx, resource.id, "start", "Starting local Supabase stack (supabase start)");
