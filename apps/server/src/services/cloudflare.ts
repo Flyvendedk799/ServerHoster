@@ -7,7 +7,7 @@ import { execSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
-import { broadcast, insertLog, nowIso } from "../lib/core.js";
+import { broadcast, insertLog, normalizeRoutePrefix, nowIso } from "../lib/core.js";
 import { deleteSetting, getSecretSetting, getSetting, setSetting } from "./settings.js";
 import { publicResourceIngressRoutes } from "./resources/publicExposure.js";
 
@@ -189,6 +189,23 @@ export function parseTunnelId(output: string): string | null {
 
 /** Build the cloudflared config.yml body for a set of (domain, port) ingress rules. */
 export type IngressRoute = { domain: string; port: number; path?: string };
+
+/**
+ * Convert a proxy_routes.path_prefix into a cloudflared ingress `path` regex, or
+ * undefined for a whole-domain ("/") route.
+ *
+ * cloudflared's `path` is a regex matched against the request path, so this must
+ * be boundary-aware: a "/v1" route has to claim "/v1" and "/v1/runs" but NOT
+ * "/v1beta" — the same semantics as the port-80 proxy's matchProxyRoute. A "/"
+ * prefix yields no path constraint (the generic host rule that catches
+ * everything else); buildIngressConfig already orders path rules before it.
+ */
+export function tunnelPathRegex(prefix: unknown): string | undefined {
+  const norm = normalizeRoutePrefix(prefix);
+  if (norm === "/") return undefined;
+  const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^${escaped}(/.*)?$`;
+}
 
 export function buildIngressConfig(tunnelId: string, credsPath: string, routes: IngressRoute[]): string {
   // cloudflared matches ingress rules FIRST-MATCH, so exact hostnames must
@@ -994,14 +1011,23 @@ export function ensureNamedTunnel(ctx: AppContext): { tunnelId: string; credsPat
  *     callers (e.g. a hosted app's edge functions) can reach the /saas API
  */
 export function collectIngressRoutes(ctx: AppContext): IngressRoute[] {
-  const routes = ctx.db
+  // path_prefix (added with the port-80 path-routing work) lets one domain fan
+  // out to several services by path — e.g. "/v1" → an API, "/" → its web UI — on
+  // a single tunnel hostname. Reading it here means the tunnel config is
+  // REGENERATED with those path rules on every rebind, so a path split survives
+  // binding/unbinding other services instead of being flattened to one route.
+  const rawRoutes = ctx.db
     .prepare(
-      `SELECT pr.domain AS domain, COALESCE(pr.target_port, s.port) AS port
+      `SELECT pr.domain AS domain, COALESCE(pr.target_port, s.port) AS port, pr.path_prefix AS path_prefix
        FROM proxy_routes pr
        JOIN services s ON s.id = pr.service_id
        WHERE pr.domain IS NOT NULL AND COALESCE(pr.target_port, s.port) IS NOT NULL`
     )
-    .all() as IngressRoute[];
+    .all() as Array<{ domain: string; port: number; path_prefix?: string | null }>;
+  const routes: IngressRoute[] = rawRoutes.map((r) => {
+    const path = tunnelPathRegex(r.path_prefix);
+    return path ? { domain: r.domain, port: r.port, path } : { domain: r.domain, port: r.port };
+  });
   for (const r of publicResourceIngressRoutes(ctx)) {
     routes.push({ domain: r.domain, path: r.path, port: r.port });
   }
