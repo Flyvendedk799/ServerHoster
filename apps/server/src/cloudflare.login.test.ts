@@ -14,8 +14,39 @@ import {
   isCloudflareConnected,
   parseRoutedFqdn,
   parseTunnelId,
-  reconcileLoginTunnelOnBoot
+  reconcileLoginTunnelOnBoot,
+  tunnelPathRegex
 } from "./services/cloudflare.js";
+
+test("tunnelPathRegex: '/' is a whole-domain route (no path constraint)", () => {
+  assert.equal(tunnelPathRegex("/"), undefined);
+  assert.equal(tunnelPathRegex(""), undefined);
+  assert.equal(tunnelPathRegex(undefined), undefined);
+});
+
+test("tunnelPathRegex: a prefix becomes a boundary-aware regex", () => {
+  assert.equal(tunnelPathRegex("/v1"), "^/v1(/.*)?$");
+  assert.equal(tunnelPathRegex("v1"), "^/v1(/.*)?$");
+  const re = new RegExp(tunnelPathRegex("/v1") as string);
+  assert.ok(re.test("/v1"));
+  assert.ok(re.test("/v1/runs/123"));
+  assert.ok(re.test("/v1/projects/x/collab")); // websocket path routes to the API
+  assert.ok(!re.test("/v1beta")); // must NOT capture a sibling prefix
+  assert.ok(!re.test("/dashboard"));
+});
+
+test("buildIngressConfig: path rule precedes the generic host rule for one domain", () => {
+  const cfg = buildIngressConfig("tid", "/creds.json", [
+    { domain: "playerzero.online", port: 3000 },
+    { domain: "playerzero.online", port: 3191, path: "^/v1(/.*)?$" }
+  ]);
+  const v1At = cfg.indexOf("http://localhost:3191");
+  const webAt = cfg.indexOf("http://localhost:3000");
+  // The /v1 → API rule must be emitted before the "/" → web rule (cloudflared is
+  // first-match), otherwise the generic rule swallows /v1.
+  assert.ok(v1At !== -1 && webAt !== -1 && v1At < webAt, cfg);
+  assert.ok(cfg.includes('path: "^/v1(/.*)?$"'), cfg);
+});
 
 test("parseRoutedFqdn: catches a wrong-zone bind (cloudflared appended the authorized zone)", () => {
   // The real bug: binding fastprice.dk with a cert scoped to mast3kmedia.dk.
