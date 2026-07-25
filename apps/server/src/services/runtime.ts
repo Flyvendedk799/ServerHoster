@@ -438,6 +438,20 @@ async function pgidOf(pid: number): Promise<number | null> {
 }
 
 /**
+ * True if a pid still carries the SURVHUB_SERVICE_ID environment marker we set
+ * for this serviceId: proof it belongs to this service, even when its process
+ * group was forgotten across a control-plane restart. Linux-only (/proc).
+ */
+async function processBelongsToService(pid: number, serviceId: string): Promise<boolean> {
+  try {
+    const environ = await fs.promises.readFile("/proc/" + pid + "/environ", "utf8");
+    return environ.split("\0").includes("SURVHUB_SERVICE_ID=" + serviceId);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Clear a port the force-restart path needs — but ONLY by killing a process that
  * belongs to THIS service's own process group (`ownPgid`). Killing whatever
  * happens to LISTEN on the port (the old behaviour) meant force-restarting
@@ -466,7 +480,7 @@ async function freeServicePort(
     .filter(Boolean)) {
     if (pid === process.pid) continue; // never kill ourselves
     const pgid = await pgidOf(pid);
-    if (ownPgid && pgid === ownPgid) {
+    if ((ownPgid && pgid === ownPgid) || (await processBelongsToService(pid, serviceId))) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {
@@ -588,6 +602,21 @@ async function startProcessService(
   // interfaces so the proxy/tunnel can reach them — without overriding an
   // explicit service-level HOST.
   const hostEnv = serviceEnvFromLinks.HOST ? {} : { HOST: "0.0.0.0" };
+  /*
+   * Reclaim the port from any leftover process that belongs to this service
+   * before binding. A detached child that outlived a control-plane restart
+   * would otherwise still hold the port and crash the new instance with
+   * EADDRINUSE (auto-restart then loops until max_restarts). Ownership is
+   * proven by pgid or the SURVHUB_SERVICE_ID marker, so other services are
+   * never touched.
+   */
+  if (service.port) {
+    const priorPgid =
+      (ctx.db.prepare("SELECT runtime_pgid FROM services WHERE id = ?").get(serviceId) as
+        | { runtime_pgid?: number | null }
+        | undefined)?.runtime_pgid ?? null;
+    await freeServicePort(ctx, serviceId, Number(service.port), priorPgid);
+  }
   const child = spawn(command, {
     cwd,
     // sanitizedHostEnv() omits the control-plane secrets (SURVHUB_SECRET_KEY et
