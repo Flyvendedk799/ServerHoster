@@ -76,8 +76,18 @@ function isPublicHostname(hostname: string): boolean {
   return host.includes(".");
 }
 
-function schemeForService(sslStatus: string | null): "http" | "https" {
-  return sslStatus === "cloudflare" || sslStatus === "secure" ? "https" : "http";
+/**
+ * Browser-facing scheme for a service exposed on a public domain. Public
+ * domains are TLS-terminated in every real deployment - Let's Encrypt
+ * ("secure"), Cloudflare ("cloudflare"), or a cert still settling
+ * ("provisioning") / erroring on ServerHoster's side ("error") while the edge
+ * (e.g. Cloudflare) still serves https. Emitting an http origin for a
+ * browser-facing URL on an https page triggers a mixed-content block, so
+ * default to https and downgrade to http only when TLS is explicitly absent
+ * (no cert issued / Cloudflare disabled -> "none", or unset).
+ */
+export function publicSchemeForSslStatus(sslStatus: string | null | undefined): "http" | "https" {
+  return !sslStatus || sslStatus === "none" ? "http" : "https";
 }
 
 function portForDescriptor(row: CandidateRow, descriptor: Descriptor): number | null {
@@ -131,7 +141,7 @@ function selectedPublicResourceTargets(ctx: AppContext): PublicResourceTarget[] 
       serviceId: row.service_id,
       resourceId: row.resource_id,
       domain: row.domain.toLowerCase(),
-      scheme: schemeForService(row.ssl_status),
+      scheme: publicSchemeForSslStatus(row.ssl_status),
       profile: row.profile,
       port
     });

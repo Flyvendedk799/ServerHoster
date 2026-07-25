@@ -1,3 +1,4 @@
+import { publicSchemeForSslStatus } from "./resources/publicExposure.js";
 import type { AppContext } from "../types.js";
 import {
   detectCloudflared,
@@ -84,7 +85,7 @@ function deriveMode(svc: ServiceRow, quickRunning: boolean): ExposureMode {
 function derivePublicUrl(svc: ServiceRow, mode: ExposureMode): string | null {
   if (mode === "quick-tunnel") return svc.tunnel_url;
   if (mode === "named-tunnel" && svc.domain) {
-    const scheme = svc.ssl_status === "secure" || svc.ssl_status === "cloudflare" ? "https" : "http";
+    const scheme = publicSchemeForSslStatus(svc.ssl_status);
     return `${scheme}://${svc.domain}`;
   }
   return null;
