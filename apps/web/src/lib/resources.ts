@@ -194,6 +194,23 @@ export function upsertServiceSecret(body: UpsertServiceSecretRequest): Promise<S
   });
 }
 
+export type BulkEnvImportResponse = {
+  ok: boolean;
+  created: number;
+  updated: number;
+  skipped: number;
+  total: number;
+  message: string;
+};
+
+/** Import a whole .env blob for a service in one request. */
+export function bulkUpsertServiceEnv(serviceId: string, content: string): Promise<BulkEnvImportResponse> {
+  return api<BulkEnvImportResponse>("/secrets/service/bulk", {
+    method: "POST",
+    body: JSON.stringify({ serviceId, content })
+  });
+}
+
 export function upsertSharedSecret(body: UpsertSharedSecretRequest): Promise<SecretMutationResponse> {
   return api<SecretMutationResponse>("/secrets/shared", {
     method: "POST",

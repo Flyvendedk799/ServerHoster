@@ -1428,14 +1428,19 @@ async function deployFromGitLocked(
         // `create_app()` exposed via gunicorn), so clobbering it on every git
         // auto-pull would break the service. Only fall back to the detected
         // command when none has been set yet (fresh service).
-        const existing = ctx.db.prepare("SELECT command FROM services WHERE id = ?").get(serviceId) as
-          | { command?: string }
+        const existing = ctx.db.prepare("SELECT command, working_dir FROM services WHERE id = ?").get(serviceId) as
+          | { command?: string; working_dir?: string }
           | undefined;
         const preservedCommand =
           existing?.command && existing.command.trim() ? existing.command : runtimeCommand;
+        // Preserve an explicitly-set working directory too (e.g. a monorepo's
+        // backend subdir), so a git auto-pull doesn't reset it to the detected
+        // launch target's directory.
+        const preservedWorkingDir =
+          existing?.working_dir && existing.working_dir.trim() ? existing.working_dir : runtimeWorkingDir;
         ctx.db
           .prepare("UPDATE services SET type = ?, command = ?, working_dir = ?, updated_at = ? WHERE id = ?")
-          .run(inferred.type, preservedCommand, runtimeWorkingDir, nowIso(), serviceId);
+          .run(inferred.type, preservedCommand, preservedWorkingDir, nowIso(), serviceId);
       }
       transition(ctx, deploymentId, "starting", { gitSha: commitHash });
     }

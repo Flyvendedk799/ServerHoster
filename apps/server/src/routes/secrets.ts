@@ -43,6 +43,39 @@ const sharedSecretSchema = z.object({
   value: z.string().min(1)
 });
 
+const bulkEnvSchema = z.object({
+  serviceId: z.string().min(1),
+  content: z.string().min(1)
+});
+
+/**
+ * Parse a raw `.env` blob into KEY=VALUE pairs. Ignores blank lines and
+ * `#` comments, strips an optional leading `export `, allows `=` inside the
+ * value, trims, and removes a single pair of surrounding quotes. Invalid env
+ * names are skipped (rather than failing the whole import).
+ */
+function parseDotenvBlob(text: string): Array<{ key: string; value: string }> {
+  const out: Array<{ key: string; value: string }> = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice(7).trim();
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    out.push({ key, value });
+  }
+  return out;
+}
+
 const promoteSchema = z.object({
   serviceEnvId: z.string().min(1),
   projectId: z.string().optional()
@@ -439,6 +472,52 @@ export function registerSecretRoutes(ctx: AppContext): void {
       affected_services: [serviceLink(service)],
       redeploy_required: true,
       message: "Secret saved. Redeploy or restart this service before the new value is live."
+    };
+  });
+
+  // Bulk import: paste a whole .env blob and upsert every KEY=VALUE at once.
+  // Reuses the same encrypt + upsert + platform-managed-key guard as the
+  // single-secret path above.
+  ctx.app.post("/secrets/service/bulk", async (req) => {
+    const body = bulkEnvSchema.parse(req.body);
+    const service = serviceById(ctx, body.serviceId);
+    const parsed = parseDotenvBlob(body.content);
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const apply = ctx.db.transaction((rows: Array<{ key: string; value: string }>) => {
+      for (const { key, value } of rows) {
+        const stored = encryptSecret(value, ctx.config.secretKey);
+        const existing = ctx.db
+          .prepare(
+            "SELECT id, COALESCE(system, 0) AS system FROM env_vars WHERE service_id = ? AND key = ? ORDER BY COALESCE(system, 0) DESC LIMIT 1"
+          )
+          .get(body.serviceId, key) as { id: string; system: number } | undefined;
+        if (existing?.system) {
+          skipped++;
+          continue;
+        }
+        if (existing) {
+          ctx.db.prepare("UPDATE env_vars SET value = ?, is_secret = 1 WHERE id = ?").run(stored, existing.id);
+          updated++;
+        } else {
+          ctx.db
+            .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, 1, 0)")
+            .run(nanoid(), body.serviceId, key, stored);
+          created++;
+        }
+      }
+    });
+    apply(parsed);
+    return {
+      ok: true,
+      created,
+      updated,
+      skipped,
+      total: parsed.length,
+      affected_services: [serviceLink(service)],
+      redeploy_required: true,
+      message: `Imported ${created + updated} env var(s)${skipped ? `, skipped ${skipped} platform-managed` : ""}. Redeploy or restart this service before they are live.`
     };
   });
 

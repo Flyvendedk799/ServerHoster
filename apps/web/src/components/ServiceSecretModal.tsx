@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { KeyRound, Loader2, RotateCw, Share2, Server } from "lucide-react";
+import { KeyRound, Loader2, RotateCw, Share2, Server, FileText } from "lucide-react";
 import { toast } from "../lib/toast";
 import { useModalA11y } from "../lib/useModalA11y";
 import {
   upsertServiceSecret,
   upsertSharedSecret,
+  bulkUpsertServiceEnv,
   type SecretMutationResponse,
   type SecretScope
 } from "../lib/resources";
@@ -22,10 +23,14 @@ type Props = {
   onSaved?: (result: SecretMutationResponse) => void;
 };
 
+type Mode = "single" | "bulk";
+
 export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved }: Props) {
+  const [mode, setMode] = useState<Mode>("single");
   const [scope, setScope] = useState<SecretScope>(service.project_id ? "shared" : "service");
   const [key, setKey] = useState(initialKey);
   const [value, setValue] = useState("");
+  const [bulk, setBulk] = useState("");
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   useModalA11y(dialogRef, { onClose, onSubmit: () => void save() });
@@ -40,6 +45,31 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
 
   async function save(event?: FormEvent): Promise<void> {
     event?.preventDefault();
+
+    if (mode === "bulk") {
+      if (!bulk.trim()) {
+        toast.error("Paste your .env contents first");
+        return;
+      }
+      setBusy(true);
+      try {
+        const result = await bulkUpsertServiceEnv(service.id, bulk);
+        toast.success(
+          `Imported ${result.created + result.updated} env var(s)` +
+            (result.skipped ? `, skipped ${result.skipped} platform-managed` : "")
+        );
+        toast.warning(result.message);
+        // Callers use onSaved only to refresh the list; the payload is ignored.
+        onSaved?.(result as unknown as SecretMutationResponse);
+        onClose();
+      } catch {
+        /* toasted */
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const trimmedKey = key.trim();
     if (!trimmedKey) {
       toast.error("Secret key is required");
@@ -117,55 +147,101 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
             </div>
 
             <label className="field">
-              <span>Scope</span>
+              <span>Mode</span>
               <div className="secret-scope-toggle">
                 <button
                   type="button"
-                  className={`ghost ${scope === "service" ? "active" : ""}`}
-                  onClick={() => setScope("service")}
+                  className={`ghost ${mode === "single" ? "active" : ""}`}
+                  onClick={() => setMode("single")}
                 >
-                  <Server size={14} />
-                  Service
+                  <KeyRound size={14} />
+                  Single
                 </button>
                 <button
                   type="button"
-                  className={`ghost ${scope === "shared" ? "active" : ""}`}
-                  disabled={sharedDisabled}
-                  title={sharedDisabled ? "This service has no project for shared secrets" : undefined}
-                  onClick={() => setScope("shared")}
+                  className={`ghost ${mode === "bulk" ? "active" : ""}`}
+                  onClick={() => setMode("bulk")}
                 >
-                  <Share2 size={14} />
-                  Shared
+                  <FileText size={14} />
+                  Paste .env
                 </button>
               </div>
             </label>
 
-            <label className="field">
-              <span>Key</span>
-              <input
-                value={key}
-                onChange={(event) => setKey(event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))}
-                placeholder="PLATFORM_API_KEY"
-                spellCheck={false}
-              />
-            </label>
+            {mode === "single" ? (
+              <>
+                <label className="field">
+                  <span>Scope</span>
+                  <div className="secret-scope-toggle">
+                    <button
+                      type="button"
+                      className={`ghost ${scope === "service" ? "active" : ""}`}
+                      onClick={() => setScope("service")}
+                    >
+                      <Server size={14} />
+                      Service
+                    </button>
+                    <button
+                      type="button"
+                      className={`ghost ${scope === "shared" ? "active" : ""}`}
+                      disabled={sharedDisabled}
+                      title={sharedDisabled ? "This service has no project for shared secrets" : undefined}
+                      onClick={() => setScope("shared")}
+                    >
+                      <Share2 size={14} />
+                      Shared
+                    </button>
+                  </div>
+                </label>
 
-            <label className="field">
-              <span>Value</span>
-              <input
-                type="password"
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder="Paste secret value"
-                autoComplete="off"
-              />
-            </label>
+                <label className="field">
+                  <span>Key</span>
+                  <input
+                    value={key}
+                    onChange={(event) => setKey(event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))}
+                    placeholder="PLATFORM_API_KEY"
+                    spellCheck={false}
+                  />
+                </label>
 
-            <p className="muted small" style={{ margin: 0 }}>
-              {scope === "shared"
-                ? "Shared secrets are available to every service in this project unless a service-level env var overrides them."
-                : "Service secrets only apply to this service and override shared project values with the same key."}
-            </p>
+                <label className="field">
+                  <span>Value</span>
+                  <input
+                    type="password"
+                    value={value}
+                    onChange={(event) => setValue(event.target.value)}
+                    placeholder="Paste secret value"
+                    autoComplete="off"
+                  />
+                </label>
+
+                <p className="muted small" style={{ margin: 0 }}>
+                  {scope === "shared"
+                    ? "Shared secrets are available to every service in this project unless a service-level env var overrides them."
+                    : "Service secrets only apply to this service and override shared project values with the same key."}
+                </p>
+              </>
+            ) : (
+              <>
+                <label className="field">
+                  <span>.env contents</span>
+                  <textarea
+                    className="bulk-env-input"
+                    value={bulk}
+                    onChange={(event) => setBulk(event.target.value)}
+                    placeholder={"KEY=value\nANOTHER_KEY=another value\n# comments and blank lines are ignored"}
+                    spellCheck={false}
+                    rows={10}
+                    autoComplete="off"
+                  />
+                </label>
+                <p className="muted small" style={{ margin: 0 }}>
+                  Paste a whole <code>.env</code> file — every <code>KEY=VALUE</code> line is imported as a
+                  service secret at once. Comments (<code>#</code>), blank lines, and surrounding quotes are
+                  handled. Existing keys are updated; ServerHoster-managed keys are skipped.
+                </p>
+              </>
+            )}
           </div>
 
           <footer className="modal-footer">
@@ -174,7 +250,7 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
             </button>
             <button type="submit" className="primary" disabled={busy}>
               {busy ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />}
-              Save Secret
+              {mode === "bulk" ? "Import .env" : "Save Secret"}
             </button>
           </footer>
         </form>
@@ -199,6 +275,13 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
             border-color: var(--accent);
             color: var(--text-primary);
             background: color-mix(in srgb, var(--accent) 12%, transparent);
+          }
+          .bulk-env-input {
+            width: 100%;
+            resize: vertical;
+            font-family: var(--font-mono, ui-monospace, monospace);
+            font-size: 0.85rem;
+            line-height: 1.4;
           }
         `}</style>
       </div>

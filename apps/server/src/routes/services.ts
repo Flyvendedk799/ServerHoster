@@ -87,6 +87,10 @@ const directDeploySchema = z.object({
   autoPull: z.boolean().default(true),
   enableQuickTunnel: z.boolean().default(false),
   serveBuiltDist: z.boolean().default(false),
+  // Optional overrides for monorepos: the start command and the working
+  // subdirectory to launch from (both preserved across redeploys).
+  command: z.string().optional(),
+  workingDir: z.string().optional(),
   databaseSetup: databaseSetupSchema
 });
 
@@ -1419,8 +1423,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
         projectId,
         p.name,
         "process",
-        "",
-        "",
+        p.command ?? "",
+        p.workingDir ?? "",
         "",
         "",
         assignedPort,

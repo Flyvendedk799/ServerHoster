@@ -115,7 +115,41 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
   if (!serviceEnv.DATA_DIR && !merged.DATA_DIR) {
     merged.DATA_DIR = service?.type === "docker" ? "/data" : serviceDataDirFor(ctx, serviceId);
   }
+
+  // Auto-point a Prisma/SQLite app's DATABASE_URL at the persistent DATA_DIR so
+  // its database survives redeploys (the clone is hard-reset every deploy, which
+  // would otherwise wipe a SQLite file kept inside it). Only when nothing else
+  // set DATABASE_URL — any explicit project/service/linked value still wins.
+  if (
+    !serviceEnv.DATABASE_URL &&
+    !merged.DATABASE_URL &&
+    prismaUsesSqlite(path.join(ctx.config.projectsDir, serviceId))
+  ) {
+    const base = service?.type === "docker" ? "/data" : serviceDataDirFor(ctx, serviceId);
+    merged.DATABASE_URL = `file:${base}/prisma.db`;
+  }
   return { ...merged, ...serviceEnv };
+}
+
+/** True if the service's clone contains a Prisma schema using the sqlite provider. */
+function prismaUsesSqlite(cloneDir: string): boolean {
+  const candidates = [
+    "prisma/schema.prisma",
+    "schema.prisma",
+    "backend/prisma/schema.prisma",
+    "apps/server/prisma/schema.prisma"
+  ];
+  for (const rel of candidates) {
+    try {
+      const schemaPath = path.join(cloneDir, rel);
+      if (fs.existsSync(schemaPath) && /provider\s*=\s*"sqlite"/.test(fs.readFileSync(schemaPath, "utf8"))) {
+        return true;
+      }
+    } catch {
+      /* ignore unreadable candidate */
+    }
+  }
+  return false;
 }
 
 /** Host path of a service's persistent data dir; created on first use. */
