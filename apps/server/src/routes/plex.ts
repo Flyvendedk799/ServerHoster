@@ -31,8 +31,8 @@ const logQuerySchema = z.object({
 const uploadQuerySchema = z.object({
   library: z.enum(MEDIA_LIBRARIES),
   filename: z.string().min(1).max(255),
-  /** Optional single subfolder, e.g. "Dune (2021)". */
-  folder: z.string().min(1).max(255).optional()
+  /** Optional subfolder, up to two levels: "Dune (2021)" or "Severance/Season 01". */
+  folder: z.string().min(1).max(512).optional()
 });
 
 const mediaQuerySchema = z.object({

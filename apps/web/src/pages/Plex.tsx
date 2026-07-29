@@ -101,7 +101,7 @@ type UploadJob = {
   name: string;
   bytes: number;
   sent: number;
-  status: "uploading" | "done" | "error";
+  status: "queued" | "uploading" | "done" | "error";
   error?: string;
   abort: () => void;
 };
@@ -109,6 +109,14 @@ type UploadJob = {
 const MEDIA_LIBRARIES: MediaLibrary[] = ["movies", "tv", "music"];
 
 const POLL_MS = 10000;
+
+/**
+ * Uploads run a couple at a time rather than all at once. Dropping a whole
+ * season otherwise starts a dozen parallel transfers that compete for the same
+ * uplink, which is how the connection resets happen; a shallow queue keeps each
+ * transfer moving at full speed and finishes the batch sooner.
+ */
+const MAX_CONCURRENT_UPLOADS = 2;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -234,6 +242,10 @@ export function PlexPage() {
   const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
   const [subtitleLang, setSubtitleLang] = useState("da");
   const subtitleInputRef = useRef<HTMLInputElement>(null);
+  const uploadQueue = useRef<
+    Array<{ id: string; file: File; library: MediaLibrary; folder: string }>
+  >([]);
+  const activeUploads = useRef(0);
 
   const loadStatus = useCallback(async (): Promise<PlexStatus | null> => {
     try {
@@ -349,40 +361,69 @@ export function PlexPage() {
     void loadMedia(mediaLibrary);
   }, [mediaLibrary, loadMedia]);
 
+  const pump = useCallback((): void => {
+    while (activeUploads.current < MAX_CONCURRENT_UPLOADS && uploadQueue.current.length > 0) {
+      const task = uploadQueue.current.shift();
+      if (!task) break;
+      activeUploads.current += 1;
+
+      const { promise, abort } = uploadMedia(task.file, task.library, task.folder, (sent) => {
+        setUploads((prev) => prev.map((j) => (j.id === task.id ? { ...j, sent } : j)));
+      });
+      setUploads((prev) =>
+        prev.map((j) => (j.id === task.id ? { ...j, status: "uploading", abort } : j))
+      );
+
+      void promise
+        .then(() => {
+          setUploads((prev) =>
+            prev.map((j) => (j.id === task.id ? { ...j, status: "done", sent: task.file.size } : j))
+          );
+          toast.success(`Uploaded ${task.file.name}`);
+          void loadMedia(task.library);
+          void refresh();
+          // Drop the finished row after a beat so the list doesn't grow forever.
+          setTimeout(() => setUploads((prev) => prev.filter((j) => j.id !== task.id)), 6000);
+        })
+        .catch((error: Error) => {
+          setUploads((prev) =>
+            prev.map((j) =>
+              j.id === task.id ? { ...j, status: "error", error: error.message } : j
+            )
+          );
+          toast.error(`${task.file.name}: ${error.message}`);
+        })
+        .finally(() => {
+          activeUploads.current -= 1;
+          pump();
+        });
+    }
+  }, [loadMedia, refresh]);
+
   function startUploads(files: File[]): void {
     if (files.length === 0) return;
     const targetLibrary = mediaLibrary;
     const targetFolder = folder;
 
+    const jobs: UploadJob[] = [];
     for (const file of files) {
       const id = `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 8)}`;
-      const { promise, abort } = uploadMedia(file, targetLibrary, targetFolder, (sent) => {
-        setUploads((prev) => prev.map((j) => (j.id === id ? { ...j, sent } : j)));
+      uploadQueue.current.push({ id, file, library: targetLibrary, folder: targetFolder });
+      jobs.push({
+        id,
+        name: file.name,
+        bytes: file.size,
+        sent: 0,
+        status: "queued",
+        // Cancelling something still queued just drops it before it ever starts.
+        abort: () => {
+          uploadQueue.current = uploadQueue.current.filter((t) => t.id !== id);
+          setUploads((prev) => prev.filter((j) => j.id !== id));
+        }
       });
-
-      setUploads((prev) => [
-        ...prev,
-        { id, name: file.name, bytes: file.size, sent: 0, status: "uploading", abort }
-      ]);
-
-      void promise
-        .then(() => {
-          setUploads((prev) =>
-            prev.map((j) => (j.id === id ? { ...j, status: "done", sent: file.size } : j))
-          );
-          toast.success(`Uploaded ${file.name}`);
-          void loadMedia(targetLibrary);
-          void refresh();
-          // Drop the finished row after a beat so the list doesn't grow forever.
-          setTimeout(() => setUploads((prev) => prev.filter((j) => j.id !== id)), 6000);
-        })
-        .catch((error: Error) => {
-          setUploads((prev) =>
-            prev.map((j) => (j.id === id ? { ...j, status: "error", error: error.message } : j))
-          );
-          toast.error(`${file.name}: ${error.message}`);
-        });
     }
+    setUploads((prev) => [...prev, ...jobs]);
+    pump();
   }
 
   async function addSubtitle(video: MediaFile, file: File): Promise<void> {
@@ -698,12 +739,25 @@ export function PlexPage() {
 
         <div className="row plex-upload-opts">
           <input
-            placeholder="Optional subfolder, e.g. Dune (2021)"
+            placeholder={
+              mediaLibrary === "tv"
+                ? "Show Name/Season 01  — required for episodes"
+                : mediaLibrary === "music"
+                  ? "Optional: Artist/Album"
+                  : "Optional subfolder, e.g. Dune (2021)"
+            }
             value={folder}
             onChange={(e) => setFolder(e.target.value)}
             style={{ flex: 1 }}
           />
         </div>
+        {mediaLibrary === "tv" && (
+          <p className="muted tiny plex-tv-hint">
+            Plex needs episodes under <code>Show Name/Season 01/</code>, named like{" "}
+            <code>Show Name - s01e03.mkv</code>. Set the folder above once, then drop the whole
+            season — files upload {MAX_CONCURRENT_UPLOADS} at a time.
+          </p>
+        )}
 
         <div
           className={`plex-drop ${dragging ? "is-over" : ""}`}
@@ -759,7 +813,10 @@ export function PlexPage() {
                     <div className="plex-bar">
                       <div
                         className={`plex-bar-fill ${job.status}`}
-                        style={{ width: `${job.status === "done" ? 100 : pct}%` }}
+                        style={{
+                          width:
+                            job.status === "done" ? "100%" : job.status === "queued" ? "100%" : `${pct}%`
+                        }}
                       />
                     </div>
                     {job.status === "error" && (
@@ -767,13 +824,15 @@ export function PlexPage() {
                     )}
                   </div>
                   <span className="muted tiny">
-                    {job.status === "done"
+                    {job.status === "queued"
                       ? formatBytes(job.bytes)
-                      : `${formatBytes(job.sent)} / ${formatBytes(job.bytes)}`}
+                      : job.status === "done"
+                        ? formatBytes(job.bytes)
+                        : `${formatBytes(job.sent)} / ${formatBytes(job.bytes)}`}
                   </span>
-                  {job.status === "uploading" ? (
+                  {job.status === "uploading" || job.status === "queued" ? (
                     <button className="ghost tiny" onClick={() => job.abort()}>
-                      Cancel
+                      {job.status === "queued" ? "Remove" : "Cancel"}
                     </button>
                   ) : (
                     <span className="chip xsmall">{job.status}</span>
@@ -945,6 +1004,8 @@ export function PlexPage() {
         .plex-page .plex-bar { height: 4px; border-radius: 2px; background: var(--bg-elevated); overflow: hidden; }
         .plex-page .plex-bar-fill { height: 100%; background: var(--accent, var(--success)); transition: width 0.2s ease; }
         .plex-page .plex-bar-fill.done { background: var(--success); }
+        .plex-page .plex-bar-fill.queued { background: var(--border-strong); }
+        .plex-page .plex-tv-hint { margin: 0.5rem 0 0; padding: 0.5rem 0.7rem; border-radius: 8px; background: var(--bg-glass); }
         .plex-page .plex-bar-fill.error { background: var(--danger); }
         .plex-page .plex-entry { border-bottom: 1px solid var(--border-subtle); }
         .plex-page .plex-entry:last-child { border-bottom: none; }

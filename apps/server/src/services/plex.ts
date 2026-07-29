@@ -314,6 +314,36 @@ export function isMediaLibrary(value: string): value is MediaLibrary {
 }
 
 /**
+ * TV needs two levels — `Show Name/Season 01/episode.mkv` — so a folder may be
+ * a nested path. Each segment is sanitized independently, which is what stops
+ * `..` from surviving; the depth cap keeps the tree shallow enough for
+ * listMediaFiles to still walk it.
+ */
+const MAX_FOLDER_DEPTH = 2;
+
+function safeFolderSegments(folder: string): string[] {
+  // Sanitizing would contain these anyway (an absolute path just loses its
+  // leading slash, `..` gets stripped to nothing), but silently coercing a
+  // mistyped path into an invented folder is a bad failure mode — say so.
+  if (/^[/\\]/.test(folder.trim())) {
+    throw new UploadRejectedError("Folder must be relative to the library, not an absolute path");
+  }
+  const segments = folder
+    .split(/[\\/]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.some((s) => s === "." || s === "..")) {
+    throw new UploadRejectedError('Folder cannot contain "." or ".." segments');
+  }
+  if (segments.length > MAX_FOLDER_DEPTH) {
+    throw new UploadRejectedError(
+      `Folder can be at most ${MAX_FOLDER_DEPTH} levels deep (e.g. "Show Name/Season 01")`
+    );
+  }
+  return segments.map((s) => safeSegment(s, "folder name"));
+}
+
+/**
  * Build the destination path and prove it stays inside the library root even
  * after symlink-free normalisation.
  */
@@ -329,7 +359,7 @@ function resolveTarget(library: MediaLibrary, filename: string, folder?: string)
     );
   }
   const libraryRoot = path.join(MEDIA_ROOT, library);
-  const dir = folder ? path.join(libraryRoot, safeSegment(folder, "folder name")) : libraryRoot;
+  const dir = folder ? path.join(libraryRoot, ...safeFolderSegments(folder)) : libraryRoot;
   const file = path.join(dir, safeFile);
   const withSep = libraryRoot.endsWith(path.sep) ? libraryRoot : `${libraryRoot}${path.sep}`;
   if (!file.startsWith(withSep)) {
