@@ -11,6 +11,7 @@ import {
   GitBranch,
   Globe,
   KeyRound,
+  Film,
   SunMoon
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -94,6 +95,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       icon: Activity,
       category: "Infrastructure",
       action: () => navigate("/proxy")
+    },
+    {
+      id: "plex",
+      name: "Plex Media Server",
+      icon: Film,
+      category: "Infrastructure",
+      action: () => navigate("/plex")
     },
     {
       id: "sets",

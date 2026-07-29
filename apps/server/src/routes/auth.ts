@@ -60,7 +60,8 @@ const API_PREFIXES = [
   "/project-templates",
   "/tunnels",
   "/admin",
-  "/logs"
+  "/logs",
+  "/plex"
 ];
 
 function isApiPath(path: string): boolean {

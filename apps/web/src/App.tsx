@@ -10,6 +10,7 @@ import {
   Activity,
   Globe,
   Terminal,
+  Film,
   Bell,
   Settings,
   Sun,
@@ -29,6 +30,7 @@ import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
 import { DomainsPage } from "./pages/Domains";
+import { PlexPage } from "./pages/Plex";
 import { SettingsPage } from "./pages/Settings";
 import { NotificationsPage } from "./pages/Notifications";
 import { LoginPage } from "./pages/Login";
@@ -122,6 +124,7 @@ const routeLabels: Record<string, string> = {
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
   deployments: "Deployments",
+  plex: "Plex",
   notifications: "Alerts",
   settings: "Settings",
   logs: "Logs"
@@ -341,6 +344,15 @@ export function App() {
             {!collapsed && <span>Deployments</span>}
           </NavLink>
           <NavLink
+            to="/plex"
+            aria-label="Plex"
+            title={collapsed ? "Plex" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Film size={16} />
+            {!collapsed && <span>Plex</span>}
+          </NavLink>
+          <NavLink
             to="/notifications"
             aria-label="Alerts"
             title={collapsed ? "Alerts" : undefined}
@@ -481,6 +493,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <DeploymentsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/plex"
+                  element={
+                    <ProtectedRoute>
+                      <PlexPage />
                     </ProtectedRoute>
                   }
                 />

@@ -30,6 +30,7 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerCloudflareRoutes } from "./routes/cloudflare.js";
 import { registerSaasDomainRoutes } from "./routes/saasDomains.js";
+import { registerPlexRoutes } from "./routes/plex.js";
 import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
 import { usingDefaultSecretKey } from "./security.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
@@ -275,6 +276,7 @@ export async function buildApp(): Promise<AppContext> {
   registerSettingsRoutes(ctx);
   registerCloudflareRoutes(ctx);
   registerSaasDomainRoutes(ctx);
+  registerPlexRoutes(ctx);
   registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
   registerTerminalRoutes(ctx);
@@ -430,7 +432,8 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/project-templates",
     "/tunnels",
     "/admin",
-    "/logs"
+    "/logs",
+    "/plex"
   ];
 
   app.addHook("onRequest", async (req: any, reply: any) => {
