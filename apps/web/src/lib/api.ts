@@ -1,6 +1,31 @@
 import { toast } from "./toast";
 
-const BASE_URL = import.meta.env.VITE_SURVHUB_API_URL ?? "http://localhost:8787";
+/**
+ * Ports the Vite dev server runs on. Only there does the dashboard live on a
+ * different origin than the API, so only there is the localhost default right.
+ */
+const DEV_SERVER_PORTS = new Set(["5173", "5174"]);
+
+/**
+ * Resolve the control-plane origin.
+ *
+ * An explicit build-time `VITE_SURVHUB_API_URL` always wins. Otherwise, when
+ * the dashboard was served by the control plane itself, talk back to the
+ * origin it came from: a hardcoded `localhost:8787` only resolves when the
+ * browser happens to be on the same machine as the server, which breaks any
+ * remote or tunnel-less access. Falls back to localhost for the dev server and
+ * for non-browser contexts (tests, SSR).
+ */
+function resolveBaseUrl(): string {
+  const configured = import.meta.env.VITE_SURVHUB_API_URL;
+  if (configured) return configured;
+  if (typeof window !== "undefined" && window.location?.protocol.startsWith("http")) {
+    if (!DEV_SERVER_PORTS.has(window.location.port)) return window.location.origin;
+  }
+  return "http://localhost:8787";
+}
+
+const BASE_URL = resolveBaseUrl();
 export const API_BASE_URL = BASE_URL;
 const TOKEN_KEY = "survhub_token";
 const AUTH_EXPIRED_EVENT = "survhub:auth-expired";

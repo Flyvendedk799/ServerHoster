@@ -1,4 +1,25 @@
-const WS_URL = import.meta.env.VITE_SURVHUB_WS_URL ?? "ws://localhost:8787/ws";
+/** Mirrors `DEV_SERVER_PORTS` in lib/api.ts — see resolveWsUrl below. */
+const DEV_SERVER_PORTS = new Set(["5173", "5174"]);
+
+/**
+ * Resolve the live-updates socket URL. Same reasoning as `resolveBaseUrl` in
+ * lib/api.ts: when the control plane served this page, the socket belongs on
+ * that same origin (upgrading http→ws, https→wss) rather than on a hardcoded
+ * localhost that only resolves when the browser is on the server itself.
+ */
+function resolveWsUrl(): string {
+  const configured = import.meta.env.VITE_SURVHUB_WS_URL;
+  if (configured) return configured;
+  if (typeof window !== "undefined" && window.location?.protocol.startsWith("http")) {
+    if (!DEV_SERVER_PORTS.has(window.location.port)) {
+      const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+      return `${scheme}://${window.location.host}/ws`;
+    }
+  }
+  return "ws://localhost:8787/ws";
+}
+
+const WS_URL = resolveWsUrl();
 const TOKEN_KEY = "survhub_token";
 
 /** Live-connection state, for driving an honest streaming indicator. */
