@@ -422,6 +422,19 @@ async function refreshLibraryForDir(dir: string): Promise<boolean> {
   }
 }
 
+const VIDEO_EXTENSIONS = new Set([
+  ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"
+]);
+const SUBTITLE_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt"]);
+
+export type MediaSubtitle = {
+  name: string;
+  relativePath: string;
+  /** Language code parsed out of the filename, e.g. "da" in Movie.da.srt. */
+  language: string | null;
+  bytes: number;
+};
+
 export type MediaFile = {
   name: string;
   /** Relative to the library root, so the UI can show one-movie-per-folder. */
@@ -429,9 +442,38 @@ export type MediaFile = {
   bytes: number;
   modifiedAt: string;
   partial: boolean;
+  kind: "video" | "subtitle" | "other";
+  /** Sidecar subtitles Plex will pair with this video. Videos only. */
+  subtitles: MediaSubtitle[];
 };
 
-/** Flat listing of a library directory, one level of nesting deep. */
+function classify(name: string): MediaFile["kind"] {
+  const ext = path.extname(name).toLowerCase();
+  if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (SUBTITLE_EXTENSIONS.has(ext)) return "subtitle";
+  return "other";
+}
+
+/**
+ * Plex pairs a sidecar subtitle with a video when it lives in the same folder
+ * and its name begins with the video's basename. Everything between that
+ * basename and the extension is Plex's language/flag suffix.
+ */
+function subtitleLanguage(videoBase: string, subtitleName: string): string | null {
+  const withoutExt = subtitleName.slice(0, -path.extname(subtitleName).length);
+  const suffix = withoutExt.slice(videoBase.length).replace(/^\./, "");
+  if (!suffix) return null;
+  const parts = suffix.split(".").filter(Boolean);
+  const code = parts.find((p) => /^[A-Za-z]{2,3}$/.test(p));
+  return code ? code.toLowerCase() : (parts[0] ?? null);
+}
+
+/**
+ * Listing of a library directory, one level of nesting deep. Sidecar subtitles
+ * are folded into the video they belong to rather than listed on their own, so
+ * the UI can show "this movie has Danish and English subs" at a glance. A
+ * subtitle matching no video stays top-level so it isn't silently hidden.
+ */
 export async function listMediaFiles(library: MediaLibrary): Promise<MediaFile[]> {
   const root = path.join(MEDIA_ROOT, library);
   const out: MediaFile[] = [];
@@ -459,13 +501,102 @@ export async function listMediaFiles(library: MediaLibrary): Promise<MediaFile[]
         relativePath: path.relative(root, full),
         bytes: info.size,
         modifiedAt: info.mtime.toISOString(),
-        partial: entry.name.endsWith(".part")
+        partial: entry.name.endsWith(".part"),
+        kind: classify(entry.name),
+        subtitles: []
       });
     }
   }
 
   await walk(root, 0);
-  return out.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+
+  const videos = out.filter((f) => f.kind === "video");
+  const claimed = new Set<string>();
+  for (const video of videos) {
+    const dir = path.posix.dirname(video.relativePath.split(path.sep).join("/"));
+    const base = video.name.slice(0, -path.extname(video.name).length);
+    for (const candidate of out) {
+      if (candidate.kind !== "subtitle") continue;
+      const candidateDir = path.posix.dirname(candidate.relativePath.split(path.sep).join("/"));
+      if (candidateDir !== dir) continue;
+      if (!candidate.name.startsWith(base)) continue;
+      video.subtitles.push({
+        name: candidate.name,
+        relativePath: candidate.relativePath,
+        language: subtitleLanguage(base, candidate.name),
+        bytes: candidate.bytes
+      });
+      claimed.add(candidate.relativePath);
+    }
+    video.subtitles.sort((a, b) => (a.language ?? "").localeCompare(b.language ?? ""));
+  }
+
+  return out
+    .filter((f) => !claimed.has(f.relativePath))
+    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+}
+
+/**
+ * Store a subtitle beside its video under the name Plex expects, so the user
+ * never has to get `<video basename>.<lang>.<ext>` right by hand.
+ */
+export async function saveMediaSubtitle(opts: {
+  library: MediaLibrary;
+  /** relativePath of the video this subtitle belongs to. */
+  target: string;
+  language: string;
+  filename: string;
+  source: Readable;
+}): Promise<{ path: string; name: string; language: string; scanStarted: boolean }> {
+  const root = path.join(MEDIA_ROOT, opts.library);
+  const segments = opts.target.split(/[\\/]/).filter(Boolean);
+  if (segments.length === 0 || segments.length > 3) {
+    throw new UploadRejectedError("Invalid target path");
+  }
+  const videoPath = path.join(root, ...segments.map((s) => safeSegment(s, "target path")));
+  const withSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  if (!videoPath.startsWith(withSep)) {
+    throw new UploadRejectedError("Target escapes the media library");
+  }
+
+  const videoInfo = await stat(videoPath).catch(() => null);
+  if (!videoInfo?.isFile()) throw new UploadRejectedError("Target video does not exist");
+  if (classify(path.basename(videoPath)) !== "video") {
+    throw new UploadRejectedError("Target is not a video file");
+  }
+
+  const ext = path.extname(safeSegment(opts.filename, "file name")).toLowerCase();
+  if (!SUBTITLE_EXTENSIONS.has(ext)) {
+    throw new UploadRejectedError(`"${ext || "(none)"}" is not a subtitle file`);
+  }
+  const language = opts.language.toLowerCase();
+  if (!/^[a-z]{2,3}$/.test(language)) {
+    throw new UploadRejectedError("Language must be a 2- or 3-letter code");
+  }
+
+  const videoBase = path.basename(videoPath, path.extname(videoPath));
+  const name = `${videoBase}.${language}${ext}`;
+  const destination = path.join(path.dirname(videoPath), name);
+  const partial = `${destination}.part`;
+
+  try {
+    await pipeline(opts.source, createWriteStream(partial, { flags: "w", mode: 0o664 }));
+  } catch (error) {
+    await rm(partial, { force: true }).catch(() => undefined);
+    throw error;
+  }
+
+  const written = await stat(partial);
+  if (written.size === 0) {
+    await rm(partial, { force: true }).catch(() => undefined);
+    throw new UploadRejectedError("Subtitle file was empty");
+  }
+
+  await rename(partial, destination);
+  await chmod(destination, 0o664).catch(() => undefined);
+
+  const scanStarted = await refreshLibraryForDir(root);
+  return { path: destination, name, language, scanStarted };
 }
 
 export async function deleteMediaFile(library: MediaLibrary, relativePath: string): Promise<void> {

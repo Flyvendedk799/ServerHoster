@@ -10,6 +10,7 @@ import {
   MEDIA_LIBRARIES,
   readPlexLog,
   refreshPlexLibrary,
+  saveMediaSubtitle,
   saveMediaUpload,
   setPlexAutostart,
   setPlexPower
@@ -41,6 +42,14 @@ const mediaQuerySchema = z.object({
 const mediaDeleteSchema = z.object({
   library: z.enum(MEDIA_LIBRARIES),
   path: z.string().min(1).max(1024)
+});
+
+const subtitleQuerySchema = z.object({
+  library: z.enum(MEDIA_LIBRARIES),
+  /** relativePath of the video the subtitle belongs to. */
+  target: z.string().min(1).max(1024),
+  language: z.string().regex(/^[A-Za-z]{2,3}$/, "Language must be a 2- or 3-letter code"),
+  filename: z.string().min(1).max(255)
 });
 
 /** 128 GiB — a ceiling no real media file reaches, not a memory reservation. */
@@ -119,6 +128,23 @@ export function registerPlexRoutes(ctx: AppContext): void {
       folder,
       source: req.body as Readable,
       declaredBytes: Number.isFinite(declared) && declared > 0 ? declared : null
+    });
+    return reply.code(201).send(result);
+  });
+
+  /**
+   * Attach a subtitle to a specific video. The stored filename is derived from
+   * the video's own basename so Plex reliably pairs the two — the user picks a
+   * language, not a filename.
+   */
+  ctx.app.post("/plex/subtitles", { bodyLimit: UPLOAD_BODY_LIMIT }, async (req, reply) => {
+    const { library, target, language, filename } = subtitleQuerySchema.parse(req.query ?? {});
+    const result = await saveMediaSubtitle({
+      library,
+      target,
+      language,
+      filename,
+      source: req.body as Readable
     });
     return reply.code(201).send(result);
   });

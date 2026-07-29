@@ -4,6 +4,7 @@ import {
   ExternalLink,
   Film,
   HardDrive,
+  Captions,
   Loader2,
   Play,
   Power,
@@ -59,15 +60,41 @@ type PlexSession = {
   videoDecision: string | null;
 };
 
+type MediaSubtitle = {
+  name: string;
+  relativePath: string;
+  language: string | null;
+  bytes: number;
+};
+
 type MediaFile = {
   name: string;
   relativePath: string;
   bytes: number;
   modifiedAt: string;
   partial: boolean;
+  kind: "video" | "subtitle" | "other";
+  subtitles: MediaSubtitle[];
 };
 
 type MediaLibrary = "movies" | "tv" | "music";
+
+/** Codes Plex reads from a sidecar filename. Danish first — it's the common case here. */
+const SUBTITLE_LANGUAGES: Array<{ code: string; label: string }> = [
+  { code: "da", label: "Danish" },
+  { code: "en", label: "English" },
+  { code: "no", label: "Norwegian" },
+  { code: "sv", label: "Swedish" },
+  { code: "de", label: "German" },
+  { code: "fr", label: "French" },
+  { code: "es", label: "Spanish" },
+  { code: "nl", label: "Dutch" }
+];
+
+function languageLabel(code: string | null): string {
+  if (!code) return "unknown";
+  return SUBTITLE_LANGUAGES.find((l) => l.code === code)?.label ?? code;
+}
 
 type UploadJob = {
   id: string;
@@ -106,12 +133,45 @@ function uploadMedia(
   folder: string,
   onProgress: (sent: number) => void
 ): { promise: Promise<void>; abort: () => void } {
+  return xhrUpload(
+    `/plex/upload?${new URLSearchParams(
+      folder.trim()
+        ? { library, filename: file.name, folder: folder.trim() }
+        : { library, filename: file.name }
+    ).toString()}`,
+    file,
+    onProgress
+  );
+}
+
+/** Attach a subtitle to a video; the server derives the Plex-compatible name. */
+function uploadSubtitle(
+  file: File,
+  library: MediaLibrary,
+  target: string,
+  language: string
+): { promise: Promise<void>; abort: () => void } {
+  return xhrUpload(
+    `/plex/subtitles?${new URLSearchParams({
+      library,
+      target,
+      language,
+      filename: file.name
+    }).toString()}`,
+    file,
+    () => undefined
+  );
+}
+
+function xhrUpload(
+  path: string,
+  file: File,
+  onProgress: (sent: number) => void
+): { promise: Promise<void>; abort: () => void } {
   const xhr = new XMLHttpRequest();
-  const params = new URLSearchParams({ library, filename: file.name });
-  if (folder.trim()) params.set("folder", folder.trim());
 
   const promise = new Promise<void>((resolve, reject) => {
-    xhr.open("POST", `${API_BASE_URL}/plex/upload?${params.toString()}`);
+    xhr.open("POST", `${API_BASE_URL}${path}`);
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     const token = localStorage.getItem("survhub_token");
     if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
@@ -170,6 +230,10 @@ export function PlexPage() {
   const [uploads, setUploads] = useState<UploadJob[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** relativePath of the video whose subtitle picker is open, if any. */
+  const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
+  const [subtitleLang, setSubtitleLang] = useState("da");
+  const subtitleInputRef = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async (): Promise<PlexStatus | null> => {
     try {
@@ -318,6 +382,32 @@ export function PlexPage() {
           );
           toast.error(`${file.name}: ${error.message}`);
         });
+    }
+  }
+
+  async function addSubtitle(video: MediaFile, file: File): Promise<void> {
+    setBusy(`sub-${video.relativePath}`);
+    try {
+      await uploadSubtitle(file, mediaLibrary, video.relativePath, subtitleLang).promise;
+      toast.success(`Added ${languageLabel(subtitleLang)} subtitles to ${video.name}`);
+      setSubtitleFor(null);
+      await loadMedia(mediaLibrary);
+    } catch (error) {
+      toast.error(`Subtitle failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteSubtitle(sub: MediaSubtitle): Promise<void> {
+    try {
+      await api(`/plex/media?library=${mediaLibrary}&path=${encodeURIComponent(sub.relativePath)}`, {
+        method: "DELETE"
+      });
+      toast.success(`Removed ${languageLabel(sub.language)} subtitles`);
+      await loadMedia(mediaLibrary);
+    } catch {
+      /* toasted */
     }
   }
 
@@ -642,6 +732,10 @@ export function PlexPage() {
             Uploads to <code>/srv/media/{mediaLibrary}</code>
             {folder.trim() ? `/${folder.trim()}` : ""} and triggers a scan
           </span>
+          <span className="muted tiny">
+            For subtitles use the <strong>Subtitles</strong> button on a movie below — it names the
+            file so Plex pairs it automatically.
+          </span>
           <input
             ref={fileInputRef}
             type="file"
@@ -697,26 +791,105 @@ export function PlexPage() {
         ) : (
           <div className="plex-list">
             {mediaFiles.map((item) => (
-              <div key={item.relativePath} className="plex-row">
-                <div className="fcol" style={{ gap: "0.15rem", minWidth: 0, flex: 1 }}>
-                  <span className="plex-title">
-                    {item.name}
-                    {item.partial && (
-                      <span className="chip xsmall warn" style={{ marginLeft: "0.5rem" }}>
-                        incomplete
-                      </span>
-                    )}
-                  </span>
-                  <span className="muted tiny plex-paths">{item.relativePath}</span>
+              <div key={item.relativePath} className="fcol plex-entry">
+                <div className="plex-row">
+                  <div className="fcol" style={{ gap: "0.15rem", minWidth: 0, flex: 1 }}>
+                    <span className="plex-title">
+                      {item.name}
+                      {item.partial && (
+                        <span className="chip xsmall warn" style={{ marginLeft: "0.5rem" }}>
+                          incomplete
+                        </span>
+                      )}
+                      {item.kind === "subtitle" && (
+                        <span className="chip xsmall warn" style={{ marginLeft: "0.5rem" }}>
+                          orphan subtitle
+                        </span>
+                      )}
+                    </span>
+                    <span className="muted tiny plex-paths">{item.relativePath}</span>
+                  </div>
+                  <span className="muted tiny">{formatBytes(item.bytes)}</span>
+                  {item.kind === "video" && (
+                    <button
+                      className="ghost tiny"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        setSubtitleFor(subtitleFor === item.relativePath ? null : item.relativePath)
+                      }
+                      title="Add subtitles"
+                    >
+                      <Captions size={12} /> Subtitles
+                    </button>
+                  )}
+                  <button
+                    className="ghost tiny"
+                    onClick={() => void deleteMedia(item)}
+                    title="Delete file"
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
-                <span className="muted tiny">{formatBytes(item.bytes)}</span>
-                <button
-                  className="ghost tiny"
-                  onClick={() => void deleteMedia(item)}
-                  title="Delete file"
-                >
-                  <Trash2 size={12} />
-                </button>
+
+                {item.kind === "video" && item.subtitles.length > 0 && (
+                  <div className="row plex-subs">
+                    {item.subtitles.map((sub) => (
+                      <span key={sub.relativePath} className="chip xsmall plex-sub-chip">
+                        <Captions size={10} />
+                        {languageLabel(sub.language)}
+                        <button
+                          className="plex-sub-x"
+                          title={`Remove ${sub.name}`}
+                          onClick={() => void deleteSubtitle(sub)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {subtitleFor === item.relativePath && (
+                  <div className="row plex-sub-add">
+                    <select
+                      value={subtitleLang}
+                      onChange={(e) => setSubtitleLang(e.target.value)}
+                      style={{ width: "130px" }}
+                    >
+                      {SUBTITLE_LANGUAGES.map((l) => (
+                        <option key={l.code} value={l.code}>
+                          {l.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="primary small"
+                      disabled={busy !== null}
+                      onClick={() => subtitleInputRef.current?.click()}
+                    >
+                      {busy === `sub-${item.relativePath}` ? (
+                        <Loader2 size={14} className="spin" />
+                      ) : (
+                        <Captions size={14} />
+                      )}
+                      Choose .srt file
+                    </button>
+                    <span className="muted tiny">
+                      Saved as <code>{item.name.replace(/\.[^.]+$/, "")}.{subtitleLang}.srt</code>
+                    </span>
+                    <input
+                      ref={subtitleInputRef}
+                      type="file"
+                      hidden
+                      accept=".srt,.ass,.ssa,.sub,.vtt"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void addSubtitle(item, file);
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -773,6 +946,14 @@ export function PlexPage() {
         .plex-page .plex-bar-fill { height: 100%; background: var(--accent, var(--success)); transition: width 0.2s ease; }
         .plex-page .plex-bar-fill.done { background: var(--success); }
         .plex-page .plex-bar-fill.error { background: var(--danger); }
+        .plex-page .plex-entry { border-bottom: 1px solid var(--border-subtle); }
+        .plex-page .plex-entry:last-child { border-bottom: none; }
+        .plex-page .plex-entry .plex-row { border-bottom: none; }
+        .plex-page .plex-subs { gap: 0.35rem; padding: 0 0 0.6rem 0; flex-wrap: wrap; }
+        .plex-page .plex-sub-chip { display: inline-flex; align-items: center; gap: 0.3rem; background: var(--success-soft); color: var(--success); border-color: var(--success); }
+        .plex-page .plex-sub-x { background: none; border: none; color: inherit; cursor: pointer; padding: 0 0 0 0.15rem; font-size: 0.9rem; line-height: 1; opacity: 0.7; }
+        .plex-page .plex-sub-x:hover { opacity: 1; }
+        .plex-page .plex-sub-add { gap: 0.6rem; padding: 0 0 0.75rem 0; flex-wrap: wrap; align-items: center; }
         .plex-page .spin { animation: plex-spin 1s linear infinite; }
         @keyframes plex-spin { to { transform: rotate(360deg); } }
       `
