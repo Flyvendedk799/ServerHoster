@@ -5,7 +5,9 @@ import simpleGit, { type SimpleGit } from "simple-git";
 import { nanoid } from "nanoid";
 import {
   broadcast,
+  dbReservedPorts,
   detectBuildType,
+  findFreePort,
   findStaticEntry,
   insertLog,
   nowIso,
@@ -763,6 +765,108 @@ export function findDockerfile(projectPath: string): string | null {
   return found[0].rel;
 }
 
+/** All root-level Dockerfiles (`Dockerfile`, `Dockerfile.frontend`, …), sorted. */
+export function listRootDockerfiles(projectPath: string): string[] {
+  try {
+    return fs
+      .readdirSync(projectPath, { withFileTypes: true })
+      .filter((e) => e.isFile() && /^Dockerfile(\..+)?$/.test(e.name))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A repo that ships several root Dockerfiles (`Dockerfile` for the API,
+ * `Dockerfile.frontend` for the web tier, …) is several services, not one.
+ * Historically only one Dockerfile was picked and the rest silently never ran —
+ * a full-stack repo then deployed as a frontend proxying into the void.
+ *
+ * Called during a docker deploy: creates one companion docker service per
+ * Dockerfile that no service of this project has claimed yet. Companions copy
+ * the parent's repo/branch/auto-pull, get their own port, and are NOT built
+ * here — the GitOps poller sees a linked service with no attempted commit on
+ * its next tick and deploys them one at a time, so builds never race the
+ * parent deploy for memory. Recursion terminates because every service
+ * persists its Dockerfile claim before any companion deploy starts.
+ */
+export async function createCompanionDockerServices(
+  ctx: AppContext,
+  serviceId: string,
+  projectPath: string,
+  claimedDockerfile: string
+): Promise<Array<{ id: string; name: string; dockerfile: string; port: number }>> {
+  const parent = ctx.db
+    .prepare(
+      "SELECT project_id, name, start_mode, environment, github_repo_url, github_branch, github_auto_pull FROM services WHERE id = ?"
+    )
+    .get(serviceId) as
+    | {
+        project_id: string;
+        name: string;
+        start_mode?: string | null;
+        environment?: string | null;
+        github_repo_url?: string | null;
+        github_branch?: string | null;
+        github_auto_pull?: number | null;
+      }
+    | undefined;
+  // Only git-linked parents: without a repo URL the poller could never deploy
+  // the companion, which would sit in "stopped" forever and read as a bug.
+  if (!parent?.github_repo_url) return [];
+
+  const dockerfiles = listRootDockerfiles(projectPath);
+  if (dockerfiles.length < 2) return [];
+
+  const siblings = ctx.db
+    .prepare("SELECT name, dockerfile FROM services WHERE project_id = ?")
+    .all(parent.project_id) as Array<{ name?: string; dockerfile?: string }>;
+  const claimed = new Set(
+    siblings.map((row) => String(row.dockerfile ?? "").trim()).filter(Boolean)
+  );
+  claimed.add(claimedDockerfile);
+  const usedNames = new Set(siblings.map((row) => String(row.name ?? "")));
+
+  const created: Array<{ id: string; name: string; dockerfile: string; port: number }> = [];
+  for (const dockerfile of dockerfiles) {
+    if (claimed.has(dockerfile)) continue;
+    const suffix = dockerfile === "Dockerfile" ? "backend" : dockerfile.slice("Dockerfile.".length);
+    const name = `${parent.name}-${suffix}`;
+    if (usedNames.has(name)) continue;
+    const port = await findFreePort(3000, 3999, dbReservedPorts(ctx));
+    const companionId = nanoid();
+    const createdAt = nowIso();
+    ctx.db
+      .prepare(
+        `INSERT INTO services (
+          id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
+          auto_restart, restart_count, max_restarts, start_mode, environment,
+          github_repo_url, github_branch, github_auto_pull, stop_with_hoster, created_at, updated_at
+        ) VALUES (?, ?, ?, 'docker', '', '', '', ?, ?, 'stopped', 1, 0, 5, ?, ?, ?, ?, ?, 1, ?, ?)`
+      )
+      .run(
+        companionId,
+        parent.project_id,
+        name,
+        dockerfile,
+        port,
+        parent.start_mode ?? "manual",
+        parent.environment ?? "production",
+        parent.github_repo_url,
+        parent.github_branch ?? "main",
+        parent.github_auto_pull ?? 1,
+        createdAt,
+        createdAt
+      );
+    usedNames.add(name);
+    claimed.add(dockerfile);
+    created.push({ id: companionId, name, dockerfile, port });
+  }
+  return created;
+}
+
 export function detectNodeLaunchTarget(
   projectPath: string,
   serviceName = "",
@@ -940,7 +1044,7 @@ export async function runBuildPipeline(
   // how to install it) up front turns that into a one-line fix. Advisory only —
   // the build still proceeds, because detection is heuristic and we would rather
   // let a working deploy through than block it on a bad guess.
-  const preflight = await runHostPreflight(projectPath);
+  const preflight = await runHostPreflight(projectPath, buildType);
   if (preflight.missingRequired.length > 0) {
     const describe = (entry: HostRequirementResult): string =>
       `  ✗ ${entry.label}${entry.reason ? ` — ${entry.reason}` : ""}` +
@@ -1374,6 +1478,38 @@ async function deployFromGitLocked(
     ctx.db
       .prepare("UPDATE services SET dockerfile = ?, updated_at = ? WHERE id = ?")
       .run(preferredDockerfile, nowIso(), serviceId);
+    // Multi-Dockerfile repos: materialize the tiers this service doesn't cover
+    // (e.g. the API `Dockerfile` next to `Dockerfile.frontend`). The poller
+    // deploys them on its next tick.
+    if (buildType === "docker" && preferredDockerfile) {
+      try {
+        const companions = await createCompanionDockerServices(
+          ctx,
+          serviceId,
+          targetPath,
+          preferredDockerfile
+        );
+        for (const companion of companions) {
+          const msg =
+            `Repo has multiple Dockerfiles: created companion service "${companion.name}" ` +
+            `(${companion.dockerfile}, port ${companion.port}). It will build and start automatically ` +
+            `via GitOps; set its env vars now if it needs any.\n`;
+          buildLog += msg;
+          emitBuildLog(ctx, serviceId, deploymentId, msg);
+          createNotification(ctx, {
+            kind: "deployment",
+            severity: "info",
+            title: `Created companion service ${companion.name}`,
+            body: `Built from ${companion.dockerfile} on port ${companion.port}; deploys automatically via GitOps.`,
+            serviceId: companion.id
+          });
+        }
+      } catch (err) {
+        const msg = `Companion service scan failed (non-fatal): ${serializeError(err)}\n`;
+        buildLog += msg;
+        emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
+      }
+    }
     commitHash = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
     failureStage = "building";
     transition(ctx, deploymentId, "building", { gitSha: commitHash });

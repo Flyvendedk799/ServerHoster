@@ -32,7 +32,8 @@ import { killTerminalSession } from "../services/terminals.js";
 import {
   applyPostDeployServiceState,
   deployFromGit,
-  deployFromLocalPath
+  deployFromLocalPath,
+  resolveBuildType
 } from "../services/deploy.js";
 import { resolveServiceProjectId } from "../services/projects.js";
 import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
@@ -606,7 +607,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
       // Nothing cloned yet — no requirements can be derived, which is not an error.
       return { ok: true, missingRequired: [], results: [], reason: "not_deployed" };
     }
-    return runHostPreflight(root);
+    // Docker services satisfy their runtimes inside the image, so only
+    // host-relevant requirements should be reported for them.
+    return runHostPreflight(root, resolveBuildType(root));
   });
 
   ctx.app.post("/services/scan-local-project", async (req) => {

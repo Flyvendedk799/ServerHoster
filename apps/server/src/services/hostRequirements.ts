@@ -274,14 +274,23 @@ export function detectedRequirements(root: string): HostRequirement[] {
 }
 
 /** Manifest entries win over auto-detected ones sharing an id. */
-export function collectHostRequirements(root: string): HostRequirement[] {
+export function collectHostRequirements(root: string, buildType?: string): HostRequirement[] {
   const manifest = manifestRequirements(root);
   const seen = new Set(manifest.map((entry) => entry.id));
-  return [...manifest, ...detectedRequirements(root).filter((entry) => !seen.has(entry.id))];
+  let detected = detectedRequirements(root).filter((entry) => !seen.has(entry.id));
+  // Docker builds run inside the image: the repo's own runtimes (Node, pnpm,
+  // Playwright browsers, Python) are the Dockerfile's problem, not the host's.
+  // Reporting them here produced false "install npx playwright ..." warnings
+  // for services whose image already bundles everything. Only docker itself
+  // must exist on the box. Manifest entries stay — they are explicit.
+  if (buildType === "docker") {
+    detected = detected.filter((entry) => entry.id === "docker");
+  }
+  return [...manifest, ...detected];
 }
 
-export async function runHostPreflight(root: string): Promise<HostPreflightReport> {
-  const requirements = collectHostRequirements(root);
+export async function runHostPreflight(root: string, buildType?: string): Promise<HostPreflightReport> {
+  const requirements = collectHostRequirements(root, buildType);
   const results = await Promise.all(requirements.map((entry) => checkHostRequirement(entry)));
   const missingRequired = results.filter((entry) => !entry.satisfied && !entry.optional);
   return { ok: missingRequired.length === 0, missingRequired, results };
