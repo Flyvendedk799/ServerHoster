@@ -29,7 +29,20 @@ const contentTypes: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".svg": "image/svg+xml",
-  ".ico": "image/x-icon"
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".gif": "image/gif",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  // SEO files are strict about their type: Google only parses robots.txt when
+  // it is served as text/plain, and a sitemap sent as application/octet-stream
+  // is liable to be rejected outright.
+  ".txt": "text/plain; charset=utf-8",
+  ".xml": "application/xml; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".map": "application/json; charset=utf-8"
 };
 
 function safePath(urlPath: string): string {
