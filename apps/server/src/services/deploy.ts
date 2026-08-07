@@ -1459,11 +1459,22 @@ async function deployFromGitLocked(
       buildLog += msg;
       emitBuildLog(ctx, serviceId, deploymentId, msg);
     }
+    // A service that has already claimed a Dockerfile keeps building from it —
+    // otherwise every redeploy of a companion (e.g. the API tier created from
+    // `Dockerfile`) would fall through to the Dockerfile.frontend preference
+    // and silently rebuild the wrong tier.
+    const claimedDockerfile = (
+      ctx.db.prepare("SELECT dockerfile FROM services WHERE id = ?").get(serviceId) as
+        | { dockerfile?: string }
+        | undefined
+    )?.dockerfile?.trim();
     const preferredDockerfile =
       buildType === "docker"
-        ? fs.existsSync(path.join(targetPath, "Dockerfile.frontend"))
-          ? "Dockerfile.frontend"
-          : (findDockerfile(targetPath) ?? "")
+        ? claimedDockerfile && fs.existsSync(path.join(targetPath, claimedDockerfile))
+          ? claimedDockerfile
+          : fs.existsSync(path.join(targetPath, "Dockerfile.frontend"))
+            ? "Dockerfile.frontend"
+            : (findDockerfile(targetPath) ?? "")
         : "";
     const service = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
       | { name?: string }
