@@ -40,6 +40,10 @@ import { registerInspectorRoutes } from "./routes/inspector.js";
 import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerAiGatewayRoutes } from "./routes/aiGateway.js";
+import { getGatewayConfig, primeCredentialRedaction } from "./services/aiGateway.js";
+import { startInferenceServer, stopInferenceServer } from "./services/aiGatewayServer.js";
+import { isExternalMode, primeExternalRedaction } from "./services/aiGatewayExternal.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerCrashReporter } from "./services/crashReporter.js";
 import { startMetricsLoop } from "./services/metrics.js";
@@ -282,6 +286,7 @@ export async function buildApp(): Promise<AppContext> {
   registerTerminalRoutes(ctx);
   registerAgentRoutes(ctx);
   registerMcpRoutes(ctx);
+  registerAiGatewayRoutes(ctx);
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
@@ -289,6 +294,13 @@ export async function buildApp(): Promise<AppContext> {
   const stopCrashReporter = registerCrashReporter(ctx);
   ctx.shutdownTasks.push(() => stopCrashReporter());
   ctx.shutdownTasks.push(() => stopAllTerminalSessions(ctx));
+
+  // Register stored provider keys with the AI Gateway's redactor *before* any
+  // request can run, so masking is active from the first log line rather than
+  // from the first credential read (§7).
+  primeCredentialRedaction(ctx);
+  primeExternalRedaction(ctx);
+  ctx.shutdownTasks.push(() => stopInferenceServer());
 
   // --- Static dashboard bundle --------------------------------------------
   // When SURVHub is distributed as a single binary/npm package, the built
@@ -358,6 +370,16 @@ export async function buildApp(): Promise<AppContext> {
   ctx.shutdownTasks.push(() => stopUpdateCheck());
   const stopScheduledBackups = startScheduledBackupsLoop(ctx);
   ctx.shutdownTasks.push(() => stopScheduledBackups());
+
+  // Bring the inference listener back up after a restart if the operator had
+  // it enabled — unless the tab is pointed at an external container, in which
+  // case there is no in-process gateway to run. Fire-and-forget: a port clash
+  // must not block API readiness, and the dashboard surfaces `running: false`.
+  if (!isExternalMode(ctx) && getGatewayConfig(ctx).enabled) {
+    void startInferenceServer(ctx).catch((err) => {
+      app.log.error({ err }, "AI Gateway inference server failed to start");
+    });
+  }
   return ctx;
 }
 
@@ -425,6 +447,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/backup",
     "/agents",
     "/mcp",
+    "/api",
     "/ws",
     "/.well-known",
     "/onboarding",

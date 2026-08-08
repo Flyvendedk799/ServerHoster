@@ -12,7 +12,8 @@ import {
   Globe,
   KeyRound,
   Film,
-  SunMoon
+  SunMoon,
+  Zap
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -80,6 +81,14 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       category: "Navigation",
       shortcut: "G E",
       action: () => navigate("/secrets")
+    },
+    {
+      id: "ai-gateway",
+      name: "AI Gateway",
+      icon: Zap,
+      category: "Navigation",
+      shortcut: "G A",
+      action: () => navigate("/ai-gateway")
     },
     {
       id: "deps",

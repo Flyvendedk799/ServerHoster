@@ -54,6 +54,10 @@ const API_PREFIXES = [
   "/backup",
   "/agents",
   "/mcp",
+  // AI Gateway *management* endpoints. The inference endpoints (/v1/*) are on
+  // a separate Fastify instance and authenticate with consumer tokens instead;
+  // they never reach this hook.
+  "/api",
   "/ws",
   "/onboarding",
   "/service-templates",
@@ -64,7 +68,12 @@ const API_PREFIXES = [
   "/plex"
 ];
 
-function isApiPath(path: string): boolean {
+/**
+ * Exported so tests can assert that a namespace is actually gated. A path that
+ * is NOT an API path is served to anonymous callers by the static dashboard
+ * handler, so a missing prefix here is an auth bypass, not a 404.
+ */
+export function isApiPath(path: string): boolean {
   return API_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
 }
 

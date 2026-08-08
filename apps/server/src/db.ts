@@ -499,7 +499,45 @@ const migrations = [
   // re-runs on every boot, so this DROP must come after it in the array.
   "ALTER TABLE proxy_routes ADD COLUMN path_prefix TEXT NOT NULL DEFAULT '/'",
   "DROP INDEX IF EXISTS idx_proxy_routes_domain",
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_routes_domain_path ON proxy_routes(domain, path_prefix)"
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_routes_domain_path ON proxy_routes(domain, path_prefix)",
+  // --- AI Gateway (SubGate) ------------------------------------------------
+  // Consumer bearer tokens for the inference endpoints. Only the SHA-256 hash
+  // is stored: a leaked database must not yield working tokens, and the plain
+  // value is shown exactly once at mint time. `prefix` is display-only.
+  `CREATE TABLE IF NOT EXISTS ai_gateway_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT,
+    request_count INTEGER NOT NULL DEFAULT 0
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_ai_gateway_tokens_hash ON ai_gateway_tokens(token_hash)",
+  // Per-request metering. Deliberately records only metadata — never prompt or
+  // completion text (§7: prompt content is user data).
+  `CREATE TABLE IF NOT EXISTS ai_gateway_usage (
+    id TEXT PRIMARY KEY,
+    token_id TEXT,
+    token_name TEXT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    wire TEXT NOT NULL,
+    streamed INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    status_code INTEGER NOT NULL,
+    error_code TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_ai_gateway_usage_created ON ai_gateway_usage(created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_ai_gateway_usage_token ON ai_gateway_usage(token_id, created_at DESC)",
+  // A companion service (auto-created from an extra root Dockerfile — e.g. a
+  // worker) inherits its env from a primary tier at deploy time via this link,
+  // rather than getting a one-time snapshot copy. NULL for normal services.
+  "ALTER TABLE services ADD COLUMN env_from_service_id TEXT"
 ];
 
 for (const statement of migrations) {

@@ -5743,3 +5743,134 @@ a.list-row:hover .row-chevron,
   gap: 8px;
   margin-top: 10px;
 }
+
+/* ---- AI Gateway (SubGate) ------------------------------------------------ */
+
+/* Success counterpart to the existing .alert-amber. */
+.alert-green {
+  border: 1px solid var(--green-border);
+  background: var(--green-dim);
+}
+.alert-green .alert-title {
+  color: var(--green);
+}
+
+.ai-gateway-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ai-gw-status {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-gw-status-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.ai-gw-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.ai-gw-stat .stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.ai-gw-grid {
+  align-items: start;
+}
+
+.ai-gw-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--b1);
+  border-radius: var(--r3);
+  background: var(--s2);
+}
+
+.ai-gw-provider-head,
+.ai-gw-provider-actions,
+.ai-gw-model-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The key input must not shrink to nothing next to its Save button. */
+.ai-gw-provider-body,
+.ai-gw-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-gw-provider-body input,
+.ai-gw-inline input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Long tokens and URLs wrap instead of forcing the card to scroll. */
+.ai-gw-snippet {
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--b1);
+  border-radius: var(--r3);
+  background: var(--s2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ai-gw-token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-gw-token-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--b1);
+  border-radius: var(--r3);
+}
+
+.ai-gw-log {
+  display: flex;
+  flex-direction: column;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.ai-gw-log-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--b1);
+}
+
+.ai-gw-log-row:last-child {
+  border-bottom: none;
+}

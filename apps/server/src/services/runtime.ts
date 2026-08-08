@@ -73,6 +73,32 @@ const RESTART_STABILITY_MS = 30_000;
  * system-managed resource env, and linked database auto-injection. Used by
  * both runtime and deploy — keep it the single env merge path.
  */
+/**
+ * Env a companion service inherits from its primary tier.
+ *
+ * Companions (auto-created from an extra root Dockerfile, e.g. a worker) carry
+ * an `env_from_service_id` link to the tier they share config with — the plain
+ * `Dockerfile` API/app. Reading that tier's *current* env here (rather than
+ * snapshotting it at creation) means a secret rotated on the primary flows to
+ * the companion on its next deploy, and only the companion inherits — the env
+ * never leaks into unrelated tiers the way a project-wide scope would.
+ * Returns {} for normal services (no link) so their behaviour is unchanged.
+ */
+export function getInheritedServiceEnv(ctx: AppContext, serviceId: string): Record<string, string> {
+  let sourceId: string | undefined;
+  try {
+    const row = ctx.db
+      .prepare("SELECT env_from_service_id FROM services WHERE id = ?")
+      .get(serviceId) as { env_from_service_id?: string | null } | undefined;
+    sourceId = row?.env_from_service_id ?? undefined;
+  } catch {
+    // Column absent (pre-migration) — no inheritance.
+    return {};
+  }
+  if (!sourceId || sourceId === serviceId) return {};
+  return getServiceEnv(ctx, sourceId);
+}
+
 export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Record<string, string> {
   const service = ctx.db
     .prepare("SELECT project_id, linked_database_id, type FROM services WHERE id = ?")
@@ -128,7 +154,10 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
     const base = service?.type === "docker" ? "/data" : serviceDataDirFor(ctx, serviceId);
     merged.DATABASE_URL = `file:${base}/prisma.db`;
   }
-  return { ...merged, ...serviceEnv };
+  // A companion inherits its primary tier's env (below its own overrides, above
+  // project defaults and auto-injection). Empty for normal services.
+  const inheritedEnv = getInheritedServiceEnv(ctx, serviceId);
+  return { ...merged, ...inheritedEnv, ...serviceEnv };
 }
 
 /** True if the service's clone contains a Prisma schema using the sqlite provider. */

@@ -18,7 +18,8 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Command
+  Command,
+  Zap
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -26,6 +27,7 @@ import { ServicesPage } from "./pages/Services";
 import { ServiceLogsPage } from "./pages/ServiceLogs";
 import { DatabasesPage } from "./pages/Databases";
 import { SecretsPage } from "./pages/Secrets";
+import { AiGatewayPage } from "./pages/AiGateway";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
@@ -120,6 +122,7 @@ const routeLabels: Record<string, string> = {
   services: "Services",
   projects: "Projects",
   secrets: "Secrets",
+  "ai-gateway": "AI Gateway",
   databases: "Databases",
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
@@ -308,6 +311,15 @@ export function App() {
             {!collapsed && <span>Secrets</span>}
           </NavLink>
           <NavLink
+            to="/ai-gateway"
+            aria-label="AI Gateway"
+            title={collapsed ? "AI Gateway" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Zap size={16} />
+            {!collapsed && <span>AI Gateway</span>}
+          </NavLink>
+          <NavLink
             to="/databases"
             aria-label="Databases"
             title={collapsed ? "Databases" : undefined}
@@ -461,6 +473,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <SecretsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai-gateway"
+                  element={
+                    <ProtectedRoute>
+                      <AiGatewayPage />
                     </ProtectedRoute>
                   }
                 />

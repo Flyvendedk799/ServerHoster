@@ -829,6 +829,17 @@ export async function createCompanionDockerServices(
   claimed.add(claimedDockerfile);
   const usedNames = new Set(siblings.map((row) => String(row.name ?? "")));
 
+  // The tier a companion inherits env from at deploy time: the plain-`Dockerfile`
+  // API/app (which a worker/side-service shares config with), else the service
+  // being deployed. Stored as a link (`env_from_service_id`) rather than a
+  // snapshot copy, so the companion always reads the primary's CURRENT env — a
+  // secret rotated on the backend flows through on the next deploy, and only the
+  // companion inherits (no leakage to unrelated tiers, unlike a project scope).
+  const primaryTier = ctx.db
+    .prepare("SELECT id FROM services WHERE project_id = ? AND dockerfile = 'Dockerfile' LIMIT 1")
+    .get(parent.project_id) as { id?: string } | undefined;
+  const envSourceId = primaryTier?.id ?? serviceId;
+
   const created: Array<{ id: string; name: string; dockerfile: string; port: number }> = [];
   for (const dockerfile of dockerfiles) {
     if (claimed.has(dockerfile)) continue;
@@ -843,8 +854,8 @@ export async function createCompanionDockerServices(
         `INSERT INTO services (
           id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
           auto_restart, restart_count, max_restarts, start_mode, environment,
-          github_repo_url, github_branch, github_auto_pull, stop_with_hoster, created_at, updated_at
-        ) VALUES (?, ?, ?, 'docker', '', '', '', ?, ?, 'stopped', 1, 0, 5, ?, ?, ?, ?, ?, 1, ?, ?)`
+          github_repo_url, github_branch, github_auto_pull, stop_with_hoster, env_from_service_id, created_at, updated_at
+        ) VALUES (?, ?, ?, 'docker', '', '', '', ?, ?, 'stopped', 1, 0, 5, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
       )
       .run(
         companionId,
@@ -857,6 +868,7 @@ export async function createCompanionDockerServices(
         parent.github_repo_url,
         parent.github_branch ?? "main",
         parent.github_auto_pull ?? 1,
+        envSourceId && envSourceId !== companionId ? envSourceId : null,
         createdAt,
         createdAt
       );
