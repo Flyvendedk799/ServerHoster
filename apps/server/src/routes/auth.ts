@@ -12,6 +12,11 @@ import {
 import { nanoid } from "nanoid";
 import { nowIso } from "../lib/core.js";
 import { publicResourceRouteForRequest } from "../services/resources/publicExposure.js";
+import {
+  companionRequestAllowed,
+  resolveCompanionDevice,
+  touchCompanionDevice
+} from "../services/companion.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).optional(),
@@ -65,7 +70,8 @@ const API_PREFIXES = [
   "/tunnels",
   "/admin",
   "/logs",
-  "/plex"
+  "/plex",
+  "/companion"
 ];
 
 /**
@@ -122,6 +128,10 @@ export function registerAuthRoutes(ctx: AppContext): void {
     if (path === "/admin/reset-admin") return;
     // ACME HTTP-01 challenges must be reachable from Let's Encrypt without auth.
     if (path.startsWith("/.well-known/acme-challenge/")) return;
+    // Companion pairing claim: the phone has no credential until this call
+    // succeeds. Guarded by a single-use short-lived code plus a route-level
+    // rate limit — see services/companion.ts.
+    if (path === "/companion/pair/claim") return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API
     // prefix) are served by registerDashboardStatic without auth. The
     // dashboard then attaches the Bearer token to its API calls.
@@ -129,6 +139,23 @@ export function registerAuthRoutes(ctx: AppContext): void {
     if ((method === "GET" || method === "HEAD") && !isApiPath(path)) return;
     const authHeader = req.headers.authorization;
     const token = authHeader?.replace(/^Bearer\s+/i, "") ?? "";
+    // A paired phone authenticates with a device token instead of a session.
+    // It is deliberately *less* privileged than the dashboard: the scope check
+    // below is the only thing standing between a lost phone and a deleted
+    // production service, so it runs before the request reaches any route.
+    const device = resolveCompanionDevice(ctx, token);
+    if (device) {
+      if (!companionRequestAllowed(device.scope, method, path)) {
+        reply.code(403).send({
+          error: "This action is not available to a paired companion device",
+          code: "COMPANION_SCOPE_DENIED"
+        });
+        return;
+      }
+      touchCompanionDevice(ctx, device.id, req.ip ?? null);
+      (req as { actor?: string }).actor = `companion:${device.id}`;
+      return;
+    }
     if (!isAuthorizedToken(ctx, token)) {
       reply.code(401).send({ error: "Unauthorized" });
       return;

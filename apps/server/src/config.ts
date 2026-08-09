@@ -79,6 +79,19 @@ export const config = {
    */
   adminResetToken: process.env.SURVHUB_ADMIN_RESET_TOKEN ?? "",
   enableHttps: process.env.SURVHUB_ENABLE_HTTPS === "1",
+  /**
+   * The address this control plane answers on from the outside world (e.g. the
+   * Cloudflare Tunnel hostname). Used as the first-choice endpoint when pairing
+   * a phone: the dashboard is usually open on localhost, which is useless to a
+   * device on mobile data. Empty → the pairing UI offers detected candidates.
+   */
+  publicUrl: (process.env.SURVHUB_PUBLIC_URL ?? "").replace(/\/+$/, ""),
+  /**
+   * Where the companion app is hosted, if anywhere. When set, a pairing QR
+   * encodes a deep link into that app instead of a raw payload, so the phone's
+   * stock camera can open it straight from the lock screen.
+   */
+  companionAppUrl: (process.env.SURVHUB_COMPANION_APP_URL ?? "").replace(/\/+$/, ""),
   certPath: process.env.SURVHUB_CERT_PATH ?? path.join(dataRoot, "certs", "server-cert.pem"),
   keyPath: process.env.SURVHUB_KEY_PATH ?? path.join(dataRoot, "certs", "server-key.pem"),
   healthcheckIntervalMs: Number(process.env.SURVHUB_HEALTHCHECK_INTERVAL_MS ?? 15000),

@@ -19,6 +19,8 @@ Every knob LocalSURV reads at startup, every file it writes on disk, every port 
 | `SURVHUB_KEY_PATH`                | path    | `$DATA/certs/server-key.pem`  | Default TLS key                                                                                                                                                                             |
 | `SURVHUB_HEALTHCHECK_INTERVAL_MS` | number  | `15000`                       | How often healthchecks fire against services with `healthcheck_path` set                                                                                                                    |
 | `SURVHUB_GIT_POLL_INTERVAL_MS`    | number  | `60000`                       | GitOps polling interval                                                                                                                                                                     |
+| `SURVHUB_PUBLIC_URL`              | url     | _(empty)_                     | The address this control plane answers on from outside (e.g. a Cloudflare Tunnel hostname). Offered first when pairing a phone — see [companion app](companion-app.md).                     |
+| `SURVHUB_COMPANION_APP_URL`       | url     | _(empty)_                     | Where the companion app is hosted. Allowed through CORS automatically, and switches the pairing QR to a deep link the phone's stock camera can open.                                        |
 
 Generate a fresh secret key:
 
