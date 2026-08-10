@@ -22,6 +22,31 @@ function parseTrustedOrigins(raw: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+/**
+ * Whether `X-Forwarded-For` may be believed.
+ *
+ * Off by default, because trusting it unconditionally lets any caller name
+ * their own address, and `req.ip` is what bounds the companion pairing-claim
+ * budget. But leaving it off *behind* a proxy is its own failure: every remote
+ * request then arrives wearing the proxy's address, so per-IP rate limits
+ * collapse into one shared bucket and a phone's recorded last-seen IP is the
+ * tunnel's, not the phone's.
+ *
+ * `1` trusts the immediate hop — right for cloudflared, nginx or Caddy running
+ * on this host. A comma-separated list of addresses or CIDRs trusts only those.
+ */
+function parseTrustProxy(raw: string | undefined): boolean | string[] {
+  const value = (raw ?? "").trim();
+  if (!value) return false;
+  const lowered = value.toLowerCase();
+  if (lowered === "1" || lowered === "true") return true;
+  if (lowered === "0" || lowered === "false") return false;
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 const defaultDevOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
@@ -79,6 +104,8 @@ export const config = {
    */
   adminResetToken: process.env.SURVHUB_ADMIN_RESET_TOKEN ?? "",
   enableHttps: process.env.SURVHUB_ENABLE_HTTPS === "1",
+  /** See `parseTrustProxy`. Set this if you reach the dashboard through a tunnel. */
+  trustProxy: parseTrustProxy(process.env.SURVHUB_TRUST_PROXY),
   /**
    * The address this control plane answers on from the outside world (e.g. the
    * Cloudflare Tunnel hostname). Used as the first-choice endpoint when pairing

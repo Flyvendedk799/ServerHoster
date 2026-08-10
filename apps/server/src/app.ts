@@ -163,7 +163,15 @@ export async function buildApp(): Promise<AppContext> {
   // 50 MiB body limit so backup import (`/backup/import`) can carry a full
   // database snapshot. Default Fastify is 1 MiB which trips even on modest
   // installations once audit_logs accumulates.
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, ...httpsOptions });
+  const app = Fastify({
+    logger: true,
+    bodyLimit: 50 * 1024 * 1024,
+    // Off unless the operator names their proxy. `req.ip` is not cosmetic here:
+    // it bounds the companion pairing-claim budget and is recorded as a paired
+    // device's last-seen address.
+    trustProxy: config.trustProxy,
+    ...httpsOptions
+  });
 
   // Capture raw request bytes so webhook handlers can verify HMAC signatures.
   // GitHub signs the raw body, so JSON.stringify(req.body) is not byte-equivalent.

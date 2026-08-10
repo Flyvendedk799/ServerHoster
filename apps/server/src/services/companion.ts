@@ -15,11 +15,13 @@ import type { AppContext } from "../types.js";
  *
  *  1. The claim endpoint is unauthenticated by necessity — the phone has no
  *     credential yet. So the code is short-lived (5 min), single-use, attempt
- *     capped, rate limited at the route, and compared in constant time.
+ *     capped per caller, and rate limited at the route. Lookup is by SHA-256
+ *     hash, so the code itself is never compared byte by byte.
  *  2. A phone is a device that gets lost on a bus. Its token is therefore
- *     *scoped*: it can look at the fleet and press start/stop/restart/redeploy,
- *     but it can never read secrets, open a terminal, delete a service, export
- *     a backup, or mint another pairing code. See `companionRequestAllowed`.
+ *     *scoped* to an explicit allowlist on both reads and writes: it sees fleet
+ *     state and service logs and can press start/stop/restart/redeploy, and
+ *     nothing else reaches it — no secrets, no env, no database contents, no
+ *     terminal, no backup, no second pairing. See `companionRequestAllowed`.
  *
  * Only the SHA-256 hash of a code or token is persisted, so a stolen database
  * file does not yield working credentials.
@@ -29,7 +31,6 @@ import type { AppContext } from "../types.js";
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789";
 const CODE_LENGTH = 8;
 const PAIRING_TTL_MS = 5 * 60 * 1000;
-const MAX_CLAIM_ATTEMPTS = 5;
 
 /** One year. Long-lived on purpose: re-pairing from a bus is not an option. */
 const DEVICE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
@@ -207,6 +208,13 @@ export type PairingStatus = {
   serverUrl: string;
   expiresAt: number;
   device: CompanionDevice | null;
+  /**
+   * Wrong codes submitted while this pairing was live. A stray one or two is a
+   * typo; a wall of them means someone is guessing, and since a guesser can no
+   * longer kill the code themselves, the operator is the one who decides to
+   * cancel. That only works if the number is on screen.
+   */
+  failedAttempts: number;
 };
 
 export function getPairingStatus(ctx: AppContext, pairingId: string): PairingStatus | null {
@@ -226,7 +234,8 @@ export function getPairingStatus(ctx: AppContext, pairingId: string): PairingSta
     scope: normalizeScope(row.scope),
     serverUrl: row.server_url,
     expiresAt: row.expires_at,
-    device: device ? rowToDevice(device) : null
+    device: device ? rowToDevice(device) : null,
+    failedAttempts: row.attempts
   };
 }
 
@@ -267,44 +276,100 @@ export type ClaimResult = {
 };
 
 /**
+ * Wrong guesses are charged to the *caller*, never to the pairing.
+ *
+ * The obvious design — five bad attempts and the code dies — hands anyone who
+ * can reach this endpoint a button that destroys the operator's in-flight QR,
+ * and the endpoint is unauthenticated by necessity. Five junk codes and the
+ * pairing on screen is dead; repeat and pairing becomes impossible. So a miss
+ * costs the caller their own budget, the pairing survives, and the failure
+ * count is surfaced on the pairing status so a human can decide to cancel.
+ *
+ * Kept in memory deliberately: the window is no longer than the code's own
+ * 5-minute TTL, so a restart cannot hand an attacker more reach than simply
+ * waiting would have.
+ */
+const CLAIM_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * Deliberately below the route's 10-per-minute rate limit. The two controls
+ * bound different things — the rate limit stops a burst, this stops sustained
+ * guessing across minutes — and keeping this the tighter of the two means a
+ * guesser meets `PAIRING_LOCKED`, which the app can explain, rather than a bare
+ * "too many requests".
+ */
+const MAX_CLAIM_FAILURES_PER_CALLER = 8;
+
+type FailureBucket = { count: number; resetAt: number };
+const claimFailures = new Map<string, FailureBucket>();
+
+function callerBucket(caller: string, now: number): FailureBucket {
+  const existing = claimFailures.get(caller);
+  if (existing && existing.resetAt > now) return existing;
+  const fresh: FailureBucket = { count: 0, resetAt: now + CLAIM_FAILURE_WINDOW_MS };
+  claimFailures.set(caller, fresh);
+  return fresh;
+}
+
+/** Swept only when the map has grown, so a spray of forged callers cannot leak it. */
+function pruneClaimFailures(now: number): void {
+  if (claimFailures.size < 1000) return;
+  for (const [key, bucket] of claimFailures) {
+    if (bucket.resetAt <= now) claimFailures.delete(key);
+  }
+}
+
+/** Test seam — the buckets are process-global, so cases would bleed into each other. */
+export function resetClaimFailures(): void {
+  claimFailures.clear();
+}
+
+/**
  * Exchange a pairing code for a device token. Single-use: the row is marked
  * claimed inside the same transaction that mints the device, so two phones
  * racing on the same photographed QR cannot both win.
+ *
+ * `caller` identifies who is guessing — `req.ip`, which is only meaningful if
+ * the app trusts its proxy (see `config.trustProxy`).
  */
 export function claimPairing(
   ctx: AppContext,
-  input: { code: string; deviceName: string; platform?: string | null }
+  input: { code: string; deviceName: string; platform?: string | null; caller: string }
 ): ClaimResult {
+  const now = Date.now();
+  pruneClaimFailures(now);
+  const bucket = callerBucket(input.caller, now);
+  if (bucket.count >= MAX_CLAIM_FAILURES_PER_CALLER) {
+    throw new PairingError("Too many failed attempts from this device", 429, "PAIRING_LOCKED");
+  }
   cleanupExpiredPairings(ctx);
   const codeHash = sha256(normalizePairingCode(input.code));
   const row = ctx.db.prepare("SELECT * FROM companion_pairings WHERE code_hash = ?").get(codeHash) as
     | PairingRow
     | undefined;
 
-  // Burn an attempt against every live pairing on a miss, so a guesser cannot
-  // learn anything from the shape of the failure. There is normally at most
-  // one live pairing, so this is a no-op in practice.
   if (!row) {
+    bucket.count += 1;
+    // Record the miss against every live pairing as a signal for the operator —
+    // the dashboard renders it next to the QR — but never act on it. Acting on
+    // it is precisely the denial of service this counter used to be.
     ctx.db
       .prepare(
         "UPDATE companion_pairings SET attempts = attempts + 1 WHERE claimed_at IS NULL AND expires_at > ?"
       )
-      .run(Date.now());
-    ctx.db
-      .prepare("DELETE FROM companion_pairings WHERE claimed_at IS NULL AND attempts >= ?")
-      .run(MAX_CLAIM_ATTEMPTS);
+      .run(now);
     throw new PairingError("Invalid or expired pairing code", 401, "PAIRING_INVALID");
   }
   if (row.claimed_at) throw new PairingError("Pairing code already used", 409, "PAIRING_USED");
-  if (row.expires_at <= Date.now()) throw new PairingError("Pairing code expired", 410, "PAIRING_EXPIRED");
-  if (row.attempts >= MAX_CLAIM_ATTEMPTS) {
-    throw new PairingError("Too many failed attempts for this code", 429, "PAIRING_LOCKED");
-  }
+  if (row.expires_at <= now) throw new PairingError("Pairing code expired", 410, "PAIRING_EXPIRED");
+
+  // The right code clears the caller's budget: a fat-fingered operator who
+  // finally types it correctly should not stay locked out of their next pairing.
+  claimFailures.delete(input.caller);
 
   const token = nanoid(48);
   const deviceId = nanoid();
   const createdAt = nowIso();
-  const expiresAt = Date.now() + DEVICE_TOKEN_TTL_MS;
+  const expiresAt = now + DEVICE_TOKEN_TTL_MS;
   const name = input.deviceName.trim().slice(0, 60) || "Phone";
   const platform = input.platform?.trim().slice(0, 60) || null;
 
@@ -359,41 +424,70 @@ const CONTROL_WRITE_PATTERNS: RegExp[] = [
   /^\/databases\/[^/]+\/(start|stop|restart)$/,
   /^\/deployments\/rollback$/,
   /^\/notifications\/[^/]+\/read$/,
-  /^\/notifications\/read-all$/,
-  /^\/companion\/(heartbeat|unpair)$/
+  /^\/notifications\/read-all$/
 ];
 
 /**
- * Reads a companion device may NOT perform, even though its scope covers
- * reading. These leak credentials or host state that a phone has no business
- * holding: secret values, SSH keys, GitHub PATs, database dumps, AI gateway
- * tokens, MCP/agent session bootstrap, and the admin surface.
+ * Reads a companion device may perform. An allowlist for the same reason the
+ * write list is one, and the reason is not symmetry — it is that a denylist
+ * widens the phone's reach every time someone adds a route, silently and in a
+ * commit that has nothing to do with pairing.
+ *
+ * The first draft of this file used a denylist. It named `/secrets`, `/backup`
+ * and `/services/:id/env`, and it looked complete. It still handed a paired
+ * phone `/databases/:id` (every managed database's password, in the clear),
+ * `/databases/:id/tables/:schema/:table/preview` (any row of any table) and
+ * `/databases/:id/backups/:backupId/download` (the whole dump), because none
+ * of those paths start with `/backup` or end in `/env`.
+ *
+ * `/services/:id/logs` IS on this list, deliberately. Reading logs from a phone
+ * is the app's reason to exist, and logs are the one allowed surface that can
+ * carry a secret — not because the control plane leaks it, but because an
+ * application printed it. That trade-off is stated in docs/companion-app.md
+ * where an operator will see it, rather than buried here.
  */
-const READ_DENY_PATTERNS: RegExp[] = [
-  /^\/secrets(\/|$)/,
-  /^\/backup(\/|$)/,
-  /^\/settings\/(ssh|github)(\/|$)/,
-  /^\/admin(\/|$)/,
-  /^\/agents(\/|$)/,
-  /^\/mcp(\/|$)/,
-  /^\/api\/ai-gateway(\/|$)/,
-  /^\/ops\/(audit-logs|diagnostics|install-scripts)$/,
-  // Pairing administration stays on the desktop: a lost phone must not be able
-  // to enumerate the other paired devices or mint a code for a second one.
-  /^\/companion\/(devices|endpoints|pairings)(\/|$)/,
-  /\/terminal-sessions(\/|$)/,
-  /\/env(\/|$)/,
-  /\/certificate(\/|$)/
+const READ_ALLOW_PATTERNS: RegExp[] = [
+  // The app's own surface. `/companion/summary` is the aggregate the home
+  // screen loads; it selects named columns, so it cannot grow a secret the way
+  // a `SELECT *` route can.
+  /^\/companion\/(summary|me)$/,
+  // Fleet state. Rows in `services` and `projects` carry no credentials — env
+  // lives in its own table behind /services/:id/env, which is not on this list.
+  /^\/services$/,
+  // `/services/:id` — but not the sibling collection route
+  // `/services/env-requirements`, which reports which variables a service is
+  // missing and is not something any companion screen asks for.
+  /^\/services\/(?!env-requirements$)[^/]+$/,
+  /^\/services\/[^/]+\/logs$/,
+  /^\/services\/[^/]+\/deployments\/timeline$/,
+  /^\/services\/[^/]+\/github-sync-status$/,
+  /^\/projects$/,
+  /^\/service-groups$/,
+  /^\/notifications$/,
+  // Host vitals behind the home screen's header.
+  /^\/health$/,
+  /^\/health\/(system|docker)$/,
+  /^\/metrics\/system$/,
+  /^\/metrics\/services(\/[^/]+)?$/
 ];
+
+/**
+ * Requests a device may make about *itself*, at any scope. Checking in and —
+ * above all — revoking itself must not depend on holding `control`: a read-only
+ * phone left in a taxi is precisely the case where "forget this server" has to
+ * work from the phone.
+ */
+const SELF_SERVICE_PATTERN = /^\/companion\/(heartbeat|unpair)$/;
 
 /**
  * The authorization decision for a companion device token. `path` must already
- * have its query string stripped.
+ * have its query string stripped — the auth hook does this in `requestPath`.
  */
 export function companionRequestAllowed(scope: CompanionScope, method: string, path: string): boolean {
   const verb = method.toUpperCase();
+  if (verb === "POST" && SELF_SERVICE_PATTERN.test(path)) return true;
   if (verb === "GET" || verb === "HEAD") {
-    return !READ_DENY_PATTERNS.some((re) => re.test(path));
+    return READ_ALLOW_PATTERNS.some((re) => re.test(path));
   }
   if (scope !== "control") return false;
   return CONTROL_WRITE_PATTERNS.some((re) => re.test(path));

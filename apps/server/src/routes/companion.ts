@@ -213,7 +213,10 @@ export function registerCompanionRoutes(ctx: AppContext): void {
     async (req, reply) => {
       const parsed = claimSchema.parse(req.body);
       try {
-        const result = claimPairing(ctx, parsed);
+        // `req.ip` is the socket peer unless SURVHUB_TRUST_PROXY names the hop
+        // in front of us; behind an untrusted proxy every caller collapses into
+        // one bucket, which is why that setting exists.
+        const result = claimPairing(ctx, { ...parsed, caller: req.ip ?? "unknown" });
         return {
           token: result.token,
           deviceId: result.device.id,

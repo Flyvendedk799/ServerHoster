@@ -37,6 +37,8 @@ type Pairing = {
 type PairingStatus = {
   status: "pending" | "claimed" | "expired";
   device: Device | null;
+  /** Wrong codes submitted while this pairing was live. */
+  failedAttempts: number;
 };
 
 const CUSTOM = "__custom__";
@@ -70,6 +72,7 @@ export function CompanionPanel() {
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [pairedDevice, setPairedDevice] = useState<Device | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [failedAttempts, setFailedAttempts] = useState(0);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -134,6 +137,7 @@ export function CompanionPanel() {
         body: JSON.stringify({ scope, serverUrl })
       });
       setPairing(created);
+      setFailedAttempts(0);
       stopPolling();
       pollRef.current = setInterval(() => {
         void (async () => {
@@ -150,6 +154,11 @@ export function CompanionPanel() {
               void loadDevices();
             } else if (status.status === "expired") {
               stopPolling();
+            } else {
+              // Wrong guesses no longer kill the code — that would hand anyone
+              // who can reach the claim endpoint a way to break pairing. The
+              // decision to cancel is the operator's, so they have to see this.
+              setFailedAttempts(status.failedAttempts ?? 0);
             }
           } catch {
             /* transient — the next tick retries */
@@ -298,6 +307,15 @@ export function CompanionPanel() {
                     ? `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}`
                     : "expired"}
                 </dd>
+                {failedAttempts > 0 && (
+                  <>
+                    <dt>Wrong attempts</dt>
+                    <dd className={failedAttempts >= 3 ? "text-warning" : undefined}>
+                      {failedAttempts}
+                      {failedAttempts >= 3 ? " — someone is guessing; cancel and re-issue" : ""}
+                    </dd>
+                  </>
+                )}
               </dl>
               <div className="row small muted" style={{ gap: "0.4rem" }}>
                 {secondsLeft > 0 ? (

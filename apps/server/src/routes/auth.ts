@@ -17,6 +17,7 @@ import {
   resolveCompanionDevice,
   touchCompanionDevice
 } from "../services/companion.js";
+import { writeAuditLog } from "../services/audit.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).optional(),
@@ -145,6 +146,10 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // production service, so it runs before the request reaches any route.
     const device = resolveCompanionDevice(ctx, token);
     if (device) {
+      // Stamped before the scope check, not after: a refused write is exactly
+      // the event worth having in the audit log, and the onResponse hook below
+      // reads the actor off the request to write it.
+      (req as { actor?: string }).actor = `companion:${device.id}`;
       if (!companionRequestAllowed(device.scope, method, path)) {
         reply.code(403).send({
           error: "This action is not available to a paired companion device",
@@ -153,7 +158,6 @@ export function registerAuthRoutes(ctx: AppContext): void {
         return;
       }
       touchCompanionDevice(ctx, device.id, req.ip ?? null);
-      (req as { actor?: string }).actor = `companion:${device.id}`;
       return;
     }
     if (!isAuthorizedToken(ctx, token)) {
@@ -161,6 +165,32 @@ export function registerAuthRoutes(ctx: AppContext): void {
       return;
     }
     (req as { actor?: string }).actor = resolveActorFromToken(ctx, token) ?? "unknown";
+  });
+
+  /**
+   * Every state-changing request a paired phone makes, recorded.
+   *
+   * The service lifecycle routes write no audit entries of their own, so
+   * without this a 2am production restart from a phone on a train is
+   * indistinguishable from one typed at the desk — and "which device did that"
+   * is the first question a phone-driven control plane invites. Attached at
+   * `onResponse` so the entry carries the outcome, including the 403s that mean
+   * someone is holding a token they should not have.
+   */
+  ctx.app.addHook("onResponse", async (req, reply) => {
+    const actor = (req as { actor?: string }).actor;
+    if (!actor?.startsWith("companion:")) return;
+    const method = (req.method ?? "GET").toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+    writeAuditLog(ctx, {
+      actor,
+      action: `${method} ${requestPath(req.url)}`,
+      resourceType: "companion_device",
+      resourceId: actor.slice("companion:".length),
+      statusCode: reply.statusCode,
+      sourceIp: req.ip ?? null,
+      userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+    });
   });
 
   ctx.app.post(

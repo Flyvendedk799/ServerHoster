@@ -49,17 +49,34 @@ AI Gateway consumer tokens. A copy of `survhub.db` yields no working credential.
 
 `/companion/pair/claim` has to be unauthenticated — the phone holds no credential until it
 succeeds. It is guarded by four independent things: the code lives 5 minutes, it works
-once (enforced inside the transaction that mints the device), it locks after 5 failed
-attempts, and the route is rate limited to 10 requests per minute per IP. The code alphabet
-excludes `0/O` and `1/I`, so a code read off a screen has ~39 bits of entropy against a
-5-minute window.
+once (enforced inside the transaction that mints the device), a caller is cut off after 8
+wrong guesses in 5 minutes, and the route is rate limited to 10 requests per minute per IP.
+The code alphabet excludes `0/O` and `1/I`, so a code read off a screen has ~39 bits of
+entropy against a 5-minute window.
+
+Note where the guess budget is charged: to the **caller**, not to the pairing. Spending it
+against the pairing is the obvious design and it is wrong — the endpoint is unauthenticated,
+so anyone able to reach it could burn five junk codes and destroy the QR on the operator's
+screen, repeatedly, until pairing became impossible. Instead the pairing survives, and the
+number of wrong attempts is shown next to the QR so a human can decide to cancel it.
+
+Both controls key on `req.ip`, which is the proxy's address unless you set
+`SURVHUB_TRUST_PROXY` — see below.
 
 ## What a paired phone may do
 
 Device tokens are checked in the same `onRequest` hook as dashboard sessions, but they are
-deliberately _less_ privileged. Writes are an **allowlist** — a forgotten denylist entry
-would mean a lost phone deleting a production service — and a set of reads is refused
-outright.
+deliberately _less_ privileged. **Reads and writes are both allowlists.** Anything not named
+here is refused, so adding a route to this control plane never silently widens what a phone
+can reach.
+
+**Allowed reads (both scopes):**
+
+- `GET /companion/{summary,me}`
+- `GET /services`, `GET /services/:id`, `GET /services/:id/logs`
+- `GET /services/:id/deployments/timeline`, `GET /services/:id/github-sync-status`
+- `GET /projects`, `GET /service-groups`, `GET /notifications`
+- `GET /health`, `GET /health/{system,docker}`, `GET /metrics/system`, `GET /metrics/services[/:id]`
 
 **Allowed writes (scope `control` only):**
 
@@ -69,18 +86,42 @@ outright.
 - `POST /databases/:id/{start,stop,restart}`
 - `POST /deployments/rollback`
 - `POST /notifications/:id/read`, `POST /notifications/read-all`
-- `POST /companion/{heartbeat,unpair}`
 
-**Refused reads (both scopes):** `/secrets`, `/backup`, `/settings/ssh`, `/settings/github`,
-`/admin`, `/agents`, `/mcp`, `/api/ai-gateway`, `/ops/{audit-logs,diagnostics,install-scripts}`,
-anything ending in `/env`, `/certificate` or `/terminal-sessions`, and the
+**Allowed at either scope:** `POST /companion/{heartbeat,unpair}`. Self-revocation is not a
+privilege — a read-only phone left in a taxi is exactly the case where it has to work.
+
+Everything else is refused with `403 COMPANION_SCOPE_DENIED`, including `/secrets`,
+`/backup`, all of `/databases`, `/settings`, `/admin`, `/api/ai-gateway`, `/ops`, the request
+inspector, `/deployments`, `/logs/query`, anything ending in `/env`, and the
 `/companion/{devices,endpoints,pairings}` administration surface.
 
-Everything else that is a plain `GET` is allowed. A `read`-scoped device gets the reads and
-none of the writes.
+> This list was a denylist first, and the denylist leaked. It named `/secrets`, `/backup`
+> and `/services/:id/env` and looked complete, while `GET /databases/:id` still returned
+> every managed database's password in the clear, `/databases/:id/tables/:schema/:table/preview`
+> returned any row of any table, and `/databases/:id/backups/:backupId/download` streamed the
+> whole dump — none of which start with `/backup` or end in `/env`. If you extend the phone's
+> reach, extend the allowlist and add a case to `apps/server/src/companion.test.ts`.
 
-The same restriction applies on the WebSocket: a device token may follow the live log and
-status stream, but terminal attach messages from a companion socket are ignored.
+### The one thing a phone can read that may contain a secret
+
+`GET /services/:id/logs` is on the allowlist because reading logs from a phone is the app's
+reason to exist. Logs are also where an application prints whatever it chose to print,
+including, sometimes, a token. The control plane does not put secrets there — your services
+might. If that matters more to you than remote troubleshooting, drop the
+`/^\/services\/[^/]+\/logs$/` entry from `READ_ALLOW_PATTERNS` in
+`apps/server/src/services/companion.ts`; nothing else in the app depends on it.
+
+The same shape applies on the WebSocket: a device token may follow the live log and status
+stream, but terminal attach messages from a companion socket are ignored, and terminal output
+is delivered per-session rather than broadcast.
+
+## What a phone did, after the fact
+
+Every state-changing request made with a device token is written to the audit log with the
+actor `companion:<device-id>`, the method and path, the resulting status code, the source IP
+and the User-Agent — refused writes included, since a phone probing for `DELETE /services/:id`
+is how a stolen token announces itself. Reads are not audited; the app polls, and a row per
+poll would bury the writes. **Settings → System → Audit log**, or `GET /ops/audit-logs`.
 
 ## Making the machine reachable
 
@@ -110,7 +151,20 @@ SURVHUB_PUBLIC_URL=https://hoster.example.com
 #   2. the pairing QR encodes a deep link into the app, so a phone's stock
 #      camera can open it straight from the lock screen
 SURVHUB_COMPANION_APP_URL=https://companion.example.com
+
+# Believe X-Forwarded-For. Set this whenever you reach the dashboard through
+# cloudflared, nginx or Caddy. Without it every remote request arrives wearing
+# the proxy's address, so the pairing rate limit and guess budget collapse into
+# one bucket shared by the whole internet — an attacker's guessing then locks
+# out your own phone — and a device's recorded last-seen IP is the tunnel's.
+#   1                     trust the immediate hop
+#   10.0.0.1,10.0.0.0/8   trust only these
+SURVHUB_TRUST_PROXY=1
 ```
+
+Leave `SURVHUB_TRUST_PROXY` unset if the control plane is exposed directly. Turning it on
+without a proxy in front lets any caller forge their own address in a header, which is the
+same failure in the other direction.
 
 If you would rather not think about CORS at all, build `companion/` and serve its `dist/`
 from the same origin as the control plane — for example as a ServerHoster static service on
