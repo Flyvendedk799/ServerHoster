@@ -35,6 +35,51 @@ function emailConfigured(ctx: AppContext): boolean {
   return Boolean(getSetting(ctx, "smtp_host") && getSecretSetting(ctx, "smtp_password"));
 }
 
+// ---- Receiving (Cloudflare Email Routing) ---------------------------------
+// Forwarding is set up against Cloudflare's Email Routing API using a stored
+// token (Zone: Read + Email Routing Rules: Edit) + account id.
+const CF_BASE = "https://api.cloudflare.com/client/v4";
+
+function routingConfigured(ctx: AppContext): boolean {
+  return Boolean(getSecretSetting(ctx, "email_routing_token") && getSecretSetting(ctx, "cloudflare_account_id"));
+}
+
+type CfEnvelope = { success?: boolean; result?: unknown; errors?: Array<{ message?: string }> };
+
+async function cfApi(ctx: AppContext, apiPath: string, init?: RequestInit): Promise<unknown> {
+  const token = getSecretSetting(ctx, "email_routing_token") ?? "";
+  const res = await fetch(`${CF_BASE}${apiPath}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      ...(init?.headers ?? {})
+    }
+  });
+  let data: CfEnvelope | null = null;
+  try {
+    data = (await res.json()) as CfEnvelope;
+  } catch {
+    /* non-JSON body */
+  }
+  if (!res.ok || !data?.success) {
+    const msg = data?.errors?.[0]?.message || `Cloudflare API returned ${res.status}`;
+    const e = new Error(`Cloudflare: ${msg}`) as Error & { statusCode?: number };
+    e.statusCode = 502;
+    throw e;
+  }
+  return data.result;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function forwardDest(actions: any[]): string {
+  return actions?.find((a) => a?.type === "forward")?.value?.[0] ?? "";
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function literalTo(matchers: any[]): string {
+  return matchers?.find((m) => m?.type === "literal" && m?.field === "to")?.value ?? "";
+}
+
 export function registerEmailRoutes(ctx: AppContext): void {
   ctx.app.get("/email/settings", async () => ({
     host: getSetting(ctx, "smtp_host") ?? "",
@@ -193,5 +238,134 @@ export function registerEmailRoutes(ctx: AppContext): void {
       redeploy_required: true,
       message: "Email removed from this project. Redeploy/restart its services."
     };
+  });
+
+  // ---- Receiving (Cloudflare Email Routing) -------------------------------
+  ctx.app.get("/email/receiving/config", async () => ({
+    configured: routingConfigured(ctx)
+  }));
+
+  ctx.app.put("/email/receiving/config", async (req) => {
+    const p = z.object({ token: z.string().optional(), accountId: z.string().optional() }).parse(req.body ?? {});
+    if (p.token && p.token.trim()) setSecretSetting(ctx, "email_routing_token", p.token.trim());
+    if (p.accountId && p.accountId.trim()) setSecretSetting(ctx, "cloudflare_account_id", p.accountId.trim());
+    return { ok: true };
+  });
+
+  ctx.app.get("/email/receiving/zones", async () => {
+    if (!routingConfigured(ctx)) return { configured: false, zones: [] };
+    const result = (await cfApi(ctx, "/zones?per_page=50")) as Array<{ id: string; name: string }>;
+    return { configured: true, zones: result.map((z) => ({ id: z.id, name: z.name })) };
+  });
+
+  ctx.app.get("/email/receiving/:zoneId/rules", async (req) => {
+    if (!routingConfigured(ctx)) {
+      const e = new Error("Email Routing is not configured") as Error & { statusCode?: number };
+      e.statusCode = 400;
+      throw e;
+    }
+    const { zoneId } = req.params as { zoneId: string };
+    const account = getSecretSetting(ctx, "cloudflare_account_id") ?? "";
+    const [rulesRes, catchRes, addrRes] = await Promise.all([
+      cfApi(ctx, `/zones/${zoneId}/email/routing/rules`),
+      cfApi(ctx, `/zones/${zoneId}/email/routing/rules/catch_all`).catch(() => null),
+      cfApi(ctx, `/accounts/${account}/email/routing/addresses`).catch(() => [])
+    ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rules = (rulesRes as any[])
+      .filter((r) => !r?.matchers?.some((m: { type?: string }) => m?.type === "all"))
+      .map((r) => ({
+        id: r.id as string,
+        to: literalTo(r.matchers),
+        dest: forwardDest(r.actions),
+        enabled: Boolean(r.enabled),
+        name: (r.name as string) ?? ""
+      }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ca = catchRes as any;
+    const catch_all = ca
+      ? { enabled: Boolean(ca.enabled), dest: forwardDest(ca.actions) }
+      : { enabled: false, dest: "" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const destinations = (addrRes as any[]).map((a) => ({ email: a.email as string, verified: Boolean(a.verified) }));
+    return { catch_all, rules, destinations };
+  });
+
+  ctx.app.post("/email/receiving/:zoneId/forward", async (req) => {
+    if (!routingConfigured(ctx)) {
+      const e = new Error("Email Routing is not configured") as Error & { statusCode?: number };
+      e.statusCode = 400;
+      throw e;
+    }
+    const { zoneId } = req.params as { zoneId: string };
+    const body = z.object({ to: z.string().email(), from: z.string().optional() }).parse(req.body ?? {});
+    const account = getSecretSetting(ctx, "cloudflare_account_id") ?? "";
+
+    // 1. Ensure the destination exists (creating it fires a verification email).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const addrs = (await cfApi(ctx, `/accounts/${account}/email/routing/addresses`).catch(() => [])) as any[];
+    const existing = addrs.find((a) => String(a?.email).toLowerCase() === body.to.toLowerCase());
+    const destinationVerified = Boolean(existing?.verified);
+    if (!existing) {
+      await cfApi(ctx, `/accounts/${account}/email/routing/addresses`, {
+        method: "POST",
+        body: JSON.stringify({ email: body.to })
+      }).catch(() => null);
+    }
+
+    // 2. Make sure routing is enabled on the zone (idempotent; ignore failure).
+    await cfApi(ctx, `/zones/${zoneId}/email/routing/enable`, {
+      method: "POST",
+      body: JSON.stringify({})
+    }).catch(() => null);
+
+    // 3. Specific address rule, or the catch-all.
+    const from = body.from?.trim();
+    if (from) {
+      await cfApi(ctx, `/zones/${zoneId}/email/routing/rules`, {
+        method: "POST",
+        body: JSON.stringify({
+          actions: [{ type: "forward", value: [body.to] }],
+          matchers: [{ type: "literal", field: "to", value: from }],
+          enabled: true,
+          name: `${from} -> ${body.to}`
+        })
+      });
+    } else {
+      await cfApi(ctx, `/zones/${zoneId}/email/routing/rules/catch_all`, {
+        method: "PUT",
+        body: JSON.stringify({
+          actions: [{ type: "forward", value: [body.to] }],
+          matchers: [{ type: "all" }],
+          enabled: true
+        })
+      });
+    }
+
+    return {
+      ok: true,
+      destination_verified: destinationVerified,
+      message: destinationVerified
+        ? "Forwarding set."
+        : `Forwarding set — check ${body.to} for a Cloudflare verification link, then it goes live.`
+    };
+  });
+
+  ctx.app.delete("/email/receiving/:zoneId/rules/:ruleId", async (req) => {
+    if (!routingConfigured(ctx)) {
+      const e = new Error("Email Routing is not configured") as Error & { statusCode?: number };
+      e.statusCode = 400;
+      throw e;
+    }
+    const { zoneId, ruleId } = req.params as { zoneId: string; ruleId: string };
+    if (ruleId === "catch_all") {
+      await cfApi(ctx, `/zones/${zoneId}/email/routing/rules/catch_all`, {
+        method: "PUT",
+        body: JSON.stringify({ actions: [{ type: "drop" }], matchers: [{ type: "all" }], enabled: false })
+      });
+    } else {
+      await cfApi(ctx, `/zones/${zoneId}/email/routing/rules/${ruleId}`, { method: "DELETE" });
+    }
+    return { ok: true };
   });
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Mail, Server, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Send, RotateCw } from "lucide-react";
+import { Mail, Server, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Send, RotateCw, Inbox, ArrowRight } from "lucide-react";
 
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
@@ -16,6 +16,14 @@ type EmailSettings = {
 
 type ProjectRow = { id: string; name: string; applied: boolean; from: string };
 
+type ZoneRow = { id: string; name: string };
+type RuleRow = { id: string; to: string; dest: string; enabled: boolean; name: string };
+type ReceivingData = {
+  catch_all: { enabled: boolean; dest: string };
+  rules: RuleRow[];
+  destinations: { email: string; verified: boolean }[];
+};
+
 export function EmailPage() {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
   const [form, setForm] = useState({
@@ -31,6 +39,16 @@ export function EmailPage() {
   const [testTo, setTestTo] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Receiving (Cloudflare Email Routing)
+  const [rcvConfigured, setRcvConfigured] = useState(false);
+  const [zones, setZones] = useState<ZoneRow[]>([]);
+  const [rcvZone, setRcvZone] = useState("");
+  const [rcvData, setRcvData] = useState<ReceivingData | null>(null);
+  const [rcvLoading, setRcvLoading] = useState(false);
+  const [fwMode, setFwMode] = useState<"all" | "specific">("all");
+  const [fwLocal, setFwLocal] = useState("");
+  const [fwTo, setFwTo] = useState("");
 
   async function load() {
     try {
@@ -59,6 +77,7 @@ export function EmailPage() {
 
   useEffect(() => {
     void load();
+    void loadReceiving();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -150,6 +169,73 @@ export function EmailPage() {
     }
   }
 
+  async function loadReceiving() {
+    try {
+      const r = await api<{ configured: boolean; zones: ZoneRow[] }>("/email/receiving/zones", { silent: true });
+      setRcvConfigured(r.configured);
+      setZones(r.zones);
+      if (r.configured && r.zones.length && !rcvZone) {
+        setRcvZone(r.zones[0].id);
+        void loadZone(r.zones[0].id);
+      }
+    } catch {
+      /* silent */
+    }
+  }
+
+  async function loadZone(zoneId: string) {
+    if (!zoneId) {
+      setRcvData(null);
+      return;
+    }
+    setRcvLoading(true);
+    try {
+      const d = await api<ReceivingData>(`/email/receiving/${zoneId}/rules`, { silent: true });
+      setRcvData(d);
+    } catch {
+      setRcvData(null);
+    } finally {
+      setRcvLoading(false);
+    }
+  }
+
+  async function addForward() {
+    if (!fwTo.trim()) {
+      toast.error("Enter the inbox to forward to");
+      return;
+    }
+    const domain = zones.find((z) => z.id === rcvZone)?.name ?? "";
+    const from = fwMode === "specific" && fwLocal.trim() ? `${fwLocal.trim()}@${domain}` : undefined;
+    setBusy("forward");
+    try {
+      const res = await api<{ message?: string }>(`/email/receiving/${rcvZone}/forward`, {
+        method: "POST",
+        body: JSON.stringify({ to: fwTo.trim(), from })
+      });
+      toast.success(res.message || "Forwarding set");
+      setFwLocal("");
+      await loadZone(rcvZone);
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeRule(ruleId: string) {
+    setBusy(`rule-${ruleId}`);
+    try {
+      await api(`/email/receiving/${rcvZone}/rules/${ruleId}`, { method: "DELETE" });
+      toast.success("Removed");
+      await loadZone(rcvZone);
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const rcvDomain = zones.find((z) => z.id === rcvZone)?.name ?? "";
   const configured = Boolean(settings?.configured);
 
   return (
@@ -305,6 +391,119 @@ export function EmailPage() {
               {projects.length === 0 && <p className="muted small">No projects yet.</p>}
             </div>
           </div>
+
+          <div className="card">
+            <div className="row">
+              <Inbox className="text-info" size={20} />
+              <h3>Receiving (forwarding)</h3>
+            </div>
+            <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
+              Forward inbound mail for your domains to an inbox — via Cloudflare Email Routing.
+            </p>
+
+            {!rcvConfigured ? (
+              <div className="row small">
+                <AlertCircle size={14} className="text-warning" />
+                <span className="muted">Add a Cloudflare token with Email Routing access to enable receiving.</span>
+              </div>
+            ) : (
+              <>
+                <div className="form-group" style={{ maxWidth: 320 }}>
+                  <label className="tiny uppercase font-bold muted">Domain</label>
+                  <select
+                    value={rcvZone}
+                    onChange={(e) => {
+                      setRcvZone(e.target.value);
+                      void loadZone(e.target.value);
+                    }}
+                  >
+                    {zones.map((z) => (
+                      <option key={z.id} value={z.id}>
+                        {z.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {rcvLoading ? (
+                  <p className="muted small" style={{ marginTop: "0.75rem" }}>
+                    Loading…
+                  </p>
+                ) : rcvData ? (
+                  <div style={{ marginTop: "1rem" }}>
+                    <div className="email-apps">
+                      {rcvData.catch_all.enabled && rcvData.catch_all.dest && (
+                        <div className="email-app-row">
+                          <div className="row" style={{ gap: "0.4rem", minWidth: 0 }}>
+                            <span className="font-bold">All mail</span>
+                            <ArrowRight size={13} className="muted" />
+                            <span className="mono">{rcvData.catch_all.dest}</span>
+                            {rcvData.destinations.some((d) => d.email === rcvData.catch_all.dest && !d.verified) && (
+                              <span className="badge-warn">pending verification</span>
+                            )}
+                          </div>
+                          <button
+                            className="ghost text-danger small"
+                            onClick={() => removeRule("catch_all")}
+                            disabled={busy === "rule-catch_all"}
+                          >
+                            <Trash2 size={14} /> Remove
+                          </button>
+                        </div>
+                      )}
+                      {rcvData.rules.map((r) => (
+                        <div key={r.id} className="email-app-row">
+                          <div className="row" style={{ gap: "0.4rem", minWidth: 0 }}>
+                            <span className="mono">{r.to}</span>
+                            <ArrowRight size={13} className="muted" />
+                            <span className="mono">{r.dest}</span>
+                            {rcvData.destinations.some((d) => d.email === r.dest && !d.verified) && (
+                              <span className="badge-warn">pending verification</span>
+                            )}
+                          </div>
+                          <button
+                            className="ghost text-danger small"
+                            onClick={() => removeRule(r.id)}
+                            disabled={busy === `rule-${r.id}`}
+                          >
+                            <Trash2 size={14} /> Remove
+                          </button>
+                        </div>
+                      ))}
+                      {!rcvData.catch_all.enabled && rcvData.rules.length === 0 && (
+                        <p className="muted small">No forwarding rules yet.</p>
+                      )}
+                    </div>
+
+                    <div className="email-test">
+                      <label className="tiny uppercase font-bold muted">Add a forward</label>
+                      <div className="row" style={{ gap: "0.5rem", marginTop: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
+                        <select value={fwMode} onChange={(e) => setFwMode(e.target.value as "all" | "specific")} style={{ flex: "0 0 auto" }}>
+                          <option value="all">All mail (catch-all)</option>
+                          <option value="specific">Specific address</option>
+                        </select>
+                        {fwMode === "specific" && (
+                          <span className="row" style={{ gap: 0, alignItems: "center" }}>
+                            <input style={{ width: 110 }} value={fwLocal} onChange={(e) => setFwLocal(e.target.value)} placeholder="hello" />
+                            <span className="mono muted" style={{ padding: "0 0.25rem" }}>@{rcvDomain}</span>
+                          </span>
+                        )}
+                        <ArrowRight size={14} className="muted" />
+                        <input style={{ flex: "1 1 200px" }} value={fwTo} onChange={(e) => setFwTo(e.target.value)} placeholder="your@inbox.com" />
+                        <button className="button small" onClick={addForward} disabled={busy === "forward" || !fwTo.trim()}>
+                          {busy === "forward" ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Add forward
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="muted small" style={{ marginTop: "0.75rem" }}>
+                    Select a domain.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -317,6 +516,8 @@ export function EmailPage() {
         .email-page .email-from-input { font-size: 0.8rem; padding: 0.3rem 0.5rem; width: 220px; max-width: 46vw; }
         .email-page .email-test { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); }
         .email-page .badge-ok { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; font-weight: 700; color: var(--success); background: var(--accent-soft); padding: 0.15rem 0.45rem; border-radius: var(--radius-md); }
+        .email-page .badge-warn { display: inline-flex; align-items: center; font-size: 0.65rem; font-weight: 700; color: #b45309; background: rgba(180,83,9,0.14); padding: 0.1rem 0.4rem; border-radius: var(--radius-md); white-space: nowrap; }
+        .email-page .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; }
         .email-page .spin { animation: email-spin 0.8s linear infinite; }
         @keyframes email-spin { to { transform: rotate(360deg); } }
         .email-page .skeleton-line { height: 0.9rem; margin: 0.5rem 0; border-radius: var(--radius-md); background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--bg-glass) 50%, var(--bg-sunken) 75%); background-size: 200% 100%; animation: email-shimmer 1.4s ease-in-out infinite; }
