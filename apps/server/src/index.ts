@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import httpProxy from "http-proxy";
 import { buildApp } from "./app.js";
 import { isAuthorizedToken } from "./services/auth.js";
+import { resolveCompanionDevice } from "./services/companion.js";
 import { gracefulShutdown } from "./services/runtime.js";
 import {
   cleanupTerminalSocket,
@@ -29,7 +30,11 @@ const wss = new WebSocketServer({ server: ctx.app.server, path: ctx.config.webSo
 wss.on("connection", (ws: WebSocket, req) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   const token = url.searchParams.get("token") ?? "";
-  if (!isAuthorizedToken(ctx, token)) {
+  // A paired phone may follow the live log/status stream, but never drive a
+  // terminal over it — the HTTP scope check has no say once the socket is up,
+  // so the restriction has to be re-applied here.
+  const companion = resolveCompanionDevice(ctx, token);
+  if (!companion && !isAuthorizedToken(ctx, token)) {
     ws.close(1008, "Unauthorized");
     return;
   }
@@ -48,7 +53,11 @@ wss.on("connection", (ws: WebSocket, req) => {
     } catch {
       return;
     }
-    if (handleTerminalWebSocketMessage(ctx, ws, msg as Record<string, unknown>, attachedTerminals)) return;
+    if (
+      !companion &&
+      handleTerminalWebSocketMessage(ctx, ws, msg as Record<string, unknown>, attachedTerminals)
+    )
+      return;
     if (!msg || typeof msg.type !== "string" || typeof msg.transferId !== "string") return;
     const transferId = msg.transferId;
     if (msg.type === "attach_transfer") {
@@ -143,9 +152,7 @@ port80.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  domainProxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` }, () =>
-    socket.destroy()
-  );
+  domainProxy.ws(req, socket, head, { target: `http://127.0.0.1:${targetPort}` }, () => socket.destroy());
 });
 try {
   await new Promise<void>((resolve, reject) => {

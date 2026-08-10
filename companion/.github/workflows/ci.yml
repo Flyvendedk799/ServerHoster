@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      # `build` runs the typecheck too, so this covers both.
+      - run: npm run build
+      - name: Check the committed icons still match the generator
+        run: |
+          npm run icons
+          git diff --exit-code public/

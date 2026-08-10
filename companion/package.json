@@ -1,22 +1,19 @@
 {
-  "name": "@survhub/web",
+  "name": "serverhoster-companion",
   "version": "0.1.0",
   "private": true,
+  "description": "Mobile companion for ServerHoster — pair a phone to your machine with a QR code and control your services from anywhere.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
-    "test:smoke": "vitest run"
+    "test": "vitest run",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-search": "^0.16.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0",
-    "framer-motion": "^12.38.0",
-    "lucide-react": "^1.11.0",
-    "qrcode-generator": "^1.5.2",
+    "jsqr": "^1.4.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.2.0"

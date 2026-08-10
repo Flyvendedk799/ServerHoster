@@ -537,7 +537,43 @@ const migrations = [
   // A companion service (auto-created from an extra root Dockerfile — e.g. a
   // worker) inherits its env from a primary tier at deploy time via this link,
   // rather than getting a one-time snapshot copy. NULL for normal services.
-  "ALTER TABLE services ADD COLUMN env_from_service_id TEXT"
+  "ALTER TABLE services ADD COLUMN env_from_service_id TEXT",
+  // --- Companion app pairing ----------------------------------------------
+  // A phone paired via QR gets a device token here. Like ai_gateway_tokens,
+  // only the SHA-256 hash is stored — a leaked database must not yield a
+  // working credential — and `scope` bounds what the device may do even while
+  // its token is valid (see services/companion.ts).
+  `CREATE TABLE IF NOT EXISTS companion_devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    platform TEXT,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'control',
+    created_at TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    last_seen_at TEXT,
+    last_seen_ip TEXT,
+    revoked_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_companion_devices_hash ON companion_devices(token_hash)",
+  // Short-lived, single-use pairing codes minted by the dashboard and rendered
+  // as a QR. `server_url` is the address the phone should call home on, chosen
+  // at mint time because only the dashboard knows which of the host's
+  // addresses is actually reachable from outside the LAN.
+  `CREATE TABLE IF NOT EXISTS companion_pairings (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL DEFAULT 'control',
+    label TEXT,
+    server_url TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
+    device_id TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_companion_pairings_code ON companion_pairings(code_hash)"
 ];
 
 for (const statement of migrations) {

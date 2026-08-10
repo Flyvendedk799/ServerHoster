@@ -18,13 +18,15 @@ import {
   LogOut,
   ChevronRight,
   Play,
-  Loader2
+  Loader2,
+  Smartphone
 } from "lucide-react";
 
 import { API_BASE_URL, api, clearAuthToken } from "../lib/api";
 import { toast } from "../lib/toast";
 import { connectLogs } from "../lib/ws";
 import { StatusBadge } from "../components/StatusBadge";
+import { CompanionPanel } from "../components/CompanionPanel";
 import { motion, AnimatePresence } from "framer-motion";
 
 type TunnelStatus = {
@@ -38,9 +40,9 @@ type TunnelStatus = {
 };
 
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"connectivity" | "integrations" | "data" | "system">(
-    "connectivity"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "connectivity" | "companion" | "integrations" | "data" | "system"
+  >("connectivity");
   const [githubStatus, setGithubStatus] = useState<{
     configured: boolean;
     tokenPrefix: string | null;
@@ -197,6 +199,7 @@ export function SettingsPage() {
 
   const tabs = [
     { id: "connectivity", label: "Edge & SSL", icon: Globe, desc: "DNS & Tunneling" },
+    { id: "companion", label: "Companion", icon: Smartphone, desc: "Pair your phone" },
     { id: "integrations", label: "Dev Tools", icon: GitBranch, desc: "Git & SSH Identity" },
     { id: "data", label: "Persistence", icon: HardDrive, desc: "Backups & Exports" },
     { id: "system", label: "Ops Console", icon: Cpu, desc: "Node Administration" }
@@ -266,278 +269,279 @@ export function SettingsPage() {
               <span className="sr-only">Loading settings…</span>
             </div>
           ) : (
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, x: 10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -10 }}
-              transition={{ duration: 0.2 }}
-            >
-              {activeTab === "connectivity" && (
-                <div className="form-stack">
-                  <div className="card">
-                    <header className="section-title">
-                      <div className="row">
-                        <Cloud className="text-info" size={20} />
-                        <h3>Cloudflare Zero Trust</h3>
-                      </div>
-                      <StatusBadge status={tunnel?.running ? "running" : "stopped"} />
-                    </header>
-                    <p className="muted small" style={{ marginBottom: "1rem" }}>
-                      Connect your local node to the Cloudflare edge without opening ingress ports.
-                    </p>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                {activeTab === "connectivity" && (
+                  <div className="form-stack">
+                    <div className="card">
+                      <header className="section-title">
+                        <div className="row">
+                          <Cloud className="text-info" size={20} />
+                          <h3>Cloudflare Zero Trust</h3>
+                        </div>
+                        <StatusBadge status={tunnel?.running ? "running" : "stopped"} />
+                      </header>
+                      <p className="muted small" style={{ marginBottom: "1rem" }}>
+                        Connect your local node to the Cloudflare edge without opening ingress ports.
+                      </p>
 
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label className="tiny uppercase font-bold muted">Account Pointer (ID)</label>
-                        <input
-                          value={cfConfig.accountId}
-                          onChange={(e) => setCfConfig({ ...cfConfig, accountId: e.target.value })}
-                          placeholder="32-character ID"
-                        />
+                      <div className="form-row">
+                        <div className="form-group">
+                          <label className="tiny uppercase font-bold muted">Account Pointer (ID)</label>
+                          <input
+                            value={cfConfig.accountId}
+                            onChange={(e) => setCfConfig({ ...cfConfig, accountId: e.target.value })}
+                            placeholder="32-character ID"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="tiny uppercase font-bold muted">Tunnel Identifier</label>
+                          <input
+                            value={cfConfig.tunnelId}
+                            onChange={(e) => setCfConfig({ ...cfConfig, tunnelId: e.target.value })}
+                            placeholder="UUID"
+                          />
+                        </div>
                       </div>
-                      <div className="form-group">
-                        <label className="tiny uppercase font-bold muted">Tunnel Identifier</label>
-                        <input
-                          value={cfConfig.tunnelId}
-                          onChange={(e) => setCfConfig({ ...cfConfig, tunnelId: e.target.value })}
-                          placeholder="UUID"
-                        />
-                      </div>
+
+                      <footer className="footer-actions">
+                        <button
+                          className="primary"
+                          onClick={startTunnel}
+                          disabled={tunnel?.running || busy === "tunnel-start"}
+                        >
+                          {busy === "tunnel-start" ? (
+                            <Loader2 size={16} className="spin" />
+                          ) : (
+                            <Play size={16} />
+                          )}{" "}
+                          Establish Connection
+                        </button>
+                        <button
+                          className="ghost text-danger"
+                          onClick={stopTunnel}
+                          disabled={busy === "tunnel-stop"}
+                        >
+                          {busy === "tunnel-stop" && <Loader2 size={16} className="spin" />} Terminate
+                          Connection
+                        </button>
+                      </footer>
                     </div>
 
-                    <footer className="footer-actions">
+                    <div className="card">
+                      <div className="row">
+                        <ShieldCheck className="text-success" size={20} />
+                        <h3>Certificate Authority</h3>
+                      </div>
+                      <p className="muted small" style={{ margin: "1rem 0" }}>
+                        Configure how LocalSURV issues SSL/TLS certificates via Let's Encrypt.
+                      </p>
+                      <div className="form-group">
+                        <label className="tiny uppercase font-bold muted">Validation Strategy</label>
+                        <select value={sslMode} onChange={(e) => setSslMode(e.target.value as any)}>
+                          <option value="http-01">HTTP-01 Challenge (Standard)</option>
+                          <option value="dns-01">DNS-01 Challenge (Wildcard Support)</option>
+                        </select>
+                      </div>
+                      <button
+                        className="button small"
+                        style={{ marginTop: "1.5rem" }}
+                        onClick={saveSslMode}
+                        disabled={busy === "ssl-mode"}
+                      >
+                        {busy === "ssl-mode" && <Loader2 size={14} className="spin" />} Save Strategy
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "companion" && <CompanionPanel />}
+
+                {activeTab === "integrations" && (
+                  <div className="form-stack">
+                    <div className="card">
+                      <div className="row">
+                        <GitBranch className="text-primary" size={20} />
+                        <h3>GitHub CI Integration</h3>
+                      </div>
+                      <div className="form-group" style={{ marginTop: "1.5rem" }}>
+                        <label className="tiny uppercase font-bold muted">Personal Access Token</label>
+                        <input
+                          type="password"
+                          placeholder="ghp_****************"
+                          value={githubTokenInput}
+                          onChange={(e) => setGithubTokenInput(e.target.value)}
+                        />
+                        <div className="row small" style={{ marginTop: "1rem" }}>
+                          {githubStatus?.configured ? (
+                            <>
+                              <CheckCircle2 size={14} className="text-success" />
+                              <span className="muted">
+                                Authenticated as{" "}
+                                <code className="text-accent">{githubStatus.tokenPrefix}***</code>
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle size={14} className="text-warning" />
+                              <span className="muted">
+                                Connect to enable private repository synchronization.
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
                       <button
                         className="primary"
-                        onClick={startTunnel}
-                        disabled={tunnel?.running || busy === "tunnel-start"}
+                        style={{ marginTop: "1rem" }}
+                        onClick={saveGithubPat}
+                        disabled={busy === "github-pat"}
                       >
-                        {busy === "tunnel-start" ? (
-                          <Loader2 size={16} className="spin" />
-                        ) : (
-                          <Play size={16} />
-                        )}{" "}
-                        Establish Connection
+                        {busy === "github-pat" && <Loader2 size={16} className="spin" />} Update Token
                       </button>
-                      <button
-                        className="ghost text-danger"
-                        onClick={stopTunnel}
-                        disabled={busy === "tunnel-stop"}
-                      >
-                        {busy === "tunnel-stop" && <Loader2 size={16} className="spin" />} Terminate
-                        Connection
-                      </button>
-                    </footer>
-                  </div>
 
-                  <div className="card">
-                    <div className="row">
-                      <ShieldCheck className="text-success" size={20} />
-                      <h3>Certificate Authority</h3>
-                    </div>
-                    <p className="muted small" style={{ margin: "1rem 0" }}>
-                      Configure how LocalSURV issues SSL/TLS certificates via Let's Encrypt.
-                    </p>
-                    <div className="form-group">
-                      <label className="tiny uppercase font-bold muted">Validation Strategy</label>
-                      <select value={sslMode} onChange={(e) => setSslMode(e.target.value as any)}>
-                        <option value="http-01">HTTP-01 Challenge (Standard)</option>
-                        <option value="dns-01">DNS-01 Challenge (Wildcard Support)</option>
-                      </select>
-                    </div>
-                    <button
-                      className="button small"
-                      style={{ marginTop: "1.5rem" }}
-                      onClick={saveSslMode}
-                      disabled={busy === "ssl-mode"}
-                    >
-                      {busy === "ssl-mode" && <Loader2 size={14} className="spin" />} Save Strategy
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === "integrations" && (
-                <div className="form-stack">
-                  <div className="card">
-                    <div className="row">
-                      <GitBranch className="text-primary" size={20} />
-                      <h3>GitHub CI Integration</h3>
-                    </div>
-                    <div className="form-group" style={{ marginTop: "1.5rem" }}>
-                      <label className="tiny uppercase font-bold muted">Personal Access Token</label>
-                      <input
-                        type="password"
-                        placeholder="ghp_****************"
-                        value={githubTokenInput}
-                        onChange={(e) => setGithubTokenInput(e.target.value)}
-                      />
-                      <div className="row small" style={{ marginTop: "1rem" }}>
-                        {githubStatus?.configured ? (
-                          <>
-                            <CheckCircle2 size={14} className="text-success" />
-                            <span className="muted">
-                              Authenticated as{" "}
-                              <code className="text-accent">{githubStatus.tokenPrefix}***</code>
+                      <div className="form-group" style={{ marginTop: "1.75rem" }}>
+                        <label className="tiny uppercase font-bold muted">Webhook Payload URL</label>
+                        <input
+                          value={githubWebhookUrl}
+                          onChange={(e) => setGithubWebhookUrl(e.target.value)}
+                          placeholder="https://host.example.com/webhooks/github"
+                        />
+                        <div className="row small" style={{ marginTop: "1rem", flexWrap: "wrap" }}>
+                          <span className="muted">
+                            Polling every{" "}
+                            <code className="text-accent">
+                              {Math.round((githubStatus?.pollIntervalMs ?? 60000) / 1000)}s
+                            </code>
+                          </span>
+                          {githubStatus?.webhookSecretConfigured || githubStatus?.webhookInsecure ? (
+                            <span className="row muted">
+                              <CheckCircle2 size={14} className="text-success" /> Webhook receiver ready
                             </span>
-                          </>
-                        ) : (
-                          <>
-                            <AlertCircle size={14} className="text-warning" />
-                            <span className="muted">
-                              Connect to enable private repository synchronization.
+                          ) : (
+                            <span className="row muted">
+                              <AlertCircle size={14} className="text-warning" /> Webhook secret missing
                             </span>
-                          </>
-                        )}
+                          )}
+                        </div>
+                      </div>
+                      <div className="row" style={{ gap: "0.5rem", marginTop: "1rem" }}>
+                        <button
+                          className="ghost"
+                          onClick={saveGithubWebhookUrl}
+                          disabled={busy === "github-webhook"}
+                        >
+                          {busy === "github-webhook" && <Loader2 size={14} className="spin" />} Save Webhook
+                          URL
+                        </button>
+                        <button
+                          className="ghost small font-bold"
+                          onClick={() =>
+                            githubWebhookUrl &&
+                            navigator.clipboard
+                              .writeText(githubWebhookUrl)
+                              .then(() => toast.success("Webhook URL copied to buffer"))
+                          }
+                        >
+                          <Copy size={14} /> Copy URL
+                        </button>
                       </div>
                     </div>
-                    <button
-                      className="primary"
-                      style={{ marginTop: "1rem" }}
-                      onClick={saveGithubPat}
-                      disabled={busy === "github-pat"}
-                    >
-                      {busy === "github-pat" && <Loader2 size={16} className="spin" />} Update Token
-                    </button>
 
-                    <div className="form-group" style={{ marginTop: "1.75rem" }}>
-                      <label className="tiny uppercase font-bold muted">Webhook Payload URL</label>
-                      <input
-                        value={githubWebhookUrl}
-                        onChange={(e) => setGithubWebhookUrl(e.target.value)}
-                        placeholder="https://host.example.com/webhooks/github"
-                      />
-                      <div className="row small" style={{ marginTop: "1rem", flexWrap: "wrap" }}>
-                        <span className="muted">
-                          Polling every{" "}
-                          <code className="text-accent">
-                            {Math.round((githubStatus?.pollIntervalMs ?? 60000) / 1000)}s
-                          </code>
-                        </span>
-                        {githubStatus?.webhookSecretConfigured || githubStatus?.webhookInsecure ? (
-                          <span className="row muted">
-                            <CheckCircle2 size={14} className="text-success" /> Webhook receiver ready
-                          </span>
-                        ) : (
-                          <span className="row muted">
-                            <AlertCircle size={14} className="text-warning" /> Webhook secret missing
-                          </span>
-                        )}
+                    <div className="card">
+                      <div className="row">
+                        <Key className="text-warning" size={20} />
+                        <h3>Infrastructure SSH Key</h3>
                       </div>
-                    </div>
-                    <div className="row" style={{ gap: "0.5rem", marginTop: "1rem" }}>
-                      <button
-                        className="ghost"
-                        onClick={saveGithubWebhookUrl}
-                        disabled={busy === "github-webhook"}
-                      >
-                        {busy === "github-webhook" && <Loader2 size={14} className="spin" />} Save
-                        Webhook URL
-                      </button>
+                      <p className="muted small" style={{ margin: "1rem 0" }}>
+                        This public key is used for Git clones and secure cluster communication.
+                      </p>
+                      <div className="ssh-box">
+                        <code>{sshInfo?.publicKey || "Generating keys..."}</code>
+                      </div>
                       <button
                         className="ghost small font-bold"
                         onClick={() =>
-                          githubWebhookUrl &&
+                          sshInfo?.publicKey &&
                           navigator.clipboard
-                            .writeText(githubWebhookUrl)
-                            .then(() => toast.success("Webhook URL copied to buffer"))
+                            .writeText(sshInfo.publicKey)
+                            .then(() => toast.success("Key copied to buffer"))
                         }
                       >
-                        <Copy size={14} /> Copy URL
+                        <Copy size={14} /> Copy Public Key
                       </button>
                     </div>
                   </div>
+                )}
 
-                  <div className="card">
-                    <div className="row">
-                      <Key className="text-warning" size={20} />
-                      <h3>Infrastructure SSH Key</h3>
-                    </div>
-                    <p className="muted small" style={{ margin: "1rem 0" }}>
-                      This public key is used for Git clones and secure cluster communication.
-                    </p>
-                    <div className="ssh-box">
-                      <code>{sshInfo?.publicKey || "Generating keys..."}</code>
-                    </div>
-                    <button
-                      className="ghost small font-bold"
-                      onClick={() =>
-                        sshInfo?.publicKey &&
-                        navigator.clipboard
-                          .writeText(sshInfo.publicKey)
-                          .then(() => toast.success("Key copied to buffer"))
-                      }
-                    >
-                      <Copy size={14} /> Copy Public Key
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === "data" && (
-                <div className="form-stack">
-                  <div className="card">
-                    <div className="row">
-                      <Download className="text-accent" size={20} />
-                      <h3>Instance Snapshot</h3>
-                    </div>
-                    <p className="muted small" style={{ margin: "1rem 0" }}>
-                      Export all configuration, routing rules, and service metadata as a portable JSON file.
-                    </p>
-                    <button className="primary" onClick={exportSnapshot} disabled={busy === "export"}>
-                      {busy === "export" && <Loader2 size={16} className="spin" />} Generate JSON
-                      Export
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === "system" && (
-                <div className="form-stack">
-                  <div className="card">
-                    <div className="row">
-                      <Monitor size={20} className="text-muted" />
-                      <h3>Cluster Administration</h3>
-                    </div>
-                    <p className="muted small" style={{ marginTop: "1rem" }}>
-                      Execute maintenance tasks directly on the node control plane.
-                    </p>
-                    <div className="row wrap" style={{ gap: "0.5rem", marginTop: "1rem" }}>
-                      <button
-                        className="button"
-                        onClick={() =>
-                          runOpsTask("ops-audit", "/ops/audit-logs", "Audit pushed to syslogs")
-                        }
-                        disabled={busy === "ops-audit"}
-                      >
-                        {busy === "ops-audit" ? (
-                          <Loader2 size={16} className="spin" />
-                        ) : (
-                          <Terminal size={16} />
-                        )}{" "}
-                        Audit Log Stream
-                      </button>
-                      <button
-                        className="button"
-                        onClick={() =>
-                          runOpsTask("ops-harden", "/ops/install-scripts", "Setup wizard cached")
-                        }
-                        disabled={busy === "ops-harden"}
-                      >
-                        {busy === "ops-harden" ? (
-                          <Loader2 size={16} className="spin" />
-                        ) : (
-                          <Shield size={16} />
-                        )}{" "}
-                        Refresh Hardening
+                {activeTab === "data" && (
+                  <div className="form-stack">
+                    <div className="card">
+                      <div className="row">
+                        <Download className="text-accent" size={20} />
+                        <h3>Instance Snapshot</h3>
+                      </div>
+                      <p className="muted small" style={{ margin: "1rem 0" }}>
+                        Export all configuration, routing rules, and service metadata as a portable JSON file.
+                      </p>
+                      <button className="primary" onClick={exportSnapshot} disabled={busy === "export"}>
+                        {busy === "export" && <Loader2 size={16} className="spin" />} Generate JSON Export
                       </button>
                     </div>
                   </div>
-                </div>
-              )}
-            </motion.div>
-          </AnimatePresence>
+                )}
+
+                {activeTab === "system" && (
+                  <div className="form-stack">
+                    <div className="card">
+                      <div className="row">
+                        <Monitor size={20} className="text-muted" />
+                        <h3>Cluster Administration</h3>
+                      </div>
+                      <p className="muted small" style={{ marginTop: "1rem" }}>
+                        Execute maintenance tasks directly on the node control plane.
+                      </p>
+                      <div className="row wrap" style={{ gap: "0.5rem", marginTop: "1rem" }}>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            runOpsTask("ops-audit", "/ops/audit-logs", "Audit pushed to syslogs")
+                          }
+                          disabled={busy === "ops-audit"}
+                        >
+                          {busy === "ops-audit" ? (
+                            <Loader2 size={16} className="spin" />
+                          ) : (
+                            <Terminal size={16} />
+                          )}{" "}
+                          Audit Log Stream
+                        </button>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            runOpsTask("ops-harden", "/ops/install-scripts", "Setup wizard cached")
+                          }
+                          disabled={busy === "ops-harden"}
+                        >
+                          {busy === "ops-harden" ? (
+                            <Loader2 size={16} className="spin" />
+                          ) : (
+                            <Shield size={16} />
+                          )}{" "}
+                          Refresh Hardening
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
           )}
         </section>
       </div>

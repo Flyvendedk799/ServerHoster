@@ -8,10 +8,17 @@ All notable changes to LocalSURV are documented here. Format based on [Keep a Ch
 
 ### Added
 
-- (none yet)
+- **Companion app pairing.** `Settings → Companion` on the dashboard mints a short-lived, single-use QR pairing code; a phone redeems it at `POST /companion/pair/claim` for a scoped device token. Codes and tokens are stored as SHA-256 hashes only. Paired devices reach an explicit allowlist of fleet-status, log and metrics reads, and may start, stop, restart, redeploy and roll back — never secrets, env, database contents, terminals, backups or a second pairing. Revocable instantly from the dashboard. See [docs/companion-app.md](docs/companion-app.md).
+- **`companion/`** — the companion mobile app itself: an installable, offline-aware React PWA with QR scanning, multi-machine pairing, live logs and service controls. Self-contained project with its own dependencies and CI; `companion/scripts/split-to-own-repo.sh` splits it into a standalone repository with history.
+- `SURVHUB_PUBLIC_URL` and `SURVHUB_COMPANION_APP_URL` configuration. The latter is also allowed through CORS automatically and switches the pairing QR to a deep link.
+- `SURVHUB_TRUST_PROXY` — believe `X-Forwarded-For` from a proxy you run. Without it, everything behind cloudflared/nginx shares one `req.ip`: per-IP rate limits become a single global bucket and a paired device's last-seen address is the tunnel's.
+- Companion device writes are recorded in the audit log as `companion:<device-id>`, with the method, path, resulting status, source IP and User-Agent — refused writes included.
 
 ### Changed
 
+- **Companion reads are now an allowlist, not a denylist.** The denylist named `/secrets`, `/backup` and `/services/:id/env` and read as complete, while still serving a paired phone `GET /databases/:id` (every managed database's connection string in the clear), `/databases/:id/tables/:schema/:table/preview` (any row of any table), `/databases/:id/backups/:backupId/download` (the whole dump) and `/services/:id/requests` (the request inspector's captured Authorization headers). A device now reaches only the named fleet-status, log and metrics routes; everything else answers `403 COMPANION_SCOPE_DENIED`.
+- A wrong pairing code is charged to the caller, not to the pairing. Previously five bad guesses deleted the pending pairing — and since `POST /companion/pair/claim` is unauthenticated by necessity, anyone able to reach it could destroy the operator's on-screen QR at will. The pairing now survives, a caller is cut off after 8 wrong guesses in 5 minutes, and the failed-attempt count is shown next to the QR so the operator can decide to cancel.
+- `POST /companion/{heartbeat,unpair}` no longer require `control` scope. Self-revocation is not a privilege: a read-only phone left in a taxi is exactly the case where "forget this server" has to work from the phone.
 - README repositioned around the self-hosted PaaS model with pluggable public-exposure adapters; explicit platform-support matrix added.
 
 ### Pending verification (claimed in 0.1.0-alpha but not independently re-tested)

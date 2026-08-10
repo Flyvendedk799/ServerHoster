@@ -46,6 +46,7 @@ import { getGatewayConfig, primeCredentialRedaction } from "./services/aiGateway
 import { startInferenceServer, stopInferenceServer } from "./services/aiGatewayServer.js";
 import { isExternalMode, primeExternalRedaction } from "./services/aiGatewayExternal.js";
 import { registerAdminRoutes } from "./routes/admin.js";
+import { registerCompanionRoutes } from "./routes/companion.js";
 import { registerCrashReporter } from "./services/crashReporter.js";
 import { startMetricsLoop } from "./services/metrics.js";
 import { startSystemHealthLoop } from "./services/health.js";
@@ -163,7 +164,15 @@ export async function buildApp(): Promise<AppContext> {
   // 50 MiB body limit so backup import (`/backup/import`) can carry a full
   // database snapshot. Default Fastify is 1 MiB which trips even on modest
   // installations once audit_logs accumulates.
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024, ...httpsOptions });
+  const app = Fastify({
+    logger: true,
+    bodyLimit: 50 * 1024 * 1024,
+    // Off unless the operator names their proxy. `req.ip` is not cosmetic here:
+    // it bounds the companion pairing-claim budget and is recorded as a paired
+    // device's last-seen address.
+    trustProxy: config.trustProxy,
+    ...httpsOptions
+  });
 
   // Capture raw request bytes so webhook handlers can verify HMAC signatures.
   // GitHub signs the raw body, so JSON.stringify(req.body) is not byte-equivalent.
@@ -183,7 +192,13 @@ export async function buildApp(): Promise<AppContext> {
   //     origins via SURVHUB_TRUSTED_ORIGINS=https://app.example.com,...
   //   - Development: allow localhost so the Vite dev server on :5173 can
   //     talk to the API on :8787 without manual configuration.
-  const trusted = config.trustedOrigins;
+  // The companion app is a browser app on its own origin, so it needs CORS to
+  // reach this API at all. Operators who point us at it via
+  // SURVHUB_COMPANION_APP_URL should not have to repeat themselves in
+  // SURVHUB_TRUSTED_ORIGINS for pairing to work.
+  const trusted = config.companionAppUrl
+    ? Array.from(new Set([...config.trustedOrigins, config.companionAppUrl]))
+    : config.trustedOrigins;
   let corsOrigin: false | string[] | RegExp[];
   if (config.nodeEnv === "production") {
     corsOrigin = trusted.length > 0 ? trusted : false;
@@ -293,6 +308,7 @@ export async function buildApp(): Promise<AppContext> {
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
   registerAdminRoutes(ctx);
+  registerCompanionRoutes(ctx);
   const stopCrashReporter = registerCrashReporter(ctx);
   ctx.shutdownTasks.push(() => stopCrashReporter());
   ctx.shutdownTasks.push(() => stopAllTerminalSessions(ctx));
@@ -459,7 +475,8 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/tunnels",
     "/admin",
     "/logs",
-    "/plex"
+    "/plex",
+    "/companion"
   ];
 
   app.addHook("onRequest", async (req: any, reply: any) => {

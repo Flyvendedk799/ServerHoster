@@ -19,6 +19,7 @@ LocalSURV runs on your Mac mini, Linux box, or Windows PC and gives you a browse
 | **Projects**      | Project env vars inherited by services, environment tags (production/staging/dev), start-all/stop-all/deploy-all, docker-compose import (idempotent, preserves depends_on) |
 | **Security**      | AES-256-GCM encrypted secrets, session auth + bootstrap user, rate-limited API, audit log, encrypted Cloudflare/GitHub token storage                                       |
 | **UX**            | Dark/light theme, collapsible sidebar, toast notifications, modal confirms, mobile-responsive layout                                                                       |
+| **Companion**     | Pair a phone by QR (`Settings → Companion`) and drive your fleet from a scope-limited mobile app — see [`companion/`](companion/README.md)                                 |
 
 ---
 
@@ -119,6 +120,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — zero to deployed in 5 minutes
+- [Companion app](docs/companion-app.md) — pair a phone by QR and control services from anywhere
 - [Configuration reference](docs/configuration.md) — every env var, schema, file layout
 - [API reference](docs/api-reference.md) — all HTTP endpoints
 - [Troubleshooting](docs/troubleshooting.md) — when things break
