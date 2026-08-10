@@ -301,19 +301,28 @@ export function registerEmailRoutes(ctx: AppContext): void {
     const body = z.object({ to: z.string().email(), from: z.string().optional() }).parse(req.body ?? {});
     const account = getSecretSetting(ctx, "cloudflare_account_id") ?? "";
 
-    // 1. Ensure the destination exists (creating it fires a verification email).
+    // 1. Ensure the destination exists. Cloudflare rejects a forward rule whose
+    // destination isn't verified yet, so on a brand-new (or still-unverified)
+    // destination we create it (which fires the verification email) and STOP —
+    // the operator clicks the emailed link, then adds the forward again to finish.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const addrs = (await cfApi(ctx, `/accounts/${account}/email/routing/addresses`).catch(() => [])) as any[];
     const existing = addrs.find((a) => String(a?.email).toLowerCase() === body.to.toLowerCase());
-    const destinationVerified = Boolean(existing?.verified);
     if (!existing) {
       await cfApi(ctx, `/accounts/${account}/email/routing/addresses`, {
         method: "POST",
         body: JSON.stringify({ email: body.to })
       }).catch(() => null);
     }
+    if (!existing?.verified) {
+      return {
+        ok: true,
+        destination_verified: false,
+        message: `Almost there — check ${body.to} for a Cloudflare verification link, then add this forward again to switch it on.`
+      };
+    }
 
-    // 2. Make sure routing is enabled on the zone (idempotent; ignore failure).
+    // 2. Destination is verified — enable routing (idempotent; ignore failure).
     await cfApi(ctx, `/zones/${zoneId}/email/routing/enable`, {
       method: "POST",
       body: JSON.stringify({})
@@ -342,13 +351,7 @@ export function registerEmailRoutes(ctx: AppContext): void {
       });
     }
 
-    return {
-      ok: true,
-      destination_verified: destinationVerified,
-      message: destinationVerified
-        ? "Forwarding set."
-        : `Forwarding set — check ${body.to} for a Cloudflare verification link, then it goes live.`
-    };
+    return { ok: true, destination_verified: true, message: "Forwarding is live." };
   });
 
   ctx.app.delete("/email/receiving/:zoneId/rules/:ruleId", async (req) => {
