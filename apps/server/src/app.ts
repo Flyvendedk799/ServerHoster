@@ -35,6 +35,7 @@ import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
 import { usingDefaultSecretKey } from "./security.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
 import { registerObservabilityRoutes } from "./routes/observability.js";
+import { registerEmailRoutes } from "./routes/email.js";
 import { registerTunnelRoutes } from "./routes/tunnels.js";
 import { registerInspectorRoutes } from "./routes/inspector.js";
 import { registerTerminalRoutes } from "./routes/terminal.js";
@@ -283,6 +284,7 @@ export async function buildApp(): Promise<AppContext> {
   registerPlexRoutes(ctx);
   registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
+  registerEmailRoutes(ctx);
   registerTerminalRoutes(ctx);
   registerAgentRoutes(ctx);
   registerMcpRoutes(ctx);
@@ -431,6 +433,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/services",
     "/databases",
     "/secrets",
+    "/email",
     "/resources",
     "/deployments",
     "/proxy",

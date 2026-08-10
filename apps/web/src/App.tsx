@@ -19,7 +19,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Command,
-  Zap
+  Zap,
+  Mail
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -27,6 +28,7 @@ import { ServicesPage } from "./pages/Services";
 import { ServiceLogsPage } from "./pages/ServiceLogs";
 import { DatabasesPage } from "./pages/Databases";
 import { SecretsPage } from "./pages/Secrets";
+import { EmailPage } from "./pages/Email";
 import { AiGatewayPage } from "./pages/AiGateway";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
@@ -122,6 +124,7 @@ const routeLabels: Record<string, string> = {
   services: "Services",
   projects: "Projects",
   secrets: "Secrets",
+  email: "Email",
   "ai-gateway": "AI Gateway",
   databases: "Databases",
   proxy: "Edge Ingress",
@@ -311,6 +314,15 @@ export function App() {
             {!collapsed && <span>Secrets</span>}
           </NavLink>
           <NavLink
+            to="/email"
+            aria-label="Email"
+            title={collapsed ? "Email" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Mail size={16} />
+            {!collapsed && <span>Email</span>}
+          </NavLink>
+          <NavLink
             to="/ai-gateway"
             aria-label="AI Gateway"
             title={collapsed ? "AI Gateway" : undefined}
@@ -473,6 +485,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <SecretsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/email"
+                  element={
+                    <ProtectedRoute>
+                      <EmailPage />
                     </ProtectedRoute>
                   }
                 />

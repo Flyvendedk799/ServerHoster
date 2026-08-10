@@ -15,7 +15,8 @@ export const ENCRYPTED_SETTINGS = new Set<string>([
   "cloudflare_api_token",
   "cloudflare_tunnel_token",
   "cloudflare_account_id",
-  "saas_api_token"
+  "saas_api_token",
+  "smtp_password"
 ]);
 
 export function getSetting(ctx: AppContext, key: string): string | null {
