@@ -8,6 +8,10 @@ import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
 import { getSetting, setSetting, getSecretSetting, setSecretSetting } from "../services/settings.js";
 import { encryptSecret } from "../security.js";
+import {
+  patchStackAuthMail,
+  projectSupabaseStacks
+} from "../services/resources/supabaseAuthMail.js";
 
 const execFileP = promisify(execFile);
 
@@ -20,6 +24,12 @@ const execFileP = promisify(execFile);
  * (SMTP_PASSWORD encrypted, like every other project secret), which the runtime
  * layer injects into every service in the project. Callers must redeploy/restart
  * the project's services for the new env to take effect.
+ *
+ * Env alone only reaches apps that read SMTP_* themselves. Apps backed by a
+ * local Supabase stack send their auth mail from GoTrue, configured out of
+ * supabase/config.toml — so enabling email also patches that file (see
+ * services/resources/supabaseAuthMail.ts) and reports which stacks need a
+ * restart to pick it up.
  */
 const EMAIL_ENV_KEYS = [
   "EMAIL_ENABLED",
@@ -219,11 +229,49 @@ export function registerEmailRoutes(ctx: AppContext): void {
         up.run(nanoid(), projectId, k, sec ? encryptSecret(v, ctx.config.secretKey) : v, sec ? 1 : 0);
       }
     })();
+
+    // SMTP_* only reaches an app that reads those env vars itself. A
+    // Supabase-backed app's auth mail is sent by GoTrue, which reads
+    // supabase/config.toml — so enabling email has to write there too, or the
+    // tab silently does nothing for every Lovable-style app on the host.
+    const smtp = {
+      host: getSetting(ctx, "smtp_host") ?? "",
+      port: Number(getSetting(ctx, "smtp_port") ?? "465") || 465,
+      user: getSetting(ctx, "smtp_user") ?? "api_token",
+      from: (body.from && body.from.trim()) || getSetting(ctx, "smtp_from") || "",
+      fromName: (body.fromName && body.fromName.trim()) || getSetting(ctx, "smtp_from_name") || ""
+    };
+    const stacks = projectSupabaseStacks(ctx, projectId).map((stack) => {
+      if (!stack.public_origin) {
+        return {
+          resource_id: stack.resource_id,
+          name: stack.name,
+          skipped: "No public domain on the linked service yet — auth links would have nowhere to point."
+        };
+      }
+      const result = patchStackAuthMail(stack.workdir, stack.public_origin, smtp);
+      return {
+        resource_id: stack.resource_id,
+        name: stack.name,
+        public_origin: stack.public_origin,
+        changed: result.changed,
+        // config.toml is only read by `supabase start`; a running stack keeps
+        // its old GoTrue env until the resource is restarted.
+        restart_required: result.changed,
+        ...result.audit,
+        ...(result.error ? { error: result.error } : {})
+      };
+    });
+
     return {
       ok: true,
       redeploy_required: true,
       applied_keys: vals.map((v) => v[0]),
-      message: "Email enabled for this project. Redeploy/restart its services to apply."
+      supabase_stacks: stacks,
+      message: stacks.some((s) => "restart_required" in s && s.restart_required)
+        ? "Email enabled. Restart the linked Supabase resource(s) to load the new GoTrue mail config, " +
+          "and redeploy/restart the project's services."
+        : "Email enabled for this project. Redeploy/restart its services to apply."
     };
   });
 

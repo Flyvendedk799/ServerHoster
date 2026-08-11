@@ -47,6 +47,7 @@ import {
 import { restartOrRedeployService } from "../restart.js";
 import { publicOriginForLinkedResource } from "../publicExposure.js";
 import { allocatePortOffset, applyPortOffsetToToml } from "../supabasePorts.js";
+import { supabaseStartEnv } from "../supabaseAuthMail.js";
 
 /**
  * Supabase resource profile (Database-Tracker Phases 2+3).
@@ -442,7 +443,7 @@ export async function supabaseResourceAction(
     emitResourceStatus(ctx, resourceId, "stopped");
   }
   if (action === "start" || action === "restart") {
-    await supabaseStart(workdir);
+    await supabaseStart(workdir, supabaseStartEnv(ctx));
     // Re-read `supabase status` so the recorded ports/URLs/keys follow
     // supabase/config.toml changes instead of going stale (best effort — a
     // status/parse failure keeps the last known-good values; the stack itself
@@ -563,7 +564,7 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
 
     // 3. Start the local stack and capture its URLs/keys/ports.
     emitProvisionStep(ctx, resource.id, "start", "Starting local Supabase stack (supabase start)");
-    await supabaseStart(workdir);
+    await supabaseStart(workdir, supabaseStartEnv(ctx));
     stackStarted = true;
 
     emitProvisionStep(ctx, resource.id, "status", "Reading stack status (supabase status)");
