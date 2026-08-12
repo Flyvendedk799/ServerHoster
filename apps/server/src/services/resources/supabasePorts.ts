@@ -33,17 +33,31 @@ const MAX_OFFSET = 50_000;
 const OFFSET_STEP = 100;
 
 /**
+ * Values this module can write. `raw` is an escape hatch for TOML that must not
+ * be quoted — `env(SUPABASE_AUTH_SMTP_PASS)` is a string in the file but the CLI
+ * only resolves it when it appears as a quoted env() call, and arrays have no
+ * scalar form at all.
+ */
+export type TomlValue = number | string | boolean | { raw: string };
+
+function formatTomlValue(value: TomlValue): string {
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+  return value.raw;
+}
+
+/**
  * Set `[section] key = value` in a TOML string, creating the key or the whole
  * section if absent. Line-oriented and dependency-free: a section body runs from
  * its header to the next `[`-header (or EOF); an existing `key =` inside it is
  * replaced, otherwise the key is inserted just under the header, otherwise the
  * section is appended. Keys grouped by section so a new [db] gets both its ports.
  */
-export function setTomlPorts(
+export function setTomlValues(
   toml: string,
-  entries: ReadonlyArray<{ section: string; key: string; value: number }>
+  entries: ReadonlyArray<{ section: string; key: string; value: TomlValue }>
 ): string {
-  const bySection = new Map<string, Array<{ key: string; value: number }>>();
+  const bySection = new Map<string, Array<{ key: string; value: TomlValue }>>();
   for (const e of entries) {
     const list = bySection.get(e.section) ?? [];
     list.push({ key: e.key, value: e.value });
@@ -57,15 +71,23 @@ export function setTomlPorts(
   return lines.join("\n");
 }
 
+/** Port-shaped wrapper, kept because the port block is the original caller. */
+export function setTomlPorts(
+  toml: string,
+  entries: ReadonlyArray<{ section: string; key: string; value: number }>
+): string {
+  return setTomlValues(toml, entries);
+}
+
 function setSection(
   lines: string[],
   section: string,
-  kvs: Array<{ key: string; value: number }>
+  kvs: Array<{ key: string; value: TomlValue }>
 ): string[] {
   const header = `[${section}]`;
   const start = lines.findIndex((l) => l.trim() === header);
   if (start === -1) {
-    const block = ["", header, ...kvs.map((kv) => `${kv.key} = ${kv.value}`)];
+    const block = ["", header, ...kvs.map((kv) => `${kv.key} = ${formatTomlValue(kv.value)}`)];
     // Trim a single trailing empty line so we don't accumulate blank lines.
     const base = lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
     return [...base, ...block];
@@ -79,9 +101,10 @@ function setSection(
   }
   const body = lines.slice(start + 1, end);
   for (const kv of kvs) {
+    const line = `${kv.key} = ${formatTomlValue(kv.value)}`;
     const idx = body.findIndex((l) => new RegExp(`^\\s*${kv.key}\\s*=`).test(l));
-    if (idx !== -1) body[idx] = `${kv.key} = ${kv.value}`;
-    else body.unshift(`${kv.key} = ${kv.value}`);
+    if (idx !== -1) body[idx] = line;
+    else body.unshift(line);
   }
   return [...lines.slice(0, start + 1), ...body, ...lines.slice(end)];
 }

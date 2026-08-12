@@ -16,6 +16,17 @@ type EmailSettings = {
 
 type ProjectRow = { id: string; name: string; applied: boolean; from: string };
 
+/** Per-stack outcome of enabling email on a Supabase-backed project. */
+type ApplyStack = {
+  resource_id: string;
+  name: string;
+  skipped?: string;
+  error?: string;
+  restart_required?: boolean;
+  warnings?: string[];
+};
+type ApplyResult = { message?: string; supabase_stacks?: ApplyStack[] };
+
 type ZoneRow = { id: string; name: string };
 type RuleRow = { id: string; to: string; dest: string; enabled: boolean; name: string };
 type ReceivingData = {
@@ -131,11 +142,22 @@ export function EmailPage() {
   async function applyApp(id: string) {
     setBusy(`app-${id}`);
     try {
-      await api(`/email/apply/${id}`, {
+      const res = (await api(`/email/apply/${id}`, {
         method: "POST",
         body: JSON.stringify({ from: appFrom[id]?.trim() || undefined })
-      });
-      toast.success("Email enabled — redeploy/restart that app's services to apply");
+      })) as ApplyResult;
+      toast.success(res?.message || "Email enabled — redeploy/restart that app's services to apply");
+      // A Supabase-backed app's auth mail comes from GoTrue, not from SMTP_*.
+      // Enabling email rewrites its config.toml, but a running stack keeps the
+      // old settings until it is restarted — and enable_confirmations is a
+      // product decision we deliberately never flip. Both are silent unless we
+      // say so here, which is exactly how signup mail went missing before.
+      for (const stack of res?.supabase_stacks ?? []) {
+        if (stack.skipped) toast.info(`${stack.name}: ${stack.skipped}`);
+        else if (stack.error) toast.error(`${stack.name}: ${stack.error}`);
+        else if (stack.restart_required) toast.info(`Restart the "${stack.name}" resource to send auth mail`);
+        for (const warning of stack.warnings ?? []) toast.warning(`${stack.name}: ${warning}`);
+      }
       await load();
     } catch {
       /* toasted */
