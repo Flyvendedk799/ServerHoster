@@ -490,6 +490,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
       SELECT
         s.*,
         p.domain,
+        p.domains,
         c.expires_at AS cert_expires_at,
         (SELECT commit_hash FROM deployments d WHERE d.service_id = s.id AND d.status = 'success' ORDER BY d.created_at DESC LIMIT 1) as latest_commit_hash,
         (SELECT commit_hash FROM deployments d
@@ -529,7 +530,16 @@ export function registerServiceRoutes(ctx: AppContext): void {
           LIMIT 1
         ) as latest_git_branch
       FROM services s
-      LEFT JOIN proxy_routes p ON p.service_id = s.id
+      -- One row per service even when several hostnames route to it (apex + www):
+      -- \`domain\` is the primary (first non-www) hostname, \`domains\` the full list.
+      -- A plain JOIN duplicated the service in the list once per proxy_routes row.
+      LEFT JOIN (
+        SELECT service_id,
+               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
+               GROUP_CONCAT(domain, ',') AS domains
+        FROM proxy_routes
+        GROUP BY service_id
+      ) p ON p.service_id = s.id
       LEFT JOIN certificates c ON c.domain = p.domain
       ORDER BY s.created_at DESC
     `
@@ -563,9 +573,15 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const service = ctx.db
       .prepare(
         `
-      SELECT s.*, p.domain
+      SELECT s.*, p.domain, p.domains
       FROM services s
-      LEFT JOIN proxy_routes p ON p.service_id = s.id
+      LEFT JOIN (
+        SELECT service_id,
+               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
+               GROUP_CONCAT(domain, ',') AS domains
+        FROM proxy_routes
+        GROUP BY service_id
+      ) p ON p.service_id = s.id
       WHERE s.id = ?
     `
       )
