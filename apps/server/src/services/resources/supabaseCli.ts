@@ -171,6 +171,24 @@ function portOf(url: string | null): number | null {
   }
 }
 
+/**
+ * True for URLs served by this host — the only ones whose port is a host port.
+ */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Host port of a loopback URL; null for a remote/public one. */
+function localPortOf(url: string | null): number | null {
+  if (!url || !isLoopbackUrl(url)) return null;
+  return portOf(url);
+}
+
 function unquote(value: string): string {
   const trimmed = value.trim();
   if (
@@ -248,9 +266,16 @@ export function parseSupabaseStatus(output: string): SupabaseStatusInfo {
     }
   }
 
-  const apiPort = portOf(info.api_url);
-  const dbPort = portOf(info.db_url);
-  const studioPort = portOf(info.studio_url);
+  // `ports` are HOST ports of the local stack, so only a loopback URL can
+  // supply one. A project that sets `[api] external_url` (needed so GoTrue
+  // stamps a real domain into confirmation mails instead of 127.0.0.1) makes
+  // `supabase status` report that PUBLIC origin as the Project URL, whose
+  // implicit port is 443. Recording 443 as the stack's api port aimed the
+  // tunnel ingress at http://localhost:443 — nothing listens there, so every
+  // /auth/v1 request 502'd and no one could log in.
+  const apiPort = localPortOf(info.api_url);
+  const dbPort = localPortOf(info.db_url);
+  const studioPort = localPortOf(info.studio_url);
   if (apiPort) info.ports.api = apiPort;
   if (dbPort) info.ports.db = dbPort;
   if (studioPort) info.ports.studio = studioPort;
