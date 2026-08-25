@@ -307,6 +307,27 @@ function supabaseProjectIdFromConfig(workdir: string): string | null {
 }
 
 /**
+ * The stack's real host API port, read from supabase/config.toml `[api] port`.
+ * `supabase status` reports `[api] external_url` (a public https origin) as
+ * the Project URL whenever that key is set, and a public origin carries no
+ * host port — so config.toml is the only reliable source. See
+ * parseSupabaseStatus in ../supabaseCli.ts.
+ */
+function supabaseApiPortFromConfig(workdir: string): number | null {
+  try {
+    const content = fs.readFileSync(path.join(workdir, "supabase", "config.toml"), "utf8");
+    // Split on section headers so `[api.tls]`/`[db]` ports are not mistaken
+    // for the `[api]` one.
+    const section = content.split(/^\s*\[/m).find((part) => part.startsWith("api]"));
+    const match = section ? section.match(/^\s*port\s*=\s*(\d+)/m) : null;
+    const port = match ? Number(match[1]) : Number.NaN;
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Best-effort discovery of the stack's containers via the CLI's
  * `com.supabase.cli.project` label (fallback: supabase_* name prefix).
  * Failures yield [] — container names are diagnostics, not load-bearing.
@@ -351,19 +372,33 @@ export async function persistSupabaseStackInfo(
   const resource = getResource(ctx, resourceId);
   if (!resource) throw new Error("Resource not found");
 
+  const workdir = workdirOf(resource);
+  const localApiPort = workdir ? supabaseApiPortFromConfig(workdir) : null;
+  const ports: Record<string, number> = { ...statusInfo.ports };
+  // statusInfo.ports.api is only populated from a loopback Project URL, so a
+  // missing one means status reported a public origin (`[api] external_url`).
+  // config.toml still knows the real host port, and the tunnel ingress needs
+  // it to have a reachable target.
+  if (!ports.api && localApiPort) ports.api = localApiPort;
+
   const config: Record<string, unknown> = { ...resourceConfig(resource) };
-  if (statusInfo.api_url) config.api_url = statusInfo.api_url;
+  if (statusInfo.api_url) {
+    // api_url must stay LOCAL: bootstrap refuses a non-local target, and the
+    // browser-facing public origin is layered on per service by
+    // publicOriginForLinkedResource (see this profile's env()).
+    const localApiUrl = localApiPort ? `http://127.0.0.1:${localApiPort}` : null;
+    config.api_url = statusInfo.ports.api ? statusInfo.api_url : localApiUrl ?? config.api_url;
+  }
   if (statusInfo.graphql_url) config.graphql_url = statusInfo.graphql_url;
   if (statusInfo.studio_url) config.studio_url = statusInfo.studio_url;
   // db_url stays in config for control-plane use (introspection/bootstrap)
   // but is stripped from every API response (routes/resources.ts).
   if (statusInfo.db_url) config.db_url = statusInfo.db_url;
 
-  const workdir = workdirOf(resource);
   const containers = workdir ? await listSupabaseContainers(ctx, workdir) : [];
   updateResourceRuntimeState(ctx, resourceId, {
     config,
-    ports: Object.keys(statusInfo.ports).length > 0 ? statusInfo.ports : undefined,
+    ports: Object.keys(ports).length > 0 ? ports : undefined,
     containers: containers.length > 0 ? containers : undefined
   });
 
