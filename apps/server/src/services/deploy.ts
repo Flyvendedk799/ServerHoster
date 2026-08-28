@@ -1348,13 +1348,48 @@ export function deployFromGit(
   );
 }
 
+export type ServiceBuildClaim = {
+  type?: string | null;
+  command?: string | null;
+  dockerfile?: string | null;
+};
+
+/**
+ * Reconcile the detected build type with what the service already declares.
+ * Corrections run in both directions:
+ *
+ *  - a `process` service that already has a run command keeps its native
+ *    pipeline, so a stray Dockerfile can't hijack a working deploy;
+ *  - a `docker` service pinned to a specific Dockerfile builds from it even
+ *    when the repo ROOT looks like something else. detectBuildType only reads
+ *    the root, so a monorepo whose worker lives in a subdirectory (root
+ *    package.json → "node") would otherwise never reach the docker pipeline.
+ *    The pin is an operator decision, not a guess, so it wins.
+ *
+ * The pinned path must actually exist in the checkout — a stale pin falls back
+ * to detection rather than failing the deploy.
+ */
+export function reconcileBuildType(
+  detected: BuildType,
+  service: ServiceBuildClaim | undefined,
+  projectPath: string
+): BuildType {
+  if (detected === "docker") {
+    if (service?.type !== "process" || !String(service.command ?? "").trim()) return detected;
+    return resolveDockerFallbackBuildType(projectPath) ?? detected;
+  }
+  const pinned = String(service?.dockerfile ?? "").trim();
+  if (service?.type === "docker" && pinned && fs.existsSync(path.join(projectPath, pinned))) {
+    return "docker";
+  }
+  return detected;
+}
+
 function redeployBuildType(ctx: AppContext, serviceId: string, detected: BuildType, projectPath: string): BuildType {
-  if (detected !== "docker") return detected;
-  const service = ctx.db.prepare("SELECT type, command FROM services WHERE id = ?").get(serviceId) as
-    | { type?: string | null; command?: string | null }
-    | undefined;
-  if (service?.type !== "process" || !String(service.command ?? "").trim()) return detected;
-  return resolveDockerFallbackBuildType(projectPath) ?? detected;
+  const service = ctx.db
+    .prepare("SELECT type, command, dockerfile FROM services WHERE id = ?")
+    .get(serviceId) as ServiceBuildClaim | undefined;
+  return reconcileBuildType(detected, service, projectPath);
 }
 
 async function deployFromGitLocked(
@@ -1464,13 +1499,6 @@ async function deployFromGitLocked(
     }
     const detectedBuildType = resolveBuildType(targetPath);
     const buildType = redeployBuildType(ctx, serviceId, detectedBuildType, targetPath);
-    if (buildType !== detectedBuildType) {
-      const msg =
-        `Existing process service already has a run command; skipping Dockerfile on redeploy ` +
-        `and using the native ${buildType} pipeline.\n`;
-      buildLog += msg;
-      emitBuildLog(ctx, serviceId, deploymentId, msg);
-    }
     // A service that has already claimed a Dockerfile keeps building from it —
     // otherwise every redeploy of a companion (e.g. the API tier created from
     // `Dockerfile`) would fall through to the Dockerfile.frontend preference
@@ -1480,6 +1508,16 @@ async function deployFromGitLocked(
         | { dockerfile?: string }
         | undefined
     )?.dockerfile?.trim();
+    if (buildType !== detectedBuildType) {
+      const msg =
+        buildType === "docker"
+          ? `Service pins ${claimedDockerfile}; building that with Docker even though the ` +
+            `repository root looks like a ${detectedBuildType} app.\n`
+          : `Existing process service already has a run command; skipping Dockerfile on redeploy ` +
+            `and using the native ${buildType} pipeline.\n`;
+      buildLog += msg;
+      emitBuildLog(ctx, serviceId, deploymentId, msg);
+    }
     const preferredDockerfile =
       buildType === "docker"
         ? claimedDockerfile && fs.existsSync(path.join(targetPath, claimedDockerfile))
