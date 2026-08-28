@@ -969,6 +969,13 @@ export function registerServiceRoutes(ctx: AppContext): void {
     type: z.enum(["process", "docker", "static"]).optional(),
     command: z.string().optional(),
     workingDir: z.string().optional(),
+    // Pin the Dockerfile to build from, relative to the repo root. Needed for a
+    // monorepo whose root is a node/python app but which also ships a service
+    // built from e.g. worker/Dockerfile.
+    dockerfile: z.string().optional(),
+    // Attach an existing service to a repo so the GitOps poller deploys it.
+    githubRepoUrl: z.string().optional(),
+    githubBranch: z.string().optional(),
     port: z.number().int().optional(),
     domain: z.string().optional(),
     githubAutoPull: z.boolean().optional(),
@@ -1063,6 +1070,12 @@ export function registerServiceRoutes(ctx: AppContext): void {
       ctx.db.prepare("UPDATE services SET command = ? WHERE id = ?").run(p.command, id);
     if (p.workingDir !== undefined)
       ctx.db.prepare("UPDATE services SET working_dir = ? WHERE id = ?").run(p.workingDir, id);
+    if (p.dockerfile !== undefined)
+      ctx.db.prepare("UPDATE services SET dockerfile = ? WHERE id = ?").run(p.dockerfile, id);
+    if (p.githubRepoUrl !== undefined)
+      ctx.db.prepare("UPDATE services SET github_repo_url = ? WHERE id = ?").run(p.githubRepoUrl, id);
+    if (p.githubBranch !== undefined)
+      ctx.db.prepare("UPDATE services SET github_branch = ? WHERE id = ?").run(p.githubBranch, id);
     if (p.githubAutoPull !== undefined)
       ctx.db
         .prepare("UPDATE services SET github_auto_pull = ? WHERE id = ?")
