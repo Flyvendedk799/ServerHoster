@@ -3,7 +3,7 @@ import path from "node:path";
 import type { AppContext } from "../../types.js";
 import { getSecretSetting } from "../settings.js";
 import { publicOriginForLinkedResource } from "./publicExposure.js";
-import { setTomlValues } from "./supabasePorts.js";
+import { setTomlValues, type TomlValue } from "./supabasePorts.js";
 
 /**
  * Point a local Supabase stack's GoTrue at the shared SMTP relay — the missing
@@ -15,9 +15,15 @@ import { setTomlValues } from "./supabasePorts.js";
  * Every self-hosted stack on this host therefore had the CLI's local-dev auth
  * defaults, and three of them are wrong for anything with a domain:
  *
- *   - API_EXTERNAL_URL defaults to http://127.0.0.1:<api port>/auth/v1, so every
- *     confirmation/recovery link GoTrue mails out is a loopback address that
- *     only resolves on the VPS. Silent: the mail sends fine, the link is dead.
+ *   - every confirmation/recovery link GoTrue mails out is a loopback address
+ *     that only resolves on the VPS. Silent: the mail sends fine, the link is
+ *     dead. GoTrue builds those links from API_EXTERNAL_URL — but we must NOT
+ *     set that to the public domain: `supabase start` then health-checks it
+ *     (/rest-admin/v1/ready, /functions/v1/_internal/health), paths the tunnel
+ *     doesn't route, so the probe 404s and the whole stack fails to start. So
+ *     API_EXTERNAL_URL stays loopback and we ship email templates that build the
+ *     link from `{{ .SiteURL }}` (the public domain) instead — /auth/v1/verify
+ *     IS tunnel-routed, so a SiteURL link resolves from a recipient's inbox.
  *   - GOTRUE_URI_ALLOW_LIST defaults to https://127.0.0.1:3000, so any
  *     emailRedirectTo the app passes is rejected and downgraded to site_url —
  *     which strands people on the marketing page instead of /reset-password.
@@ -49,17 +55,84 @@ export type AuthMailSmtp = {
 export const SMTP_PASS_ENV_KEY = "SUPABASE_AUTH_SMTP_PASS";
 
 /**
- * Rewrite config.toml so GoTrue sends through `smtp` and builds links against
- * `publicOrigin`. Idempotent: re-applying the same values is a no-op, and keys
- * the operator set by hand are replaced in place rather than duplicated.
+ * The auth emails whose link must reach the public domain. We ship a template
+ * per type that builds the link from `{{ .SiteURL }}` rather than GoTrue's
+ * default `{{ .ConfirmationURL }}` (which is loopback here — see the module doc
+ * on why API_EXTERNAL_URL must stay loopback). `verifyType` is the `type=` the
+ * `/auth/v1/verify` endpoint expects for that flow.
+ */
+export const AUTH_MAIL_TEMPLATES = [
+  { key: "confirmation", verifyType: "signup", subject: "Confirm your email", heading: "Confirm your email", lead: "Confirm your address to finish creating your account:", cta: "Confirm your email" },
+  { key: "recovery", verifyType: "recovery", subject: "Reset your password", heading: "Reset your password", lead: "Follow this link to choose a new password:", cta: "Reset password" },
+  { key: "magic_link", verifyType: "magiclink", subject: "Your sign-in link", heading: "Sign in", lead: "Follow this link to sign in:", cta: "Sign in" }
+] as const;
+
+type AuthMailTemplate = (typeof AUTH_MAIL_TEMPLATES)[number];
+
+/** The relative content_path GoTrue's template server reads, per type. */
+function templateContentPath(key: string): string {
+  return `./supabase/templates/${key}.html`;
+}
+
+/** A minimal SiteURL-based template body for one auth-email type. */
+export function authMailTemplateBody(t: AuthMailTemplate): string {
+  return [
+    "<!--",
+    "  Written by ServerHoster's Email tab. The link is built from the SiteURL",
+    "  (the public domain) rather than GoTrue's default loopback link. Edit",
+    "  freely — a file that already exists is never overwritten.",
+    "-->",
+    `<h2>${t.heading}</h2>`,
+    `<p>${t.lead}</p>`,
+    `<p><a href="{{ .SiteURL }}/auth/v1/verify?token={{ .TokenHash }}&type=${t.verifyType}&redirect_to={{ .RedirectTo }}">${t.cta}</a></p>`,
+    "<p>If you didn't request this, you can ignore this email.</p>",
+    ""
+  ].join("\n");
+}
+
+/** True when `[section]` already appears in the TOML (so we don't clobber it). */
+function tomlHasSection(toml: string, section: string): boolean {
+  return new RegExp(`(^|\\n)\\s*\\[${section.replace(/\./g, "\\.")}\\]`).test(toml);
+}
+
+/**
+ * Remove `external_url = …` from the `[api]` section, if present.
+ *
+ * A public api.external_url is the footgun this module exists to avoid: it makes
+ * `supabase start` health-check unrouted admin paths and abort. Stripping it on
+ * every apply means enabling email also *repairs* a stack an older version (or a
+ * hand edit) left with a public external_url, rather than only avoiding it on
+ * fresh ones. Left absent, GoTrue's API_EXTERNAL_URL falls back to loopback,
+ * which is exactly what we want — the SiteURL templates carry the public link.
+ */
+export function stripApiExternalUrl(toml: string): string {
+  const out: string[] = [];
+  let inApi = false;
+  for (const line of toml.split("\n")) {
+    const header = line.match(/^\s*\[([^\]]+)\]/);
+    if (header) inApi = header[1] === "api";
+    if (inApi && /^\s*external_url\s*=/.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+/**
+ * Rewrite config.toml so GoTrue sends through `smtp` and mails PUBLIC links.
+ *
+ * Deliberately does NOT set `api.external_url` — pointing it at the public domain
+ * makes `supabase start` health-check unrouted admin paths and the stack fails to
+ * start (see the module doc). Public links come from `site_url` plus the SiteURL
+ * templates written by `writeDefaultAuthMailTemplates`; this only references a
+ * template section it doesn't already find, so a hand-tuned subject/path (or a
+ * localised template) survives a re-apply.
+ *
+ * Idempotent: re-applying the same values is a no-op, and keys the operator set
+ * by hand are replaced in place rather than duplicated.
  */
 export function applyAuthMailToToml(toml: string, publicOrigin: string, smtp: AuthMailSmtp): string {
   const origin = publicOrigin.replace(/\/+$/, "");
-  return setTomlValues(toml, [
-    // Public origin for the API itself. Without it GoTrue stamps 127.0.0.1 into
-    // every email link. The stack's /auth/v1/* is path-routed to this origin, so
-    // the value is directly reachable from a recipient's inbox.
-    { section: "api", key: "external_url", value: origin },
+  const entries: Array<{ section: string; key: string; value: TomlValue }> = [
     { section: "auth", key: "site_url", value: origin },
     // The `/**` form is what the app's own redirects (e.g. /reset-password,
     // /app) match against; the bare origin covers a redirect to the root.
@@ -71,7 +144,34 @@ export function applyAuthMailToToml(toml: string, publicOrigin: string, smtp: Au
     { section: "auth.email.smtp", key: "pass", value: `env(${SMTP_PASS_ENV_KEY})` },
     { section: "auth.email.smtp", key: "admin_email", value: smtp.from },
     { section: "auth.email.smtp", key: "sender_name", value: smtp.fromName || smtp.from }
-  ]);
+  ];
+  // Reference each SiteURL template — but only if the operator hasn't already
+  // configured that template section by hand (custom subject / localised copy).
+  for (const t of AUTH_MAIL_TEMPLATES) {
+    const section = `auth.email.template.${t.key}`;
+    if (tomlHasSection(toml, section)) continue;
+    entries.push({ section, key: "subject", value: t.subject });
+    entries.push({ section, key: "content_path", value: templateContentPath(t.key) });
+  }
+  return setTomlValues(stripApiExternalUrl(toml), entries);
+}
+
+/**
+ * Write the SiteURL template files into the stack's checkout, one per type.
+ * Never overwrites an existing file, so a hand-edited or localised template is
+ * left alone. Returns the paths actually written.
+ */
+export function writeDefaultAuthMailTemplates(workdir: string): string[] {
+  const dir = path.join(workdir, "supabase", "templates");
+  fs.mkdirSync(dir, { recursive: true });
+  const written: string[] = [];
+  for (const t of AUTH_MAIL_TEMPLATES) {
+    const file = path.join(dir, `${t.key}.html`);
+    if (fs.existsSync(file)) continue;
+    fs.writeFileSync(file, authMailTemplateBody(t), "utf8");
+    written.push(file);
+  }
+  return written;
 }
 
 export type AuthMailAudit = {
@@ -97,8 +197,15 @@ export function auditAuthMailToml(toml: string): AuthMailAudit {
 
   const confirmations = enabled("auth.email", "enable_confirmations") === "true";
   const smtp = enabled("auth.email.smtp", "enabled") === "true";
+  const isPublic = (u: string | null): boolean => Boolean(u && !/127\.0\.0\.1|localhost/.test(u));
+  // A link is public if the base it's built from is public. Two shapes qualify:
+  // GoTrue's default template + a public api.external_url, OR a SiteURL template
+  // (the shape this module writes) + a public site_url. The latter is preferred
+  // because a public api.external_url breaks `supabase start` (see module doc).
   const externalUrl = enabled("api", "external_url");
-  const links = Boolean(externalUrl && !/127\.0\.0\.1|localhost/.test(externalUrl));
+  const siteUrl = enabled("auth", "site_url");
+  const hasConfirmTemplate = tomlHasSection(toml, "auth.email.template.confirmation");
+  const links = isPublic(externalUrl) || (isPublic(siteUrl) && hasConfirmTemplate);
 
   const warnings: string[] = [];
   if (!confirmations) {
@@ -110,8 +217,8 @@ export function auditAuthMailToml(toml: string): AuthMailAudit {
   if (!smtp) warnings.push("GoTrue SMTP is not enabled in config.toml — auth mail cannot be sent.");
   if (!links) {
     warnings.push(
-      "api.external_url is missing or loopback — auth email links would point at 127.0.0.1 and be dead " +
-        "in the recipient's inbox."
+      "Auth email links would be dead in the inbox — set site_url to the public domain and enable " +
+        "email so a SiteURL confirmation template is written, or the links point at 127.0.0.1."
     );
   }
   return {
@@ -253,6 +360,9 @@ export function patchStackAuthMail(
   try {
     const before = fs.readFileSync(configPath, "utf8");
     const after = applyAuthMailToToml(before, publicOrigin, smtp);
+    // The config references SiteURL templates; write the files it points at (a
+    // no-op for any the operator already has), so GoTrue can actually fetch them.
+    writeDefaultAuthMailTemplates(workdir);
     if (after !== before) {
       fs.writeFileSync(`${configPath}.bak-email`, before, "utf8");
       fs.writeFileSync(configPath, after, "utf8");
