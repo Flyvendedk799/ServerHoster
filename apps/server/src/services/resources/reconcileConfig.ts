@@ -54,15 +54,23 @@ export type ReconcileEmailInput = {
  */
 export function reconciledConfigToml(
   toml: string,
-  opts: { portOffset: number; email: ReconcileEmailInput | null }
+  opts: { portOffset: number | null; email: ReconcileEmailInput | null }
 ): { toml: string; applied: string[] } {
   const applied: string[] = [];
   let out = toml;
 
-  const withPorts = applyPortOffsetToToml(out, opts.portOffset);
-  if (withPorts !== out) {
-    out = withPorts;
-    applied.push(`ports +${opts.portOffset}`);
+  // Only re-apply the port block when the offset is actually known. A stack
+  // whose resource has no stored port_offset keeps whatever ports its committed
+  // config carries — applying a phantom "offset 0" here would rewrite committed
+  // non-default ports (e.g. +1100 → 55421) back to the CLI defaults (54321) and
+  // collide with another tenant's stack, which is exactly what would take the
+  // stack down on its next start.
+  if (opts.portOffset !== null) {
+    const withPorts = applyPortOffsetToToml(out, opts.portOffset);
+    if (withPorts !== out) {
+      out = withPorts;
+      applied.push(`ports +${opts.portOffset}`);
+    }
   }
 
   const withJwt = setTomlValues(out, [{ section: "auth", key: "jwt_secret", value: JWT_SECRET_ENV }]);
@@ -140,7 +148,10 @@ export function reconcileManagedSupabaseConfig(
 
     try {
       const cfg = resourceConfig(resource);
-      const offset = typeof cfg.port_offset === "number" ? cfg.port_offset : 0;
+      // null (not 0) when unknown: a missing offset must leave committed ports
+      // untouched, never rewrite them to the defaults. A genuinely-stored 0 (the
+      // default-port stack) still applies as an offset.
+      const offset = typeof cfg.port_offset === "number" ? cfg.port_offset : null;
 
       // Email is reconciled only when the project has it enabled, the relay is
       // configured, and the app has a public origin to mail links against. The
