@@ -94,13 +94,29 @@ function smtpConfigured(ctx: AppContext): boolean {
   return Boolean(getSetting(ctx, "smtp_host") && getSecretSetting(ctx, "smtp_password"));
 }
 
-function smtpFromSettings(ctx: AppContext): AuthMailSmtp {
+/** A project's own SMTP override, if the Email tab set one for this app. */
+function projectEnv(ctx: AppContext, projectId: string, key: string): string | undefined {
+  const row = ctx.db
+    .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = ?")
+    .get(projectId, key) as { value?: string } | undefined;
+  return row?.value?.trim() || undefined;
+}
+
+/**
+ * SMTP for a stack: the shared relay host/user, but the FROM prefers the app's
+ * own address. Each app sends from its OWN domain (the relay authorises per
+ * domain, so the shared default rarely works), so the per-project SMTP_FROM the
+ * Email tab stored must win — exactly the precedence `/email/apply` uses. Using
+ * the central From here was the bug that made a signup 550 "not authorized to
+ * send from domain".
+ */
+function smtpForProject(ctx: AppContext, projectId: string): AuthMailSmtp {
   return {
     host: getSetting(ctx, "smtp_host") ?? "",
     port: Number(getSetting(ctx, "smtp_port") ?? "465") || 465,
     user: getSetting(ctx, "smtp_user") ?? "api_token",
-    from: getSetting(ctx, "smtp_from") ?? "",
-    fromName: getSetting(ctx, "smtp_from_name") ?? ""
+    from: projectEnv(ctx, projectId, "SMTP_FROM") ?? getSetting(ctx, "smtp_from") ?? "",
+    fromName: projectEnv(ctx, projectId, "SMTP_FROM_NAME") ?? getSetting(ctx, "smtp_from_name") ?? ""
   };
 }
 
@@ -134,7 +150,11 @@ export function reconcileManagedSupabaseConfig(
       if (resource.project_id && emailEnabledForProject(ctx, resource.project_id) && smtpConfigured(ctx)) {
         const origin = publicOriginForLinkedResource(ctx, serviceId, resource.id, "supabase");
         if (origin) {
-          email = { origin, smtp: smtpFromSettings(ctx), confirmations: cfg.email_confirmations === true };
+          email = {
+            origin,
+            smtp: smtpForProject(ctx, resource.project_id),
+            confirmations: cfg.email_confirmations === true
+          };
         }
       }
 
