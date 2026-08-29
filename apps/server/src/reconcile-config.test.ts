@@ -22,6 +22,24 @@ test("reconcile re-materialises the port block and JWT secret a git reset stripp
   assert.match(toml, /project_id = "app"/, "committed content preserved");
 });
 
+test("reconcile leaves committed ports untouched when the offset is unknown (null)", () => {
+  // The bug that took Havekongen down: a resource with no stored port_offset
+  // must NOT have its committed non-default ports rewritten to the CLI defaults.
+  const committed = 'project_id = "app"\n\n[api]\nport = 55421\n\n[db]\nport = 55422\nshadow_port = 55420\n';
+  const { toml, applied } = reconciledConfigToml(committed, { portOffset: null, email: null });
+  assert.match(toml, /port = 55421/, "committed api port preserved");
+  assert.match(toml, /port = 55422/, "committed db port preserved");
+  assert.ok(!/port = 54321/.test(toml), "not reset to the default that collides");
+  assert.ok(!applied.some((a) => /ports/.test(a)), "ports not reported as reapplied");
+  // JWT is still managed even without a known offset.
+  assert.match(toml, /jwt_secret = "env\(SUPABASE_AUTH_JWT_SECRET\)"/);
+});
+
+test("reconcile still applies a genuinely-stored offset of 0 (default-port stack)", () => {
+  const { toml } = reconciledConfigToml('project_id = "app"\n', { portOffset: 0, email: null });
+  assert.match(toml, /port = 54321/, "offset 0 materialises the default api port");
+});
+
 test("reconcile is a no-op on a checkout that already carries the managed config", () => {
   const first = reconciledConfigToml('project_id = "app"\n', { portOffset: 1500, email: null });
   const second = reconciledConfigToml(first.toml, { portOffset: 1500, email: null });
