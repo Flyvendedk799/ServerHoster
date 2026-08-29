@@ -134,6 +134,51 @@ export function supabaseStartEnv(ctx: AppContext): Record<string, string> {
   return pass ? { [SMTP_PASS_ENV_KEY]: pass } : {};
 }
 
+/**
+ * Read what a stack's on-disk config.toml currently does with auth mail, or
+ * null when it has no config.toml yet. Backs the Email tab's per-stack state so
+ * the confirmation toggle can render its real position.
+ */
+export function readStackAuthMailAudit(workdir: string): AuthMailAudit | null {
+  try {
+    const toml = fs.readFileSync(path.join(workdir, "supabase", "config.toml"), "utf8");
+    return auditAuthMailToml(toml);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Flip `[auth.email] enable_confirmations` on a stack's config.toml.
+ *
+ * Deliberately separate from applyAuthMailToToml: whether signup mails a
+ * confirmation step is a product decision, so it is only ever changed by an
+ * explicit operator action, never as a side effect of enabling SMTP. Same
+ * on-disk, restart-to-apply contract as patchStackAuthMail — `supabase start`
+ * reads the file, so a running stack keeps its old GoTrue env until restarted.
+ */
+export function setStackEmailConfirmations(workdir: string, enabled: boolean): AuthMailPatchResult {
+  const configPath = path.join(workdir, "supabase", "config.toml");
+  try {
+    const before = fs.readFileSync(configPath, "utf8");
+    const after = setTomlValues(before, [
+      { section: "auth.email", key: "enable_confirmations", value: enabled }
+    ]);
+    if (after !== before) {
+      fs.writeFileSync(`${configPath}.bak-email`, before, "utf8");
+      fs.writeFileSync(configPath, after, "utf8");
+    }
+    return { workdir, changed: after !== before, audit: auditAuthMailToml(after) };
+  } catch (error) {
+    return {
+      workdir,
+      changed: false,
+      audit: { signup_confirmation_email: false, smtp_configured: false, public_links: false, warnings: [] },
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 export type ProjectSupabaseStack = {
   resource_id: string;
   service_id: string;

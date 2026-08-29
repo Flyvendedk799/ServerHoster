@@ -10,7 +10,9 @@ import { getSetting, setSetting, getSecretSetting, setSecretSetting } from "../s
 import { encryptSecret } from "../security.js";
 import {
   patchStackAuthMail,
-  projectSupabaseStacks
+  projectSupabaseStacks,
+  readStackAuthMailAudit,
+  setStackEmailConfirmations
 } from "../services/resources/supabaseAuthMail.js";
 
 const execFileP = promisify(execFile);
@@ -134,8 +136,59 @@ export function registerEmailRoutes(ctx: AppContext): void {
           .prepare("SELECT 1 FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_HOST' LIMIT 1")
           .get(pr.id)
       );
-      return { id: pr.id, name: pr.name, applied, from: fromRow?.value ?? "" };
+      // Supabase-backed apps have a second, GoTrue-side switch the SMTP env
+      // can't reach: whether signup actually mails a confirmation. Surface each
+      // linked stack's current position so the tab can render the toggle.
+      const supabaseStacks = projectSupabaseStacks(ctx, pr.id).map((stack) => {
+        const audit = readStackAuthMailAudit(stack.workdir);
+        return {
+          resource_id: stack.resource_id,
+          name: stack.name,
+          has_public_origin: Boolean(stack.public_origin),
+          enable_confirmations: audit ? audit.signup_confirmation_email : null,
+          smtp_configured: audit ? audit.smtp_configured : null
+        };
+      });
+      return { id: pr.id, name: pr.name, applied, from: fromRow?.value ?? "", supabase_stacks: supabaseStacks };
     });
+  });
+
+  // Toggle GoTrue's signup-confirmation step for a project's Supabase stack(s).
+  // Writes `[auth.email] enable_confirmations` to config.toml; the change is
+  // live once the resource is restarted (which the caller does next), because
+  // only `supabase start` re-reads the file.
+  ctx.app.post("/email/confirmations/:projectId", async (req) => {
+    const { projectId } = req.params as { projectId: string };
+    const project = ctx.db.prepare("SELECT id FROM projects WHERE id = ?").get(projectId);
+    if (!project) throw new Error("Project not found");
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+
+    const stacks = projectSupabaseStacks(ctx, projectId).map((stack) => {
+      const result = setStackEmailConfirmations(stack.workdir, enabled);
+      return {
+        resource_id: stack.resource_id,
+        name: stack.name,
+        changed: result.changed,
+        // config.toml is only read by `supabase start`; a running stack keeps
+        // its old GoTrue env until the resource is restarted.
+        restart_required: result.changed,
+        enable_confirmations: result.audit.signup_confirmation_email,
+        ...(result.error ? { error: result.error } : {})
+      };
+    });
+    if (stacks.length === 0) {
+      const e = new Error("This project has no linked Supabase stack.") as Error & { statusCode?: number };
+      e.statusCode = 400;
+      throw e;
+    }
+    return {
+      ok: true,
+      enabled,
+      supabase_stacks: stacks,
+      message: enabled
+        ? "Signup confirmation email turned on. Restart the linked Supabase resource(s) to apply."
+        : "Signup confirmation email turned off — new users auto-confirm. Restart the linked Supabase resource(s) to apply."
+    };
   });
 
   // Send a test email through the shared SMTP config, so the operator can

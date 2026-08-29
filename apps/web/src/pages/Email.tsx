@@ -14,7 +14,25 @@ type EmailSettings = {
   configured: boolean;
 };
 
-type ProjectRow = { id: string; name: string; applied: boolean; from: string };
+/** A Supabase stack linked to a project, and its GoTrue signup-mail state. */
+type SupabaseStackRow = {
+  resource_id: string;
+  name: string;
+  has_public_origin: boolean;
+  enable_confirmations: boolean | null;
+  smtp_configured: boolean | null;
+};
+type ProjectRow = {
+  id: string;
+  name: string;
+  applied: boolean;
+  from: string;
+  supabase_stacks?: SupabaseStackRow[];
+};
+
+type ConfirmationsResult = {
+  supabase_stacks?: Array<{ resource_id: string; name: string; restart_required?: boolean; error?: string }>;
+};
 
 /** Per-stack outcome of enabling email on a Supabase-backed project. */
 type ApplyStack = {
@@ -184,6 +202,41 @@ export function EmailPage() {
     try {
       await api(`/projects/${id}/restart-all`, { method: "POST" });
       toast.success("Restarting services — the new email env is now live once they're back up");
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Flip GoTrue's signup-confirmation step, then restart the linked Supabase
+  // resource(s) so it takes effect — config.toml is only read by `supabase
+  // start`, and the "Restart to apply" button above restarts app services, not
+  // the stack. Doing both here is what makes the toggle actually work.
+  async function toggleConfirmations(projectId: string, enabled: boolean) {
+    setBusy(`conf-${projectId}`);
+    try {
+      const res = (await api(`/email/confirmations/${projectId}`, {
+        method: "POST",
+        body: JSON.stringify({ enabled })
+      })) as ConfirmationsResult;
+      let restarted = 0;
+      for (const stack of res?.supabase_stacks ?? []) {
+        if (stack.error) {
+          toast.error(`${stack.name}: ${stack.error}`);
+          continue;
+        }
+        if (stack.restart_required) {
+          await api(`/resources/${stack.resource_id}/restart`, { method: "POST", silent: true });
+          restarted++;
+        }
+      }
+      toast.success(
+        enabled
+          ? `Signup confirmation email on${restarted ? " — stack restarted, now live" : ""}`
+          : `Signup confirmation off — new users auto-confirm${restarted ? " — stack restarted" : ""}`
+      );
+      await load();
     } catch {
       /* toasted */
     } finally {
@@ -408,6 +461,40 @@ export function EmailPage() {
                       </button>
                     )}
                   </div>
+                  {pr.supabase_stacks && pr.supabase_stacks.length > 0 && (
+                    <div className="email-conf">
+                      {pr.supabase_stacks.map((st) => (
+                        <div key={st.resource_id} className="email-conf-row">
+                          <div className="row" style={{ gap: "0.4rem", minWidth: 0, flexWrap: "wrap" }}>
+                            <span className="small">Signup confirmation email</span>
+                            <span className="muted tiny">{st.name}</span>
+                            {st.enable_confirmations === false && st.smtp_configured === false && (
+                              <span className="badge-warn" title="Turning this on without SMTP leaves new users unable to confirm.">
+                                needs SMTP
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            className={st.enable_confirmations ? "button small" : "ghost small"}
+                            onClick={() => toggleConfirmations(pr.id, !st.enable_confirmations)}
+                            disabled={busy === `conf-${pr.id}`}
+                            title={
+                              st.enable_confirmations
+                                ? "On: GoTrue emails a confirmation link on signup. Click to turn off (new users auto-confirm)."
+                                : "Off: new users are auto-confirmed and get no email. Click to require email confirmation."
+                            }
+                          >
+                            {busy === `conf-${pr.id}` ? (
+                              <Loader2 size={14} className="spin" />
+                            ) : (
+                              <Mail size={13} />
+                            )}{" "}
+                            {st.enable_confirmations ? "On" : "Off"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
               {projects.length === 0 && <p className="muted small">No projects yet.</p>}
@@ -535,6 +622,8 @@ export function EmailPage() {
         .email-page .form-stack { display: flex; flex-direction: column; gap: 1rem; }
         .email-page .email-apps { display: flex; flex-direction: column; gap: 0.4rem; }
         .email-page .email-app-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; padding: 0.6rem 0.75rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-sunken); }
+        .email-page .email-conf { width: 100%; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 0.35rem; }
+        .email-page .email-conf-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
         .email-page .email-from-input { font-size: 0.8rem; padding: 0.3rem 0.5rem; width: 220px; max-width: 46vw; }
         .email-page .email-test { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); }
         .email-page .badge-ok { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; font-weight: 700; color: var(--success); background: var(--accent-soft); padding: 0.15rem 0.45rem; border-radius: var(--radius-md); }
