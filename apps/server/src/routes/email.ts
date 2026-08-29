@@ -14,6 +14,11 @@ import {
   readStackAuthMailAudit,
   setStackEmailConfirmations
 } from "../services/resources/supabaseAuthMail.js";
+import {
+  getResource,
+  resourceConfig,
+  updateResourceRuntimeState
+} from "../services/resources/lifecycle.js";
 
 const execFileP = promisify(execFile);
 
@@ -165,6 +170,15 @@ export function registerEmailRoutes(ctx: AppContext): void {
 
     const stacks = projectSupabaseStacks(ctx, projectId).map((stack) => {
       const result = setStackEmailConfirmations(stack.workdir, enabled);
+      // Persist the preference on the resource so the deploy-time reconcile
+      // re-applies it — otherwise the next git deploy resets config.toml and the
+      // toggle silently reverts to GoTrue's auto-confirm default.
+      const resource = getResource(ctx, stack.resource_id);
+      if (resource) {
+        updateResourceRuntimeState(ctx, stack.resource_id, {
+          config: { ...resourceConfig(resource), email_confirmations: enabled }
+        });
+      }
       return {
         resource_id: stack.resource_id,
         name: stack.name,

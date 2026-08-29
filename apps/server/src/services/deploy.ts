@@ -24,6 +24,7 @@ import { runHostPreflight, type HostRequirementResult } from "./hostRequirements
 import { transition, markFailed } from "./deployStateMachine.js";
 import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
 import { ensurePersistedPaths, unlinkPersistedSymlinks } from "./persistence.js";
+import { reconcileManagedSupabaseConfig } from "./resources/reconcileConfig.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
@@ -1492,6 +1493,24 @@ async function deployFromGitLocked(
         });
         if (linked.length) {
           const msg = `Persisted upload dirs (survive redeploys): ${linked.join(", ")}.\n`;
+          buildLog += msg;
+          emitBuildLog(ctx, serviceId, deploymentId, msg);
+        }
+      }
+    }
+    // Re-materialise ServerHoster-managed Supabase config the hard-reset above
+    // just stripped (host ports, the real JWT secret, email/SMTP + templates), so
+    // it persists across deploys without having to be committed to the app repo.
+    // Runs before the build so a build that reads config.toml sees the real one.
+    {
+      const reconciled = reconcileManagedSupabaseConfig(ctx, serviceId, targetPath);
+      for (const r of reconciled) {
+        const msg = r.error
+          ? `Supabase config (${r.name}): could not reconcile: ${r.error}\n`
+          : r.applied.length
+            ? `Supabase config (${r.name}): reapplied ${r.applied.join(", ")}.\n`
+            : "";
+        if (msg) {
           buildLog += msg;
           emitBuildLog(ctx, serviceId, deploymentId, msg);
         }
