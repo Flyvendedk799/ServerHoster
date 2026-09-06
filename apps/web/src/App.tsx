@@ -42,6 +42,7 @@ import { OnboardingPage } from "./pages/Onboarding";
 import { api, clearAuthToken } from "./lib/api";
 import { connectLogs } from "./lib/ws";
 import { CommandPalette } from "./components/CommandPalette";
+import { PhoneHandoff } from "./components/PhoneHandoff";
 import { TerminalDock } from "./components/TerminalDock";
 import { DockerBanner } from "./components/DockerBanner";
 
@@ -228,28 +229,32 @@ export function App() {
 
   if (isAuthPage) {
     return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/onboarding" element={<OnboardingPage />} />
-        <Route
-          path="*"
-          element={
-            <Navigate
-              to={
-                bootstrapped === false && sessionStorage.getItem("survhub_prefer_login") !== "1"
-                  ? "/onboarding"
-                  : "/login"
-              }
-              replace
-            />
-          }
-        />
-      </Routes>
+      <>
+        <PhoneHandoff />
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/onboarding" element={<OnboardingPage />} />
+          <Route
+            path="*"
+            element={
+              <Navigate
+                to={
+                  bootstrapped === false && sessionStorage.getItem("survhub_prefer_login") !== "1"
+                    ? "/onboarding"
+                    : "/login"
+                }
+                replace
+              />
+            }
+          />
+        </Routes>
+      </>
     );
   }
 
   return (
     <div className={`app ${collapsed ? "collapsed" : ""}`} data-sidebar={collapsed ? "collapsed" : "expanded"}>
+      <PhoneHandoff />
       <CommandPalette
         theme={theme}
         onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}

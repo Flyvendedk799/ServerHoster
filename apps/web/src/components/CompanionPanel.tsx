@@ -32,6 +32,8 @@ type Pairing = {
   expiresAt: number;
   payload: string;
   appLink: string | null;
+  /** Where the app the QR opens is hosted, if anywhere. */
+  appHosted: "external" | "bundled" | null;
 };
 
 type PairingStatus = {
@@ -284,6 +286,18 @@ export function CompanionPanel() {
               <QrCode value={pairing.appLink ?? pairing.payload} size={232} />
             </div>
             <div className="companion-pairing-side">
+              <p className="muted small" style={{ marginBottom: "0.5rem" }}>
+                {pairing.appHosted
+                  ? "Point your phone's camera at this. It opens the companion app with the code already filled in."
+                  : "Scan this from inside the companion app. Your phone's camera can't open it on its own."}
+              </p>
+              {pairing.appHosted === "bundled" && (
+                <p className="muted tiny" style={{ marginBottom: "0.5rem" }}>
+                  The app is served by this machine at{" "}
+                  <code>{pairing.serverUrl.replace(/^https?:\/\//, "")}/m</code> — open that on a phone to
+                  pair by typing the code instead.
+                </p>
+              )}
               <p className="muted small" style={{ marginBottom: "0.35rem" }}>
                 Can't scan? Type this code into the app:
               </p>

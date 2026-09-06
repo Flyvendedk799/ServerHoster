@@ -4,6 +4,8 @@
 
 Today it is an installable web app (PWA) built for a phone screen. It is structured so that a native shell can wrap the same client later; the pairing protocol and the API client don't care what runs them.
 
+**You do not have to host this.** A ServerHoster machine builds it as part of `npm run build` and serves it at `/m` on its own address, so `http://your-machine:8787/m` is the app and the dashboard's pairing QR opens it directly. The instructions below are for developing on it, or for hosting a copy somewhere else.
+
 ---
 
 ## What it does
@@ -11,7 +13,7 @@ Today it is an installable web app (PWA) built for a phone screen. It is structu
 |                   |                                                                                                                    |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
 | **Pair by QR**    | Scan the code on **Settings → Companion** in the dashboard. No account, no sign-up, no cloud.                      |
-| **Pair by code**  | Camera not cooperating? Type the 8-character code and the server address instead.                                  |
+| **Pair by code**  | Camera not cooperating? Type the 8-character code. Opened from the machine's own `/m`, that is all you type — it already knows the address. |
 | **Many machines** | Pair as many boxes as you like and switch between them from the header.                                            |
 | **Home**          | Health at a glance: what's running, what's broken, memory and load, recent deploys. Broken things sort to the top. |
 | **Services**      | Search and filter the whole fleet, grouped by project.                                                             |

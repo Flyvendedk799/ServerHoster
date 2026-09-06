@@ -2,6 +2,7 @@ import os from "node:os";
 import { z } from "zod";
 import { nowIso } from "../lib/core.js";
 import type { AppContext } from "../types.js";
+import { COMPANION_MOUNT_PATH, companionAppBundled } from "../services/companionStatic.js";
 import {
   PairingError,
   cancelPairing,
@@ -118,8 +119,45 @@ export function companionEndpointCandidates(ctx: AppContext, requestHost?: strin
 }
 
 /**
- * What the QR encodes. Kept small — every byte costs QR modules, and a denser
- * code is a code a phone camera fails to read across a desk.
+ * Where the companion app lives for this pairing, and the deep link into it.
+ *
+ * An externally hosted app (`SURVHUB_COMPANION_APP_URL`) wins when configured.
+ * Otherwise the control plane serves the app itself at {@link COMPANION_MOUNT_PATH},
+ * which is the case that matters: without it the QR fell back to the raw JSON
+ * payload, and a phone camera reading that JSON opens the *dashboard* — the
+ * desktop UI at phone width, no pairing screen, no code to type. That is the
+ * exact wrong turn this removes.
+ *
+ * The link carries `s` even when the app is served from the same machine. It
+ * costs ~25 QR modules and buys unambiguity: the app never has to guess whether
+ * its own origin happens to be a control plane.
+ */
+export function companionAppLink(input: {
+  configuredAppUrl: string;
+  serverUrl: string;
+  code: string;
+  bundled: boolean;
+}): { appLink: string | null; appHosted: "external" | "bundled" | null } {
+  const query = `s=${encodeURIComponent(input.serverUrl)}&c=${encodeURIComponent(input.code)}`;
+  if (input.configuredAppUrl) {
+    return {
+      appLink: `${stripTrailingSlash(input.configuredAppUrl)}/#/pair?${query}`,
+      appHosted: "external"
+    };
+  }
+  if (input.bundled) {
+    return {
+      appLink: `${stripTrailingSlash(input.serverUrl)}${COMPANION_MOUNT_PATH}/#/pair?${query}`,
+      appHosted: "bundled"
+    };
+  }
+  return { appLink: null, appHosted: null };
+}
+
+/**
+ * What the QR encodes when there is no app to deep-link into. Kept small —
+ * every byte costs QR modules, and a denser code is a code a phone camera
+ * fails to read across a desk.
  */
 function pairingPayload(input: {
   serverUrl: string;
@@ -169,10 +207,12 @@ export function registerCompanionRoutes(ctx: AppContext): void {
       serverName,
       expiresAt: pairing.expiresAt,
       payload: pairingPayload({ serverUrl, code: pairing.code, serverName, expiresAt: pairing.expiresAt }),
-      /** Present only when the operator told us where the companion app is hosted. */
-      appLink: ctx.config.companionAppUrl
-        ? `${stripTrailingSlash(ctx.config.companionAppUrl)}/#/pair?s=${encodeURIComponent(serverUrl)}&c=${encodeURIComponent(pairing.code)}`
-        : null
+      ...companionAppLink({
+        configuredAppUrl: ctx.config.companionAppUrl,
+        serverUrl,
+        code: pairing.code,
+        bundled: companionAppBundled()
+      })
     };
   });
 

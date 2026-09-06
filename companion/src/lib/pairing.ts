@@ -13,7 +13,9 @@ import { addServer } from "./vault";
  *      the QR encodes when the operator has told their machine where this app
  *      is hosted. The phone's stock camera can open that one directly.
  *   3. Nothing but the code, typed in by hand, when the camera won't cooperate.
- *      That path has no server URL in it, so the UI has to ask for one.
+ *      That path has no server URL in it, so the UI has to ask for one — unless
+ *      a control plane served this app, in which case it already told us its
+ *      address and the field arrives filled in.
  */
 
 export type PairingInput = {
@@ -24,6 +26,23 @@ export type PairingInput = {
 
 function cleanUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
+}
+
+/**
+ * The machine that served this bundle, when one did.
+ *
+ * A control plane serving the app at /m stamps
+ * `<meta name="survhub-server" content="…">` into the HTML with the exact
+ * origin the request arrived on. That beats `location.origin`: the bundle also
+ * runs on Cloudflare Pages, where its own origin is not a control plane and
+ * offering it as the server address would send people down a dead end.
+ */
+export function servingMachineUrl(): string | null {
+  if (typeof document === "undefined") return null;
+  const meta = document.querySelector('meta[name="survhub-server"]');
+  const content = meta?.getAttribute("content")?.trim();
+  if (!content || !/^https?:\/\//i.test(content)) return null;
+  return cleanUrl(content);
 }
 
 export function parsePairingInput(raw: string): PairingInput | null {
@@ -62,7 +81,10 @@ export function parsePairingInput(raw: string): PairingInput | null {
       if (!code) return null;
       const server = params.get("s") ?? params.get("server");
       return {
-        serverUrl: server ? cleanUrl(server) : null,
+        // A link with no `s` came from a machine hosting this app itself, so
+        // the link's own origin IS the control plane. Falling back to it is
+        // what lets a QR stay short and still pair in one tap.
+        serverUrl: cleanUrl(server ?? url.origin),
         code,
         serverName: null
       };
@@ -152,7 +174,9 @@ export async function claimPairing(input: {
   } catch {
     throw new PairingFailure(
       "Couldn't reach that server",
-      `Check that ${base} is reachable from this phone. A localhost or 192.168.x address only works on the same Wi-Fi, and the machine must allow this app's origin (SURVHUB_COMPANION_APP_URL).`
+      servingMachineUrl() === base
+        ? `Check that ${base} is still reachable from this phone — it is the address this app was loaded from, so the connection dropped between opening it and pairing.`
+        : `Check that ${base} is reachable from this phone. A localhost or 192.168.x address only works on the same Wi-Fi, and the machine must allow this app's origin (SURVHUB_COMPANION_APP_URL).`
     );
   }
 

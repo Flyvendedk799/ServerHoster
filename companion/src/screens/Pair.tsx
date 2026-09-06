@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { QrScanner } from "../components/QrScanner";
-import { claimPairing, describeError, parsePairingInput, suggestDeviceName } from "../lib/pairing";
+import {
+  claimPairing,
+  describeError,
+  parsePairingInput,
+  servingMachineUrl,
+  suggestDeviceName
+} from "../lib/pairing";
 import { toast } from "../lib/toast";
 import { useVault } from "../hooks/useVault";
 
@@ -21,10 +27,19 @@ export function PairScreen() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { servers } = useVault();
-  const deepLink = useMemo(() => ({ url: params.get("s") ?? "", code: params.get("c") ?? "" }), [params]);
+  // The machine that served this app, when one did. It is both the default
+  // server address and the reason the "enter code" path stops asking for one:
+  // open http://<machine>/m on a phone, type the code, done.
+  const servedBy = useMemo(() => servingMachineUrl(), []);
+  const deepLink = useMemo(
+    () => ({ url: params.get("s") ?? servedBy ?? "", code: params.get("c") ?? "" }),
+    [params, servedBy]
+  );
 
   const [mode, setMode] = useState<Mode>(deepLink.code ? "manual" : "scan");
   const [serverUrl, setServerUrl] = useState(deepLink.url);
+  // A phone that opened this app FROM the machine only has to type the code.
+  const [showAddress, setShowAddress] = useState(!servedBy);
   const [code, setCode] = useState(deepLink.code);
   const [deviceName, setDeviceName] = useState(suggestDeviceName());
   const [busy, setBusy] = useState(false);
@@ -81,6 +96,12 @@ export function PairScreen() {
           On your computer open ServerHoster → <strong>Settings → Companion</strong>, then scan the code it
           shows.
         </p>
+        {servedBy && (
+          <p className="muted small">
+            Connecting to <strong>{servedBy.replace(/^https?:\/\//, "")}</strong> — the machine this app
+            was opened from.
+          </p>
+        )}
       </header>
 
       <div className="segmented" role="tablist" aria-label="Pairing method">
@@ -121,23 +142,31 @@ export function PairScreen() {
             void submit(serverUrl, code);
           }}
         >
-          <label htmlFor="pair-url">Server address</label>
-          <input
-            id="pair-url"
-            type="url"
-            inputMode="url"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            placeholder="https://hoster.example.com"
-            value={serverUrl}
-            onChange={(event) => setServerUrl(event.target.value)}
-            required
-          />
-          <p className="hint">
-            The address shown on the pairing screen. To use it away from home this has to be reachable from
-            the internet — a Cloudflare Tunnel hostname or your own domain.
-          </p>
+          {showAddress ? (
+            <>
+              <label htmlFor="pair-url">Server address</label>
+              <input
+                id="pair-url"
+                type="url"
+                inputMode="url"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="https://hoster.example.com"
+                value={serverUrl}
+                onChange={(event) => setServerUrl(event.target.value)}
+                required
+              />
+              <p className="hint">
+                The address shown on the pairing screen. To use it away from home this has to be reachable
+                from the internet — a Cloudflare Tunnel hostname or your own domain.
+              </p>
+            </>
+          ) : (
+            <button type="button" className="ghost small" onClick={() => setShowAddress(true)}>
+              Pair with a different machine instead
+            </button>
+          )}
 
           <label htmlFor="pair-code">Pairing code</label>
           <input

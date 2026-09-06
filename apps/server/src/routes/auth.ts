@@ -12,6 +12,7 @@ import {
 import { nanoid } from "nanoid";
 import { nowIso } from "../lib/core.js";
 import { publicResourceRouteForRequest } from "../services/resources/publicExposure.js";
+import { COMPANION_MOUNT_PATH, companionAppBundled } from "../services/companionStatic.js";
 import {
   companionRequestAllowed,
   resolveCompanionDevice,
@@ -97,7 +98,11 @@ export function registerAuthRoutes(ctx: AppContext): void {
       bootstrapped: userCount.count > 0 || hasLegacyPassword || hasAuthToken,
       hasUsers: userCount.count > 0,
       // The login form uses this to know whether to show the username field.
-      requiresUsername: userCount.count > 0
+      requiresUsername: userCount.count > 0,
+      // Public on purpose, and carries nothing sensitive: the dashboard reads
+      // this before login to decide whether a phone should be handed the
+      // companion app instead of the desktop UI at phone width.
+      companionApp: companionAppBundled() ? { mounted: true, path: COMPANION_MOUNT_PATH } : null
     };
   });
 
