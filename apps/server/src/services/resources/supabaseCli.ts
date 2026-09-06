@@ -128,8 +128,25 @@ export async function supabaseStatus(workdir: string): Promise<string> {
  * state (vs `db push`, which targets linked remote projects). It never imports
  * hosted data and never runs supabase/seed.sql.
  */
-export async function supabaseMigrationApply(workdir: string): Promise<string> {
-  const result = await runCli(["migration", "up"], { cwd: workdir, timeoutMs: 10 * 60_000 });
+export type MigrationApplyOptions = {
+  /** Pass `--local` so the CLI never resolves a linked (hosted) project. */
+  local?: boolean;
+  /**
+   * Pass `--include-all`. Needed when a pending migration file sorts BEFORE the
+   * newest already-applied version — the normal case for two branches merged out
+   * of order — which plain `migration up` refuses to touch.
+   */
+  includeAll?: boolean;
+};
+
+export async function supabaseMigrationApply(
+  workdir: string,
+  options: MigrationApplyOptions = {}
+): Promise<string> {
+  const args = ["migration", "up"];
+  if (options.local) args.push("--local");
+  if (options.includeAll) args.push("--include-all");
+  const result = await runCli(args, { cwd: workdir, timeoutMs: 10 * 60_000 });
   if (result.code !== 0) throw new Error(failureMessage("migration up", result));
   return result.stdout;
 }

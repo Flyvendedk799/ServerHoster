@@ -38,6 +38,25 @@ Use Services page:
 - Paste compose YAML content and import.
 - SURVHub maps compose services to Docker services and imports env vars.
 
+## Database Migrations on Deploy
+
+A git deploy applies the repo's pending `supabase/migrations/*.sql` to the service's local
+Supabase stack before it builds, so pushing a migration to GitHub is all it takes to move the
+live schema. Design and rationale: `docs/supabase-migrations-and-grants.md`.
+
+- **Scope.** One started (`running`/`ready`) local Supabase resource linked to the service.
+  Zero linked stacks is a silent no-op; two started stacks skips and warns rather than guessing.
+  A stack whose `db_url` is not loopback is never touched.
+- **No-op path.** The repo's versions are diffed against
+  `supabase_migrations.schema_migrations` first. Nothing pending means the Supabase CLI is
+  never invoked.
+- **Failure blocks the deploy.** The build log carries the SQL error and the previous build
+  keeps serving. Forward-only — there are no down-migrations; recovery is restore-from-backup.
+- **Preview:** `GET /resources/:id/migrations` lists repo versions, applied versions, and what
+  the next deploy would apply. It runs nothing.
+- **Opt out per stack:** `POST /resources/:id/auto-migrate {"enabled": false}`. The stack then
+  needs its migrations applied by hand, as before.
+
 ## Migration Import Tooling
 
 - Railway payload import: `POST /migrations/railway/import`

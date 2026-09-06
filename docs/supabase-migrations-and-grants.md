@@ -1,7 +1,12 @@
 # Supabase: migrations on deploy, grants at provision
 
-> Status: **proposal**. Nothing here is implemented yet.
+> Status: **Part B shipped** (`services/resources/deployMigrations.ts`, covered by
+> `deploy.migrations.test.ts`). **Part A (grants) is still a proposal.**
 > Scope: the `supabase` resource profile only. Managed Postgres/`managedDb` resources are out of scope.
+>
+> Three things shipped differently from the proposal below; each is called out inline as
+> **Shipped as**: the hook runs before the build rather than after it, the default is **on**
+> rather than off, and the session timeouts were dropped because the CLI owns its own connection.
 
 Two defects keep costing us a debugging session per app. They look like one problem — "the
 database is wrong after a deploy" — but they have different causes, different fixes, and
@@ -10,7 +15,7 @@ different blast radii. They should ship as two changes.
 | | Symptom | Cause | Fix belongs in |
 |---|---|---|---|
 | **A** | `42501 permission denied for table …` on every request | Provisioning never grants the PostgREST API roles anything | `profiles/supabase.ts` provision |
-| **B** | New migration files in a repo never reach the database | Nothing calls the migration apply outside provisioning | `deploy.ts` post-deploy |
+| **B** | New migration files in a repo never reach the database | Nothing calls the migration apply outside provisioning | `deploy.ts` (shipped) |
 
 Both were hit on Havekongen (2026-08-11): saving a garden failed with `42501` even though the
 table had four correct RLS policies, and the fix migration then had to be applied to the live
@@ -100,24 +105,41 @@ it is harmless.
 
 ### Where the hook goes
 
-`applyPostDeployServiceState` (`deploy.ts:1657`), inside the `deployment.status === "success"`
-branch at line 1667, **before** `startService` at line 1676.
+**Shipped as:** inside `deployFromGitLocked`, immediately after
+`reconcileManagedSupabaseConfig` re-materialises the managed `config.toml` and **before**
+build-type detection — earlier than the proposed `applyPostDeployServiceState` slot.
 
-Ordering matters: the new frontend must not start against the old schema. Running migrations
-first means the window of mismatch is old-frontend-against-new-schema, which the usual
-expand-then-contract discipline already covers.
+The proposal put it after a successful build, before `startService`. Two things moved it
+earlier:
+
+- Build steps can read the database (type generation, SSG that queries Supabase at build time).
+  Migrating after the build means those steps see the old schema.
+- A bad migration fails the deploy in seconds instead of after a full build.
+
+It has to come after the config reconcile either way: the CLI reads `supabase/config.toml` for
+the stack's host ports, and the git hard-reset strips the managed block out of it.
+
+The ordering property the proposal cared about is unchanged — migrations still run before the
+new code starts, so the mismatch window is old-code-against-new-schema, which
+expand-then-contract already covers. What is genuinely different: if the *build* then fails, the
+schema has already moved while the previous build keeps serving. Same window, wider.
 
 ### What it does
 
-1. Resolve the supabase resource(s) linked to the service (see the hazard below).
-2. For each, if `supabase/migrations` exists in the workdir, run the existing
-   `supabaseMigrationApply(workdir)`. The CLI skips everything already in
-   `supabase_migrations.schema_migrations`, so this is a no-op on the overwhelming majority of
-   deploys and needs no new bookkeeping from us.
-3. Append the CLI output to the deployment's `build_log` and record the versions applied, so a
-   bad migration is traceable to a deployment.
-4. Run the Part A grant block afterwards when any migration applied, so new tables are reachable
-   without the app repo knowing anything about grants.
+1. Resolve the one started supabase stack linked to the service (see the hazard below).
+2. Diff the repo's `supabase/migrations/*.sql` versions against
+   `supabase_migrations.schema_migrations`, read straight from the stack. **Nothing pending
+   means the CLI is never invoked and no lock is taken** — that is every deploy but a handful.
+3. Otherwise run `supabaseMigrationApply(workdir, { local: true, includeAll })`.
+   `--include-all` is passed only when a pending file sorts *before* the newest applied
+   version — two branches merged out of order, which plain `migration up` refuses outright.
+4. Re-read the history table and confirm every pending version is now recorded. The exit code is
+   not trusted on its own: a CLI that exits 0 without recording is treated as a failure, because
+   proceeding would start the new code against the old schema.
+5. Write one line into the deployment's `build_log`, naming the versions applied.
+
+Step 4 of the proposal — running the Part A grant block after a migration — is **not** shipped.
+Grants are still Part A and still unimplemented.
 
 ### The resource-ambiguity hazard
 
@@ -125,13 +147,15 @@ This is the part to get right. As measured above, one service can carry several 
 including to `failed` resources. Migrating a dead duplicate would be silent and wrong; worse, a
 service linked to two *healthy* stacks has no obvious correct answer.
 
-Proposed rule:
+**Shipped as** `resolveMigrationTarget`, with one widening: `status` may be `running` **or**
+`ready`. A freshly provisioned stack sits at `ready` and has a perfectly good database, and
+that same pair is what `requireBootstrapResource` already accepts.
 
-- consider only links with `active = 1` **and** resource `status = 'running'` **and**
-  `profile = 'supabase'`;
+- consider only links with `active = 1` **and** resource `status` in (`running`, `ready`) **and**
+  `profile = 'supabase'` (duplicate links to one resource collapse to a single candidate);
 - exactly one match → migrate it;
 - zero matches → skip quietly, this is the normal case for most services;
-- more than one match → **skip and warn**, do not guess. Log which resources were candidates.
+- more than one match → **skip and warn**, do not guess. The build log names the candidates.
 
 We should also clean up the stale `failed` links, but the rule must not depend on that cleanup
 having happened.
@@ -144,47 +168,65 @@ already running should be left running — the same reasoning as `deploy.ts:1695
 
 ### Concurrency and lock safety
 
-- Take a Postgres advisory lock (`pg_try_advisory_lock`) around the apply so two deploys — or a
-  deploy racing a manual `supabase migration up` — cannot interleave. If the lock is held, fail
-  fast with a clear message rather than queueing.
-- Set a conservative `lock_timeout` and `statement_timeout` for the session. A migration that
-  wants `ACCESS EXCLUSIVE` on a large table would otherwise stall every request to the live app
-  for as long as it takes.
+- **Shipped:** `pg_try_advisory_lock(hashtext('survhub:supabase-migrations'))` on the stack's own
+  database, taken around the apply and released in a `finally`. A held lock fails fast with
+  "another migration run holds the advisory lock"; it never queues.
+- **Not shipped:** the session `lock_timeout` / `statement_timeout`. The CLI opens its own
+  connection, so the only way to scope those to it is a persistent `ALTER ROLE … IN DATABASE`,
+  which would silently apply to every other connection to that stack too. A long
+  `ACCESS EXCLUSIVE` migration can therefore still stall the live app — worth revisiting, but not
+  worth a persistent global setting to fix.
 
-### This must be opt-in
+### The default
 
-The GitOps poller redeploys within ~60s of any push to `main`. Turning this on globally means
-**arbitrary SQL executes against production on push, with no review gate**. That is a significant
-change in what a `git push` does, and it should be a deliberate per-resource choice, not a
-platform default.
+The proposal argued for default **off**: the GitOps poller redeploys within ~60s of any push to
+`main`, so turning this on globally means arbitrary SQL executes against production on push with
+no review gate.
 
-Add `auto_migrate` (default **off**) to the resource config, surfaced as a toggle on the resource
-with text that says plainly what it does. Revisit the default only once it has run quietly for a
-while across several stacks.
+**Shipped as default ON**, deliberately, because that trade already exists. A push to `main`
+*already* ships arbitrary application code to production within 60s with no review gate. The
+schema was the one part left behind, and leaving it behind is exactly what broke Havekongen and
+Awaire. The reviewer in both cases is the same person, at `git push` time.
+
+The escape hatch is per stack: `auto_migrate: false` in the resource config, set via
+`POST /resources/:id/auto-migrate {"enabled": false}`. `GET /resources/:id/migrations` shows what
+the next deploy would apply without running anything.
+
+What makes the default defensible is the set of properties enforced in code, not the default
+itself: local stacks only, one unambiguous stack only, forward-only, never seeds, never replays
+against a database with no history table, and a failure stops the deploy.
 
 ---
 
 ## Testing
 
-Existing patterns to follow: `resources.provision.test.ts`, `companionEnv.test.ts`, and the
-`setFunctionsSpawn` injectable seam in `functions.ts` (tests must never shell out to a real CLI or
-touch a real database).
+Part B is covered by `apps/server/src/deploy.migrations.test.ts`. Both side-effecting layers are
+injected — the CLI through `setMigrationCliRunner`, Postgres through `setMigrationDbClient` — so
+nothing shells out to a real CLI or touches a real database.
 
-- **Grants** — RLS-off table present → anon/authenticated grants withheld, warning raised,
-  resource degraded not failed. All-RLS → full grant block emitted. Repair action is idempotent.
-- **Link resolution** — one running + two failed links → picks the running one. Two running links
-  → skips and warns. Zero links → no-op, deploy unaffected.
-- **Ordering** — migrations run before `startService`; a migration failure marks the deployment
-  failed, leaves a running service running, and does not start a stopped one.
-- **Opt-in** — `auto_migrate` off (the default) means no migration call at all.
+- **Link resolution** — one running + two failed links → picks the running one. Two started links
+  → skips and warns, touches neither. Zero links → silent no-op.
+- **Diffing** — pending detection, out-of-order detection, and "nothing pending" taking neither
+  the lock nor the CLI.
+- **Failure** — a throwing CLI, and a CLI that exits 0 without recording, both produce an error
+  the deploy turns into a failed deployment; the advisory lock is released either way.
+- **Guards** — hosted `db_url`, missing history table, stopped stack, and `auto_migrate: false`
+  each skip without running anything.
+
+Still owed for **Part A**: RLS-off table present → anon/authenticated grants withheld, warning
+raised, resource degraded not failed; all-RLS → full grant block emitted; repair action
+idempotent.
 
 ## Exit criteria
 
+- ~~A repo whose only change is a new file in `supabase/migrations` reaches the database on
+  deploy, with the applied versions visible in the deployment log.~~ **Done.**
+- ~~A service linked to more than one running supabase resource never migrates either of them.~~
+  **Done.**
 - A freshly provisioned stack answers PostgREST queries without a hand-applied grants migration.
-- A repo whose only change is a new file in `supabase/migrations` reaches the database on deploy,
-  with the applied versions visible in the deployment log.
-- A service linked to more than one running supabase resource never migrates either of them.
+  *(Part A, outstanding.)*
 - `docs/troubleshooting.md` gains a `42501` entry pointing at the repair action.
+  *(Part A, outstanding.)*
 
 ## Explicitly out of scope
 

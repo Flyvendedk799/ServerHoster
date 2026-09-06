@@ -25,6 +25,10 @@ import { transition, markFailed } from "./deployStateMachine.js";
 import { recordDeployDuration, recordDeployFailure } from "./metrics.js";
 import { ensurePersistedPaths, unlinkPersistedSymlinks } from "./persistence.js";
 import { reconcileManagedSupabaseConfig } from "./resources/reconcileConfig.js";
+import {
+  applyPendingSupabaseMigrations,
+  migrationLogLine
+} from "./resources/deployMigrations.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
@@ -1514,6 +1518,27 @@ async function deployFromGitLocked(
           buildLog += msg;
           emitBuildLog(ctx, serviceId, deploymentId, msg);
         }
+      }
+    }
+    // Apply any migration the push added BEFORE the build/start, so the new
+    // code never comes up against the old schema. Only ever touches a LOCAL
+    // Supabase stack, only runs the repo's own committed SQL, and never seeds.
+    // A failure fails the deploy: shipping code that outruns its schema is the
+    // exact breakage this exists to prevent.
+    {
+      failureStage = "building";
+      const migrations = await applyPendingSupabaseMigrations(ctx, serviceId, targetPath);
+      const msg = migrationLogLine(migrations);
+      if (msg) {
+        buildLog += msg;
+        emitBuildLog(ctx, serviceId, deploymentId, msg, migrations.error ? "stderr" : "stdout");
+      }
+      if (migrations.error) {
+        throw new Error(
+          `Supabase migrations failed for stack "${migrations.name}": ${migrations.error}. ` +
+            "The deploy stopped before the build, so the app was not started against a stale schema. " +
+            "Fix the migration and redeploy, or set auto_migrate=false on the resource to apply it by hand."
+        );
       }
     }
     const detectedBuildType = resolveBuildType(targetPath);

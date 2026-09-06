@@ -1,3 +1,4 @@
+import path from "node:path";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { broadcast, serializeError } from "../lib/core.js";
@@ -34,6 +35,12 @@ import {
   type BootstrapRequest
 } from "../services/resources/bootstrap.js";
 import { getProfile, listProfiles } from "../services/resources/profiles.js";
+import {
+  autoMigrateEnabled,
+  diffMigrations,
+  listRepoMigrations,
+  readStackAppliedVersions
+} from "../services/resources/deployMigrations.js";
 import { supabaseResourceAction } from "../services/resources/profiles/supabase.js";
 import { getLatestScan, listLatestScans, runDependencyScan } from "../services/resources/scan.js";
 import {
@@ -524,6 +531,50 @@ export function registerResourceRoutes(ctx: AppContext): void {
   });
 
   /** Link (or re-link) a resource to a service so env injection activates. */
+  /**
+   * Auto-migrate toggle. Deploys apply a repo's pending supabase/migrations to
+   * this stack by default; turning it off restores the old hand-applied
+   * behaviour for one stack without disabling it platform-wide.
+   */
+  ctx.app.post("/resources/:id/auto-migrate", async (req) => {
+    const resource = getResource(ctx, (req.params as { id: string }).id);
+    if (!resource) throw new Error("Resource not found");
+    if (resource.profile !== "supabase") {
+      throw new Error(`Auto-migrate only applies to supabase resources (this one is "${resource.profile}").`);
+    }
+    const body = z.object({ enabled: z.boolean() }).parse(req.body);
+    updateResourceRuntimeState(ctx, resource.id, {
+      config: { ...resourceConfig(resource), auto_migrate: body.enabled }
+    });
+    return { ok: true, resource: serializeResource(ctx, getResource(ctx, resource.id)!) };
+  });
+
+  /**
+   * What the next deploy would apply: the repo's migration versions vs the ones
+   * this stack has recorded. Read-only — it never runs anything.
+   */
+  ctx.app.get("/resources/:id/migrations", async (req) => {
+    const resource = getResource(ctx, (req.params as { id: string }).id);
+    if (!resource) throw new Error("Resource not found");
+    const config = resourceConfig(resource);
+    const links = listLinksForResource(ctx, resource.id);
+    const repo =
+      links
+        .map((link) => listRepoMigrations(path.join(ctx.config.projectsDir, link.service_id)))
+        .find((versions) => versions.length > 0) ?? [];
+    const applied = await readStackAppliedVersions(config);
+    const { pending, outOfOrder } = diffMigrations(repo, applied ?? []);
+    return {
+      resource_id: resource.id,
+      auto_migrate: autoMigrateEnabled(config),
+      history_available: applied !== null,
+      repo_versions: repo,
+      applied_versions: applied ?? [],
+      pending_versions: applied === null ? [] : pending,
+      out_of_order: applied === null ? false : outOfOrder
+    };
+  });
+
   ctx.app.post("/resources/:id/link", async (req) => {
     const resource = getResource(ctx, (req.params as { id: string }).id);
     if (!resource) throw new Error("Resource not found");
