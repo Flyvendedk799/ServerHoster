@@ -3,11 +3,56 @@
 The companion app pairs a phone to a ServerHoster machine with a QR code, then talks
 directly to that machine's API — no account, no relay, no third party in the path.
 
-The app itself lives in [`companion/`](../companion/README.md). This page documents the
-control-plane half: the pairing endpoints, what a paired device is allowed to do, and how
-to make a machine reachable from a phone that isn't on your Wi-Fi.
+**The machine serves the app itself, at `/m`.** `npm run build` builds
+[`companion/`](../companion/README.md) alongside the dashboard, the control plane serves
+the result, and the pairing QR deep-links into it. Nothing to host, nothing to configure,
+no CORS: open `http://<machine>:8787/m` on a phone, or just scan the code.
+
+> Before this, the app was a bundle you had to build and host elsewhere and then point the
+> machine at with `SURVHUB_COMPANION_APP_URL`. Skip that and the QR encoded the raw JSON
+> payload — and a phone camera, finding `http://…` inside that JSON, opens the **dashboard**.
+> You got the desktop UI at phone width with no pairing screen, which is the wrong half of
+> the product. Serving the app locally is what removes that turn.
+
+This page documents the control-plane half: where the app is served, the pairing endpoints,
+what a paired device is allowed to do, and how to make a machine reachable from a phone that
+isn't on your Wi-Fi.
 
 ---
+
+## Where the app is served
+
+| | |
+| --- | --- |
+| **Path** | `/m` on the control plane's own origin. Short on purpose — it goes inside the QR, and fewer characters is a code a phone reads across a desk. |
+| **Built by** | `npm run build` (via `npm run build:companion` → `scripts/build-companion.mjs`), which installs `companion/`'s own dependencies if they are missing. |
+| **Found at** | `companion/dist`, or `companion-dist` next to the server's compiled output when packaged. |
+| **If it wasn't built** | `/m` 404s and the QR falls back to the raw payload, exactly as before. The control-plane build never fails because the companion build did — pass `--strict` to `build-companion.mjs` in CI to make it hard. |
+| **Overridden by** | `SURVHUB_COMPANION_APP_URL`, which still wins when you genuinely host the app elsewhere. |
+
+The served `index.html` carries one extra tag:
+
+```html
+<meta name="survhub-server" content="https://hoster.example.com">
+```
+
+That is the exact origin the phone reached the machine on, which is by definition an address
+that works from that phone — better than anything the server could infer about itself. The
+app uses it to prefill the server field, so pairing by hand is *just the code*. The bundle is
+host-agnostic without it: on Cloudflare Pages the tag is absent and the app asks for an
+address, because there its own origin is not a control plane.
+
+Because the tag is per-request, `/m/index.html` is sent `Cache-Control: no-store` and
+`Vary: Host`. Fingerprinted assets are `immutable`; `sw.js` and the manifest are `no-cache`
+so an update reaches an installed app.
+
+### A phone that lands on the dashboard anyway
+
+The dashboard is responsive, which is the trap: on a phone it looks enough like "the mobile
+version" that you never find out there is a real one. When a phone-sized viewport with a
+phone user agent loads the dashboard and this machine is serving the app, a sheet offers both
+doors and remembers which one you took. It is never a redirect — the dashboard on a phone is
+a legitimate thing to want.
 
 ## Pairing in one picture
 
@@ -15,7 +60,8 @@ to make a machine reachable from a phone that isn't on your Wi-Fi.
  Dashboard (authenticated)        Control plane                 Phone
  ─────────────────────────        ─────────────                 ─────
  Settings → Companion
-   POST /companion/pairings ──▶   mint an 8-char code
+   POST /companion/pairings ──▶   mint an 8-char code + a
+                                  /m/#/pair?s=…&c=… deep link
                                   TTL 5 min · single use
                                   store SHA-256(code) only
    ◀── code + chosen server URL
@@ -35,6 +81,7 @@ AI Gateway consumer tokens. A copy of `survhub.db` yields no working credential.
 
 | Method   | Path                      | Auth                 | Purpose                                                  |
 | -------- | ------------------------- | -------------------- | -------------------------------------------------------- |
+| `GET`    | `/m/*`                    | **none** (static)    | The companion app itself, when its bundle was built      |
 | `GET`    | `/companion/endpoints`    | dashboard session    | Addresses this machine might be reachable at, labelled   |
 | `POST`   | `/companion/pairings`     | dashboard session    | Mint a pairing code + QR payload                         |
 | `GET`    | `/companion/pairings/:id` | dashboard session    | Poll: `pending` / `claimed` / `expired`                  |
@@ -146,10 +193,10 @@ or a custom domain routed to the API port — and pair against that HTTPS addres
 # The address the phone should call home on. Offered first when pairing.
 SURVHUB_PUBLIC_URL=https://hoster.example.com
 
-# Where the companion app is hosted. Two effects:
+# Optional. The app is served from this machine at /m by default, so this is
+# only for hosting it somewhere else. Two effects:
 #   1. the origin is allowed through CORS automatically
-#   2. the pairing QR encodes a deep link into the app, so a phone's stock
-#      camera can open it straight from the lock screen
+#   2. the pairing QR deep-links into that copy instead of the local /m
 SURVHUB_COMPANION_APP_URL=https://companion.example.com
 
 # Believe X-Forwarded-For. Set this whenever you reach the dashboard through
@@ -166,9 +213,8 @@ Leave `SURVHUB_TRUST_PROXY` unset if the control plane is exposed directly. Turn
 without a proxy in front lets any caller forge their own address in a header, which is the
 same failure in the other direction.
 
-If you would rather not think about CORS at all, build `companion/` and serve its `dist/`
-from the same origin as the control plane — for example as a ServerHoster static service on
-the same hostname. Same origin, no configuration, one address to remember.
+You do not have to think about CORS at all unless you host the app elsewhere: `/m` is the
+same origin as the API, so there is nothing to allow.
 
 ## Revoking a phone
 

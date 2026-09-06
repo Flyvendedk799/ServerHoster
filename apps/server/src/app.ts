@@ -14,6 +14,11 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import type { AppContext } from "./types.js";
 import { dockerUnavailableMessage, serializeError } from "./lib/core.js";
+import {
+  COMPANION_MOUNT_PATH,
+  companionDistDir,
+  serveCompanionAsset
+} from "./services/companionStatic.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOpsRoutes } from "./routes/ops.js";
 import { registerProjectRoutes } from "./routes/projects.js";
@@ -325,6 +330,11 @@ export async function buildApp(): Promise<AppContext> {
   // web dashboard is colocated under `../web-dist` relative to the server's
   // compiled entry. Serve it from the root so users can open one URL.
   // In dev the Vite dev server still handles the UI directly.
+  // --- Companion PWA -------------------------------------------------------
+  // Served from this machine at /m, before the dashboard's catch-all, so the
+  // pairing QR can deep-link into it with no hosting and no CORS to configure.
+  registerCompanionStatic(app);
+
   registerDashboardStatic(app);
 
   app.addHook("onResponse", async (req, reply) => {
@@ -419,6 +429,36 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
+ * Serve the companion PWA at `/m` when its bundle was built.
+ *
+ * Registered before the dashboard's own catch-all: Fastify stops running
+ * onRequest hooks once one has replied, so `/m` is claimed here and `/m` is
+ * also in the dashboard's reserved list, which makes the ordering explicit
+ * rather than load-bearing.
+ */
+function registerCompanionStatic(app: ReturnType<typeof Fastify>): void {
+  const dir = companionDistDir();
+  if (!dir) return;
+
+  app.addHook("onRequest", async (req: any, reply: any) => {
+    const result = serveCompanionAsset(
+      dir,
+      {
+        method: req.method,
+        url: req.raw.url ?? "/",
+        headers: req.headers as Record<string, unknown>,
+        protocol: req.protocol
+      },
+      { trustProxy: Boolean(config.trustProxy) }
+    );
+    if (!result) return;
+    reply.code(result.status);
+    for (const [name, value] of Object.entries(result.headers)) reply.header(name, value);
+    return reply.send(result.body);
+  });
+}
+
+/**
  * Serve the built React dashboard from `<serverDist>/../web-dist/` at the
  * site root. Falls back to `index.html` for any unmatched non-API path so
  * client-side routing works. Reserved paths (API namespaces, WebSocket,
@@ -476,7 +516,8 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/admin",
     "/logs",
     "/plex",
-    "/companion"
+    "/companion",
+    COMPANION_MOUNT_PATH
   ];
 
   app.addHook("onRequest", async (req: any, reply: any) => {
