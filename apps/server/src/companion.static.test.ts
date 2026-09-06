@@ -169,9 +169,15 @@ test("a forwarded host list takes the first hop, and a junk host stamps nothing"
 });
 
 test("the injected meta tag escapes its content and no-ops without an origin", () => {
-  const html = '<html><head><title>x</title></head><body></body></html>';
-  assert.equal(injectServerOrigin(html, null), html);
+  const html = "<html><head><title>x</title></head><body></body></html>";
+  assert.equal(injectServerOrigin(html, null), html, "no origin, no tag");
+
+  // The property that matters is that the value cannot leave its attribute, so
+  // assert on the tag itself: no raw quote to close it, no raw < to open a
+  // sibling element. (A `>` inside a quoted attribute is inert and stays as-is.)
   const injected = injectServerOrigin(html, 'http://x"><script>alert(1)</script>');
-  assert.ok(!injected.includes("<script>alert(1)</script>"), injected);
-  assert.ok(injected.includes("&quot;&gt;&lt;script"), injected);
+  const tag = /<meta name="survhub-server" content="([^"]*)">/.exec(injected);
+  assert.ok(tag, injected);
+  assert.ok(!tag![1].includes("<"), tag![1]);
+  assert.equal(injected.match(/<script/g), null, injected);
 });
