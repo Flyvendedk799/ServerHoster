@@ -80,8 +80,10 @@ const composeImportSchema = z.object({
 const directDeploySchema = z.object({
   projectId: z.string().optional(),
   name: z.string().min(1),
-  repoUrl: z.string().url(),
-  branch: z.string().default("main"),
+  // Trimmed before validation -- see the note in routes/deployments.ts: an
+  // untrimmed pasted URL passes .url() and then breaks every git call on it.
+  repoUrl: z.string().trim().url(),
+  branch: z.string().trim().default("main"),
   port: z.number().int().optional(),
   startAfterDeploy: z.boolean().default(false),
   domain: z.string().optional(),
@@ -993,8 +995,8 @@ export function registerServiceRoutes(ctx: AppContext): void {
     // built from e.g. worker/Dockerfile.
     dockerfile: z.string().optional(),
     // Attach an existing service to a repo so the GitOps poller deploys it.
-    githubRepoUrl: z.string().optional(),
-    githubBranch: z.string().optional(),
+    githubRepoUrl: z.string().trim().optional(),
+    githubBranch: z.string().trim().optional(),
     port: z.number().int().optional(),
     domain: z.string().optional(),
     githubAutoPull: z.boolean().optional(),
