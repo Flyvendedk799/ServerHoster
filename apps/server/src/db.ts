@@ -573,6 +573,19 @@ const migrations = [
     device_id TEXT,
     created_at TEXT NOT NULL
   )`,
+  // Setting a service env var twice used to INSERT a second row for the same
+  // key -- project_env_vars has had UNIQUE(project_id, key) since it was
+  // written, but env_vars never did. Which duplicate then reached the process
+  // was down to row order, so "I changed that variable and it did not take"
+  // was a real outcome, and the stale copy was invisible in the UI (the list
+  // shows both, identically named).
+  //
+  // Collapse to the most recently inserted row per key -- the last write is the
+  // one the operator meant -- then make the duplicate impossible.
+  `DELETE FROM env_vars WHERE rowid NOT IN (
+     SELECT MAX(rowid) FROM env_vars GROUP BY service_id, key
+   )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_env_vars_service_key ON env_vars(service_id, key)",
   "CREATE INDEX IF NOT EXISTS idx_companion_pairings_code ON companion_pairings(code_hash)"
 ];
 
