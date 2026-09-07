@@ -9,8 +9,14 @@ import { getGithubSyncStatus, getGithubSyncStatuses } from "../services/poller.j
 
 const deploySchema = z.object({
   serviceId: z.string(),
-  repoUrl: z.string().url().optional(),
-  branch: z.string().optional()
+  // .trim() BEFORE .url(): zod's .url() delegates to the WHATWG URL parser,
+  // which tolerates surrounding whitespace and then hands back the ORIGINAL
+  // string. A pasted " https://github.com/..." therefore validated fine and was
+  // stored verbatim, and every git call on it died with
+  // `fatal: protocol ' https' is not supported` -- forever, since the GitOps
+  // poller just retries the same stored value.
+  repoUrl: z.string().trim().url().optional(),
+  branch: z.string().trim().optional()
 });
 const rollbackSchema = z.object({ serviceId: z.string(), deploymentId: z.string() });
 const syncStatusBatchSchema = z.object({

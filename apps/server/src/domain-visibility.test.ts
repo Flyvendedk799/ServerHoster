@@ -4,6 +4,7 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
+import { z } from "zod";
 import { buildApp } from "./app.js";
 import { gracefulShutdown, listeningPids, mergeListeners } from "./services/runtime.js";
 import { detectEmailConsumers } from "./services/emailConsumers.js";
@@ -313,4 +314,29 @@ test("detectEmailConsumers: an undeployed service is unscannable, not a false 'n
   } finally {
     await gracefulShutdown(ctx);
   }
+});
+
+/*
+ * A repo URL pasted with a stray leading space imported "successfully" and then
+ * failed every git call with `fatal: protocol ' https' is not supported`,
+ * retried by the poller once a minute forever. zod's .url() delegates to the
+ * WHATWG URL parser, which tolerates surrounding whitespace and then returns the
+ * ORIGINAL string -- so validation passed and the untrimmed value was stored.
+ */
+test("git url schemas: surrounding whitespace is stripped, not merely tolerated", () => {
+  const schema = z.string().trim().url();
+  const parsed = schema.parse("  https://github.com/owner/repo\n");
+  assert.equal(parsed, "https://github.com/owner/repo");
+});
+
+test("git url schemas: untrimmed .url() is what let the bad value through", () => {
+  // Pinning the upstream behaviour this guards against: without .trim() the
+  // parse SUCCEEDS and hands back the space, which is why it reached git at all.
+  const permissive = z.string().url().safeParse(" https://github.com/owner/repo");
+  assert.equal(permissive.success, true);
+  assert.equal(permissive.data, " https://github.com/owner/repo");
+});
+
+test("git branch schemas: whitespace is stripped", () => {
+  assert.equal(z.string().trim().default("main").parse(" master "), "master");
 });

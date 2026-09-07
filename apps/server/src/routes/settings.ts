@@ -129,7 +129,7 @@ export function registerSettingsRoutes(ctx: AppContext): void {
   });
 
   const webhookEnsureSchema = z.object({
-    repoUrl: z.string().url(),
+    repoUrl: z.string().trim().url(),
     webhookUrl: z.string().url()
   });
   ctx.app.post("/github/webhook/ensure", async (req) => {
