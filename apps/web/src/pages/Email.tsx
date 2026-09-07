@@ -43,7 +43,19 @@ type ApplyStack = {
   restart_required?: boolean;
   warnings?: string[];
 };
-type ApplyResult = { message?: string; supabase_stacks?: ApplyStack[] };
+type EmailConsumer = {
+  service_id: string;
+  name: string;
+  consumes: boolean;
+  evidence: string | null;
+  unscannable?: string;
+};
+type ApplyResult = {
+  message?: string;
+  supabase_stacks?: ApplyStack[];
+  env_consumers?: EmailConsumer[];
+  will_be_used?: boolean;
+};
 
 type ZoneRow = { id: string; name: string };
 type RuleRow = { id: string; to: string; dest: string; enabled: boolean; name: string };
@@ -164,7 +176,20 @@ export function EmailPage() {
         method: "POST",
         body: JSON.stringify({ from: appFrom[id]?.trim() || undefined })
       })) as ApplyResult;
-      toast.success(res?.message || "Email enabled — redeploy/restart that app's services to apply");
+      // A flat success toast here is what made a missing mail path in the app
+      // look like broken infrastructure. When nothing can consume the env, the
+      // apply still happened — but it is a warning, not a success.
+      if (res?.will_be_used === false) {
+        toast.warning(res?.message || "Email settings applied, but nothing in this project reads them");
+        for (const consumer of res?.env_consumers ?? []) {
+          if (consumer.unscannable) toast.info(`${consumer.name}: ${consumer.unscannable}`);
+        }
+      } else {
+        toast.success(res?.message || "Email enabled — redeploy/restart that app's services to apply");
+        for (const consumer of res?.env_consumers ?? []) {
+          if (consumer.consumes && consumer.evidence) toast.info(`${consumer.name}: ${consumer.evidence}`);
+        }
+      }
       // A Supabase-backed app's auth mail comes from GoTrue, not from SMTP_*.
       // Enabling email rewrites its config.toml, but a running stack keeps the
       // old settings until it is restarted — and enable_confirmations is a

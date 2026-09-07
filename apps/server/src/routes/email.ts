@@ -14,6 +14,7 @@ import {
   readStackAuthMailAudit,
   setStackEmailConfirmations
 } from "../services/resources/supabaseAuthMail.js";
+import { detectEmailConsumers } from "../services/emailConsumers.js";
 import {
   getResource,
   resourceConfig,
@@ -330,15 +331,37 @@ export function registerEmailRoutes(ctx: AppContext): void {
       };
     });
 
+    // Injecting env and patching GoTrue are both no-ops for an app that has no
+    // mail code at all. Reporting a flat "Email enabled" there is what turns a
+    // one-line repo gap into an infrastructure hunt, so say what was found.
+    const consumers = detectEmailConsumers(ctx, projectId);
+    const patchedStack = stacks.some((s) => "restart_required" in s && s.restart_required);
+    const anyConsumer = consumers.some((c) => c.consumes);
+    const anyUnscannable = consumers.some((c) => c.unscannable);
+
+    const message = patchedStack
+      ? "Email enabled. Restart the linked Supabase resource(s) to load the new GoTrue mail config, " +
+        "and redeploy/restart the project's services."
+      : anyConsumer
+        ? "Email enabled for this project. Redeploy/restart its services to apply."
+        : anyUnscannable
+          ? "Email settings applied, but nothing could be checked for mail code — deploy the " +
+            "project's services, then apply again to confirm the SMTP_* env is actually read."
+          : "Email settings applied, but NOTHING IN THIS PROJECT READS THEM. No service's code " +
+            "reads SMTP_*/EMAIL_ENABLED, there is no mail library in its manifests, and no linked " +
+            "Supabase stack sends its auth mail. Restarting will not change anything until the app " +
+            "gains a mail path — this is a change to the repo, not to the host.";
+
     return {
       ok: true,
       redeploy_required: true,
       applied_keys: vals.map((v) => v[0]),
       supabase_stacks: stacks,
-      message: stacks.some((s) => "restart_required" in s && s.restart_required)
-        ? "Email enabled. Restart the linked Supabase resource(s) to load the new GoTrue mail config, " +
-          "and redeploy/restart the project's services."
-        : "Email enabled for this project. Redeploy/restart its services to apply."
+      // Per-service: does its checkout read the env we just injected?
+      env_consumers: consumers,
+      // The single fact the UI should surface loudest when it is false.
+      will_be_used: anyConsumer || patchedStack,
+      message
     };
   });
 

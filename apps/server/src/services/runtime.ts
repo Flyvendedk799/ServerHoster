@@ -480,6 +480,77 @@ async function processBelongsToService(pid: number, serviceId: string): Promise<
   }
 }
 
+/** What `lsof`/`ss` reported, or null when that tool could not be asked. */
+export type ListenerProbe = { lsof: string | null; ss: string | null };
+
+/**
+ * Merge two listener probes into "who holds this port, and is it held at all".
+ *
+ * Pure so the interesting case is testable without a host that reproduces it:
+ * one tool returning NOTHING while the other names a pid. That is not
+ * hypothetical — on this project's own VPS `lsof -tiTCP:<port> -sTCP:LISTEN`
+ * exits 1 with no output for ports held by the app processes the control plane
+ * spawns (`lsof -p <pid>` is likewise empty, exit 0, no stderr, as root), while
+ * `ss` names them correctly. lsof works normally there for every other process,
+ * so nothing about the host looks broken until a restart mysteriously fails.
+ *
+ * `occupied` is deliberately separate from `pids`: a port can be demonstrably
+ * busy while no owner is identifiable, and reporting that as "free" is what let
+ * freeServicePort() skip an EADDRINUSE it was written to clear.
+ */
+export function mergeListeners(probe: ListenerProbe): { pids: number[]; occupied: boolean } {
+  const pids = new Set<number>();
+  let occupied = false;
+
+  // lsof -t prints one pid per line and nothing else.
+  for (const token of (probe.lsof ?? "").split(/\s+/)) {
+    const pid = Number(token.trim());
+    if (pid > 0) {
+      pids.add(pid);
+      occupied = true;
+    }
+  }
+
+  // ss -H prints one socket per line; the users:(("name",pid=N,fd=M)) column is
+  // absent when the caller can't see the owning process, so a line on its own
+  // still proves the port is taken.
+  for (const line of (probe.ss ?? "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    occupied = true;
+    for (const match of line.matchAll(/pid=(\d+)/g)) {
+      const pid = Number(match[1]);
+      if (pid > 0) pids.add(pid);
+    }
+  }
+
+  return { pids: Array.from(pids), occupied };
+}
+
+/** Run one probe command, returning null if it fails or isn't installed. */
+async function probe(command: string, args: string[]): Promise<string | null> {
+  try {
+    const { stdout } = await exec(command, args, { timeout: 2000, maxBuffer: 1024 * 1024 });
+    return stdout;
+  } catch {
+    // Both tools exit non-zero when they match nothing, which is
+    // indistinguishable from "not installed" — either way, ask the other one.
+    return null;
+  }
+}
+
+/**
+ * Every pid LISTENing on `port`, plus whether the port is occupied at all.
+ * Asks both tools always, rather than falling back, because neither reliably
+ * fails loudly — see mergeListeners().
+ */
+export async function listeningPids(port: number): Promise<{ pids: number[]; occupied: boolean }> {
+  const [lsof, ss] = await Promise.all([
+    probe("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"]),
+    probe("ss", ["-lptnH", `sport = :${port}`])
+  ]);
+  return mergeListeners({ lsof, ss });
+}
+
 /**
  * Clear a port the force-restart path needs — but ONLY by killing a process that
  * belongs to THIS service's own process group (`ownPgid`). Killing whatever
@@ -494,24 +565,17 @@ async function freeServicePort(
   ownPgid: number | null
 ): Promise<void> {
   if (!port || process.platform === "win32") return;
-  let stdout = "";
-  try {
-    ({ stdout } = await exec("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
-      timeout: 2000,
-      maxBuffer: 1024 * 1024
-    }));
-  } catch {
-    return; // nothing listening / lsof unavailable
-  }
-  for (const pid of stdout
-    .split(/\s+/)
-    .map((s) => Number(s.trim()))
-    .filter(Boolean)) {
+  const { pids, occupied } = await listeningPids(port);
+  if (!occupied) return; // genuinely free
+
+  let reclaimed = false;
+  for (const pid of pids) {
     if (pid === process.pid) continue; // never kill ourselves
     const pgid = await pgidOf(pid);
     if ((ownPgid && pgid === ownPgid) || (await processBelongsToService(pid, serviceId))) {
       try {
         process.kill(pid, "SIGKILL");
+        reclaimed = true;
       } catch {
         /* already gone */
       }
@@ -523,6 +587,20 @@ async function freeServicePort(
         `Port ${port} is held by an unmanaged process (pid ${pid}); leaving it alone to avoid killing another service. Free it manually if the restart fails.`
       );
     }
+  }
+
+  // Occupied, but nothing on it could be attributed to this service. Saying so
+  // is the whole point: the start below will fail with EADDRINUSE and burn its
+  // restart attempts, and without this line the logs show only that crash loop
+  // with no hint that the port was taken before the spawn ever happened.
+  if (!reclaimed && pids.length === 0) {
+    insertLog(
+      ctx,
+      serviceId,
+      "warn",
+      `Port ${port} is already in use but its owner could not be identified ` +
+        `(neither lsof nor ss named a pid). The start below will likely fail with EADDRINUSE.`
+    );
   }
 }
 
