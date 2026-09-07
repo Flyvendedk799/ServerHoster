@@ -481,6 +481,59 @@ async function processBelongsToService(pid: number, serviceId: string): Promise<
 }
 
 /**
+ * Every pid LISTENing on `port`, plus whether the port is occupied at all.
+ *
+ * Asks lsof AND ss and unions the answers, because either can come back empty
+ * on a host where the other works. On this project's own VPS `lsof` reports
+ * nothing for the Next.js app processes it spawns — `lsof -p <pid>` is empty
+ * even as root, while `ss` shows the listener — so a single-tool lookup made
+ * freeServicePort() a silent no-op and every EADDRINUSE recovery below it dead
+ * code. `occupied` is tracked separately from `pids` so "port is busy but no
+ * owner could be identified" is reported instead of being mistaken for "free".
+ */
+export async function listeningPids(port: number): Promise<{ pids: number[]; occupied: boolean }> {
+  const pids = new Set<number>();
+  let occupied = false;
+
+  try {
+    const { stdout } = await exec("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
+      timeout: 2000,
+      maxBuffer: 1024 * 1024
+    });
+    for (const token of stdout.split(/\s+/)) {
+      const pid = Number(token.trim());
+      if (pid) {
+        pids.add(pid);
+        occupied = true;
+      }
+    }
+  } catch {
+    /* lsof missing, or it exits non-zero when it matches nothing — ask ss too */
+  }
+
+  try {
+    // -H drops the header so any remaining line means something is listening,
+    // even when the users:(("name",pid=N,fd=M)) column is absent.
+    const { stdout } = await exec("ss", ["-lptnH", `sport = :${port}`], {
+      timeout: 2000,
+      maxBuffer: 1024 * 1024
+    });
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      occupied = true;
+      for (const match of line.matchAll(/pid=(\d+)/g)) {
+        const pid = Number(match[1]);
+        if (pid) pids.add(pid);
+      }
+    }
+  } catch {
+    /* ss missing too — fall back to whatever lsof gave us */
+  }
+
+  return { pids: Array.from(pids), occupied };
+}
+
+/**
  * Clear a port the force-restart path needs — but ONLY by killing a process that
  * belongs to THIS service's own process group (`ownPgid`). Killing whatever
  * happens to LISTEN on the port (the old behaviour) meant force-restarting
@@ -494,24 +547,17 @@ async function freeServicePort(
   ownPgid: number | null
 ): Promise<void> {
   if (!port || process.platform === "win32") return;
-  let stdout = "";
-  try {
-    ({ stdout } = await exec("lsof", ["-tiTCP:" + port, "-sTCP:LISTEN"], {
-      timeout: 2000,
-      maxBuffer: 1024 * 1024
-    }));
-  } catch {
-    return; // nothing listening / lsof unavailable
-  }
-  for (const pid of stdout
-    .split(/\s+/)
-    .map((s) => Number(s.trim()))
-    .filter(Boolean)) {
+  const { pids, occupied } = await listeningPids(port);
+  if (!occupied) return; // genuinely free
+
+  let reclaimed = false;
+  for (const pid of pids) {
     if (pid === process.pid) continue; // never kill ourselves
     const pgid = await pgidOf(pid);
     if ((ownPgid && pgid === ownPgid) || (await processBelongsToService(pid, serviceId))) {
       try {
         process.kill(pid, "SIGKILL");
+        reclaimed = true;
       } catch {
         /* already gone */
       }
@@ -523,6 +569,20 @@ async function freeServicePort(
         `Port ${port} is held by an unmanaged process (pid ${pid}); leaving it alone to avoid killing another service. Free it manually if the restart fails.`
       );
     }
+  }
+
+  // Occupied, but nothing on it could be attributed to this service. Saying so
+  // is the whole point: the start below will fail with EADDRINUSE and burn its
+  // restart attempts, and without this line the logs show only that crash loop
+  // with no hint that the port was taken before the spawn ever happened.
+  if (!reclaimed && pids.length === 0) {
+    insertLog(
+      ctx,
+      serviceId,
+      "warn",
+      `Port ${port} is already in use but its owner could not be identified ` +
+        `(neither lsof nor ss named a pid). The start below will likely fail with EADDRINUSE.`
+    );
   }
 }
 

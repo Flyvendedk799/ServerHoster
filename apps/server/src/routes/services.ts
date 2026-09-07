@@ -531,13 +531,28 @@ export function registerServiceRoutes(ctx: AppContext): void {
         ) as latest_git_branch
       FROM services s
       -- One row per service even when several hostnames route to it (apex + www):
-      -- \`domain\` is the primary (first non-www) hostname, \`domains\` the full list.
-      -- A plain JOIN duplicated the service in the list once per proxy_routes row.
+      -- \`domain\` is the primary hostname, \`domains\` the full list. A plain
+      -- JOIN duplicated the service in the list once per route row.
+      --
+      -- Both hostname tables are unioned, because a domain can be connected two
+      -- ways and only one of them used to be read here: proxy_routes (bind-a-domain)
+      -- and saas_domains (Cloudflare for SaaS). collectIngressRoutes() feeds the
+      -- tunnel from BOTH, so a service whose domain arrived via saas_domains was
+      -- live on it and still displayed as having no domain. UNION (not UNION ALL)
+      -- also collapses a hostname recorded in both tables.
+      --
+      -- Wildcards are ranked out of the PRIMARY slot alongside www: a \`*.example.com\`
+      -- is a routing pattern, not somewhere a person can click through to. It still
+      -- appears in \`domains\`.
       LEFT JOIN (
         SELECT service_id,
-               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
+               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' OR domain LIKE '*.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
                GROUP_CONCAT(domain, ',') AS domains
-        FROM proxy_routes
+        FROM (
+          SELECT service_id, domain FROM proxy_routes WHERE domain IS NOT NULL
+          UNION
+          SELECT service_id, hostname AS domain FROM saas_domains WHERE hostname IS NOT NULL
+        )
         GROUP BY service_id
       ) p ON p.service_id = s.id
       LEFT JOIN certificates c ON c.domain = p.domain
@@ -577,9 +592,13 @@ export function registerServiceRoutes(ctx: AppContext): void {
       FROM services s
       LEFT JOIN (
         SELECT service_id,
-               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
+               COALESCE(MIN(CASE WHEN domain LIKE 'www.%' OR domain LIKE '*.%' THEN NULL ELSE domain END), MIN(domain)) AS domain,
                GROUP_CONCAT(domain, ',') AS domains
-        FROM proxy_routes
+        FROM (
+          SELECT service_id, domain FROM proxy_routes WHERE domain IS NOT NULL
+          UNION
+          SELECT service_id, hostname AS domain FROM saas_domains WHERE hostname IS NOT NULL
+        )
         GROUP BY service_id
       ) p ON p.service_id = s.id
       WHERE s.id = ?
