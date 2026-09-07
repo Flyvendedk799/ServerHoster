@@ -88,3 +88,61 @@ test("a docker service is unaffected by the downgrade path", () => {
     assert.equal(reconcileBuildType("docker", { type: "docker", command: "" }, root), "docker");
   });
 });
+
+// --------------------------------------------------------------------------
+// Compose pin. Same mechanism as the Dockerfile pin, and the ONLY route into
+// the compose pipeline: detection never returns "compose", so a repo that just
+// happens to ship a docker-compose.yml keeps deploying exactly as before.
+// --------------------------------------------------------------------------
+
+/** A monorepo whose root is a node app but whose stack lives in deploy/. */
+function monorepoWithComposeStack(root: string): void {
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "app" }));
+  fs.mkdirSync(path.join(root, "deploy"), { recursive: true });
+  fs.writeFileSync(path.join(root, "deploy", "docker-compose.yml"), "name: gamehub\nservices: {}\n");
+}
+
+test("a service pinned to a compose file builds with compose", () => {
+  withRoot("compose-pinned", (root) => {
+    monorepoWithComposeStack(root);
+    assert.equal(
+      reconcileBuildType("node", { type: "compose", compose_file: "deploy/docker-compose.yml" }, root),
+      "compose"
+    );
+  });
+});
+
+test("a compose pin naming a missing file falls back to detection", () => {
+  withRoot("compose-missing", (root) => {
+    monorepoWithComposeStack(root);
+    assert.equal(
+      reconcileBuildType("node", { type: "compose", compose_file: "gone/docker-compose.yml" }, root),
+      "node"
+    );
+  });
+});
+
+test("an unpinned repo shipping a compose file is untouched by the compose path", () => {
+  withRoot("compose-unpinned", (root) => {
+    monorepoWithComposeStack(root);
+    // No compose_file column set: this is the additive guarantee that nothing
+    // already deployed changes pipeline when the feature ships.
+    assert.equal(reconcileBuildType("node", { type: "process", command: "npm start" }, root), "node");
+  });
+});
+
+test("a compose pin wins over a Dockerfile pin on the same service", () => {
+  withRoot("compose-over-docker", (root) => {
+    monorepoWithComposeStack(root);
+    fs.mkdirSync(path.join(root, "worker"), { recursive: true });
+    fs.writeFileSync(path.join(root, "worker", "Dockerfile"), "FROM scratch\n");
+    assert.equal(
+      reconcileBuildType(
+        "node",
+        { type: "docker", dockerfile: "worker/Dockerfile", compose_file: "deploy/docker-compose.yml" },
+        root
+      ),
+      "compose"
+    );
+  });
+});

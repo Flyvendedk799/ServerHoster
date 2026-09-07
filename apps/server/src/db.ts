@@ -252,6 +252,13 @@ const migrations = [
   "ALTER TABLE services ADD COLUMN environment TEXT DEFAULT 'production'",
   "ALTER TABLE services ADD COLUMN compose_service_name TEXT",
   "ALTER TABLE services ADD COLUMN compose_file_hash TEXT",
+  // A `compose` service drives a whole stack through `docker compose`.
+  // `compose_file` is the pin (checkout-relative) that opts a service into that
+  // path at all; `compose_project` is recorded on first successful start and is
+  // authoritative from then on, so a later edit to the compose file's `name:`
+  // cannot silently repoint a live service at a different set of volumes.
+  "ALTER TABLE services ADD COLUMN compose_file TEXT",
+  "ALTER TABLE services ADD COLUMN compose_project TEXT",
   `CREATE TABLE IF NOT EXISTS project_env_vars (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,

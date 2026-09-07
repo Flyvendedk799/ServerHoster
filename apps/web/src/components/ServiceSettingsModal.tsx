@@ -277,6 +277,14 @@ export function ServiceSettingsModal({ service, onClose, onUpdated }: Props) {
               <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                 <option value="process">Binary Process</option>
                 <option value="docker">Docker Image</option>
+                {/*
+                  A compose service is pinned with `composeFile` via
+                  PATCH /services/:id, the same as the Dockerfile pin. The
+                  option exists here so an existing compose service renders its
+                  own type — without it the select falls back to the first
+                  option and saving would silently downgrade the service.
+                */}
+                <option value="compose">Compose Stack</option>
                 <option value="static">Static Web</option>
               </select>
             </div>

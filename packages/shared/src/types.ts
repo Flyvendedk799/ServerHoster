@@ -1,4 +1,8 @@
-export type ServiceType = "process" | "docker" | "static";
+/**
+ * `compose` is one service driving a whole `docker compose` stack, as opposed
+ * to `docker` (one image, one container that ServerHoster names and runs).
+ */
+export type ServiceType = "process" | "docker" | "compose" | "static";
 export type ServiceStatus = "stopped" | "running" | "crashed" | "building";
 export type DatabaseEngine = "postgres" | "mysql" | "redis" | "mongo";
 
@@ -20,6 +24,10 @@ export interface Service {
   workingDir?: string;
   dockerImage?: string;
   dockerfile?: string;
+  /** Checkout-relative compose file. Setting it makes the service a compose service. */
+  composeFile?: string;
+  /** Compose project name — identifies the stack's containers, network and volumes. */
+  composeProject?: string;
   port?: number;
   status: ServiceStatus;
   autoRestart: number;
