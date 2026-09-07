@@ -18,6 +18,8 @@ import {
 } from "../lib/core.js";
 import type { AppContext, BuildType } from "../types.js";
 import { getServiceEnvWithLinks, startService, stopService, withLock } from "./runtime.js";
+import { resolveComposeConfig, writeComposeEnvFile } from "./compose.js";
+import { composeBuild } from "./composeRuntime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 import { createNotification } from "./notifications.js";
 import { runHostPreflight, type HostRequirementResult } from "./hostRequirements.js";
@@ -1266,6 +1268,55 @@ export async function runBuildPipeline(
     const msg = `Static site detected at ${path.relative(projectPath, artifactPath) || "."}; no build step required.\n`;
     buildLog += msg;
     if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stdout");
+  } else if (buildType === "compose") {
+    opts.onPhase?.("building");
+    if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
+    const cfg = resolveComposeConfig(ctx, serviceId, projectPath);
+    if (!cfg) {
+      const msg =
+        `This service is pinned to a compose file, but no compose file was found in the ` +
+        `checkout. Clear composeFile to fall back to normal detection, or point it at the ` +
+        `stack.\n`;
+      buildLog += msg;
+      if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
+      return { status: "failed", buildLog, artifactPath, buildType };
+    }
+
+    // Record the resolved file/project BEFORE building. `compose_project` is
+    // what binds this service to a specific set of containers and volumes, so
+    // it must be persisted even if the build then fails — otherwise a retry
+    // could resolve a different name and walk away from the stack's data.
+    ctx.db
+      .prepare("UPDATE services SET compose_file = ?, compose_project = ?, updated_at = ? WHERE id = ?")
+      .run(cfg.file, cfg.project, nowIso(), serviceId);
+
+    const envResult = writeComposeEnvFile(ctx, serviceId, env as Record<string, string>);
+    if (envResult.skipped.length > 0) {
+      const msg =
+        `Skipped ${envResult.skipped.length} env var(s) that a compose env file cannot ` +
+        `represent (invalid name, or a value containing a newline): ` +
+        `${envResult.skipped.join(", ")}.\n`;
+      buildLog += msg;
+      if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, msg, "stderr");
+    }
+
+    const intro =
+      `Compose stack: project "${cfg.project}" from ${cfg.file}` +
+      `${cfg.overlays.length ? ` (+ ${cfg.overlays.join(", ")})` : ""}, ` +
+      `${envResult.written} env var(s).\n`;
+    buildLog += intro;
+    if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, intro, "stdout");
+
+    const build = await composeBuild(ctx, serviceId, cfg, env as Record<string, string>, stream);
+    buildLog += `\n$ ${build.command}\n${build.output}\n`;
+    if (build.code !== 0) {
+      // No fallback to another pipeline here, unlike the docker branch: a
+      // compose pin is an explicit operator decision, and quietly deploying
+      // the repo some other way would leave the real stack untouched while
+      // reporting success.
+      return { status: "failed", buildLog, artifactPath, buildType };
+    }
+    artifactPath = cfg.dir;
   } else if (buildType === "docker") {
     opts.onPhase?.("building");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "building");
@@ -1357,6 +1408,7 @@ export type ServiceBuildClaim = {
   type?: string | null;
   command?: string | null;
   dockerfile?: string | null;
+  compose_file?: string | null;
 };
 
 /**
@@ -1379,6 +1431,16 @@ export function reconcileBuildType(
   service: ServiceBuildClaim | undefined,
   projectPath: string
 ): BuildType {
+  // A pinned compose file wins over everything, and is the ONLY way to reach
+  // the compose pipeline — detection never returns "compose". That keeps the
+  // feature strictly opt-in: a repo that happens to ship a docker-compose.yml
+  // (a great many do, for local development) keeps deploying exactly as it did
+  // before, and nothing on the box changes path until an operator sets
+  // `composeFile` on a service.
+  const pinnedCompose = String(service?.compose_file ?? "").trim();
+  if (pinnedCompose && fs.existsSync(path.join(projectPath, pinnedCompose))) {
+    return "compose";
+  }
   if (detected === "docker") {
     if (service?.type !== "process" || !String(service.command ?? "").trim()) return detected;
     return resolveDockerFallbackBuildType(projectPath) ?? detected;
@@ -1392,7 +1454,7 @@ export function reconcileBuildType(
 
 function redeployBuildType(ctx: AppContext, serviceId: string, detected: BuildType, projectPath: string): BuildType {
   const service = ctx.db
-    .prepare("SELECT type, command, dockerfile FROM services WHERE id = ?")
+    .prepare("SELECT type, command, dockerfile, compose_file FROM services WHERE id = ?")
     .get(serviceId) as ServiceBuildClaim | undefined;
   return reconcileBuildType(detected, service, projectPath);
 }
@@ -1806,12 +1868,17 @@ function nodeStartCommand(pm: NodePackageManager): string {
 }
 
 export function inferServiceRuntimeDefaults(
-  buildType: ReturnType<typeof detectBuildType>,
+  buildType: BuildType,
   projectPath?: string
 ): {
-  type: "process" | "docker" | "static";
+  type: "process" | "docker" | "compose" | "static";
   command: string;
 } {
+  if (buildType === "compose") {
+    // No command: compose owns the container lifecycle, and the `port` column
+    // only tells the tunnel where the stack already publishes.
+    return { type: "compose", command: "" };
+  }
   if (buildType === "docker") {
     return { type: "docker", command: "" };
   }

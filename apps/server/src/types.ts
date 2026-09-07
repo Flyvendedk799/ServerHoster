@@ -17,7 +17,7 @@ export type RuntimeProcess = {
   /** Fires once the process has stayed up long enough to clear the crash counter. */
   stabilityTimer?: ReturnType<typeof setTimeout>;
 };
-export type BuildType = "docker" | "node" | "python" | "godot" | "static" | "unknown";
+export type BuildType = "docker" | "compose" | "node" | "python" | "godot" | "static" | "unknown";
 
 export type AppConfig = typeof config;
 

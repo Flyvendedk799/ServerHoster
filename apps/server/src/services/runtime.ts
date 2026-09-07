@@ -16,6 +16,12 @@ import {
 import { nanoid } from "nanoid";
 import type { AppContext, RuntimeProcess } from "../types.js";
 import { createNotification } from "./notifications.js";
+import {
+  forceStopComposeService,
+  observeComposeStatus,
+  startComposeService,
+  stopComposeService
+} from "./composeRuntime.js";
 
 const exec = promisify(execFile);
 import {
@@ -128,7 +134,13 @@ export function getServiceEnvWithLinks(ctx: AppContext, serviceId: string): Reco
     const db = getDatabase(ctx, service.linked_database_id);
     const envKey = db?.engine === "redis" ? "REDIS_URL" : "DATABASE_URL";
     if (db && !serviceEnv[envKey]) {
-      const host = service.type === "docker" ? "host.docker.internal" : "localhost";
+      // Containerised services reach a host-managed database through the host
+      // gateway, not localhost. For `compose` the value is interpolated on the
+      // host but consumed INSIDE a container, so it needs the same treatment —
+      // the compose file must map `host.docker.internal` itself, via
+      // `extra_hosts: ["host.docker.internal:host-gateway"]`.
+      const containerised = service.type === "docker" || service.type === "compose";
+      const host = containerised ? "host.docker.internal" : "localhost";
       merged[envKey] = buildConnectionString(db, host);
     }
   }
@@ -1053,7 +1065,11 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
     .catch(() => {
       /* ignore */
     });
-  if (service.type === "docker") {
+  if (service.type === "compose") {
+    // `compose stop`, never `compose down` — stopping a service must not remove
+    // the stack's network or risk its named volumes.
+    await stopComposeService(ctx, serviceId, getServiceEnvWithLinks(ctx, serviceId));
+  } else if (service.type === "docker") {
     const container = ctx.docker.getContainer(`survhub-${serviceId}`);
     try {
       await container.stop({ t: 10 });
@@ -1146,7 +1162,9 @@ async function startServiceRuntime(ctx: AppContext, serviceId: string): Promise<
   // otherwise the app boots straight into connection errors.
   await ensureLinkedDatabaseRunning(ctx, serviceId);
   const service = getService(ctx, serviceId);
-  if (service.type === "docker") {
+  if (service.type === "compose") {
+    await startComposeService(ctx, serviceId, getServiceEnvWithLinks(ctx, serviceId));
+  } else if (service.type === "docker") {
     await startDockerService(ctx, serviceId);
   } else {
     await startProcessService(ctx, serviceId);
@@ -1193,7 +1211,9 @@ async function startDependencies(ctx: AppContext, serviceId: string, visiting: S
     await startDependencies(ctx, depId, visiting);
     const svc = getService(ctx, depId);
     await withLock(ctx, depId, async () => {
-      if (svc.type === "docker") await startDockerService(ctx, depId);
+      if (svc.type === "compose")
+        await startComposeService(ctx, depId, getServiceEnvWithLinks(ctx, depId));
+      else if (svc.type === "docker") await startDockerService(ctx, depId);
       else await startProcessService(ctx, depId);
     });
   }
@@ -1248,7 +1268,16 @@ export async function forceStopService(ctx: AppContext, serviceId: string): Prom
       /* ignore */
     });
 
-  if (service.type === "docker") {
+  if (service.type === "compose") {
+    // `compose kill` SIGKILLs the containers but leaves them, the network and
+    // the volumes in place — the force path must still not be able to delete
+    // a stack's data.
+    try {
+      await forceStopComposeService(ctx, serviceId, getServiceEnvWithLinks(ctx, serviceId));
+    } catch (error) {
+      insertLog(ctx, serviceId, "warn", `Force-stop of compose stack failed: ${serializeError(error)}`);
+    }
+  } else if (service.type === "docker") {
     const container = ctx.docker.getContainer(`survhub-${serviceId}`);
     // force-remove SIGKILLs and removes the container in a single call.
     try {
@@ -1480,6 +1509,22 @@ export async function reconcileRuntimeStateOnBoot(ctx: AppContext): Promise<void
       continue;
     }
 
+    // Adopt a surviving compose stack. Compose containers carry their own
+    // restart policy and are NOT children of localsurv, so a control-plane
+    // restart leaves them running. Ask compose directly rather than inferring
+    // from a pgid or a `survhub-` container name, neither of which a compose
+    // stack has.
+    if (row.type === "compose") {
+      const observed = await observeComposeStatus(ctx, row.id, getServiceEnvWithLinks(ctx, row.id));
+      if (observed === "running") {
+        if (row.status !== "running") {
+          updateServiceStatus(ctx, row.id, "running");
+          insertLog(ctx, row.id, "info", "Adopted running compose stack on boot.");
+        }
+        continue;
+      }
+    }
+
     // Adopt a surviving process/static child: spawned detached, it outlives a
     // ServerHoster restart. If its process group is still alive, keep it marked
     // running (don't mis-show it as stopped, and don't auto-start a duplicate
@@ -1549,6 +1594,21 @@ export function startContainerDriftLoop(ctx: AppContext): () => void {
           updateServiceStatus(ctx, row.id, "stopped");
           insertLog(ctx, row.id, "warn", "Drift check: container is no longer running — marked stopped.");
         }
+      }
+
+      // Compose stacks drift the same way, but can only be observed by asking
+      // compose. A null reading means "could not inspect" — NOT "stopped" — so
+      // a transient docker hiccup can never flip a healthy stack and trigger a
+      // restart.
+      const composeRows = ctx.db
+        .prepare("SELECT id, status FROM services WHERE type = 'compose'")
+        .all() as Array<{ id: string; status: string }>;
+      for (const row of composeRows) {
+        if (row.status === "starting" || row.status === "stopping") continue;
+        const observed = await observeComposeStatus(ctx, row.id, getServiceEnvWithLinks(ctx, row.id));
+        if (observed === null || observed === row.status) continue;
+        updateServiceStatus(ctx, row.id, observed);
+        insertLog(ctx, row.id, observed === "running" ? "info" : "warn", `Drift check: compose stack is ${observed}.`);
       }
     } finally {
       inFlight = false;

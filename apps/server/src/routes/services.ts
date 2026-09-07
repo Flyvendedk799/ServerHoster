@@ -36,6 +36,7 @@ import {
   resolveBuildType
 } from "../services/deploy.js";
 import { resolveServiceProjectId } from "../services/projects.js";
+import { normalizeComposeProject } from "../services/compose.js";
 import { listServiceEnvRequirements, scanServiceEnvRequirements } from "../services/envScan.js";
 import { applyServiceDatabaseSetup } from "../services/databaseSetup.js";
 
@@ -51,7 +52,7 @@ const databaseSetupSchema = z
 const serviceSchema = z.object({
   projectId: z.string().optional(),
   name: z.string().min(1),
-  type: z.enum(["process", "docker", "static"]),
+  type: z.enum(["process", "docker", "compose", "static"]),
   command: z.string().optional(),
   workingDir: z.string().optional(),
   dockerImage: z.string().optional(),
@@ -987,13 +988,22 @@ export function registerServiceRoutes(ctx: AppContext): void {
 
   const updateServiceSchema = z.object({
     name: z.string().optional(),
-    type: z.enum(["process", "docker", "static"]).optional(),
+    type: z.enum(["process", "docker", "compose", "static"]).optional(),
     command: z.string().optional(),
     workingDir: z.string().optional(),
     // Pin the Dockerfile to build from, relative to the repo root. Needed for a
     // monorepo whose root is a node/python app but which also ships a service
     // built from e.g. worker/Dockerfile.
     dockerfile: z.string().optional(),
+    // Pin the compose file to run, relative to the repo root. Setting this is
+    // what opts a service into the `compose` pipeline — detection never picks
+    // it on its own, so a repo that merely ships a docker-compose.yml for local
+    // development keeps deploying exactly as before.
+    composeFile: z.string().optional(),
+    // Compose project name. Recorded automatically on first deploy; set it by
+    // hand only to ADOPT a stack that is already running under a known name,
+    // which is what preserves its existing containers and named volumes.
+    composeProject: z.string().trim().optional(),
     // Attach an existing service to a repo so the GitOps poller deploys it.
     githubRepoUrl: z.string().trim().optional(),
     githubBranch: z.string().trim().optional(),
@@ -1093,6 +1103,12 @@ export function registerServiceRoutes(ctx: AppContext): void {
       ctx.db.prepare("UPDATE services SET working_dir = ? WHERE id = ?").run(p.workingDir, id);
     if (p.dockerfile !== undefined)
       ctx.db.prepare("UPDATE services SET dockerfile = ? WHERE id = ?").run(p.dockerfile, id);
+    if (p.composeFile !== undefined)
+      ctx.db.prepare("UPDATE services SET compose_file = ? WHERE id = ?").run(p.composeFile, id);
+    if (p.composeProject !== undefined)
+      ctx.db
+        .prepare("UPDATE services SET compose_project = ? WHERE id = ?")
+        .run(normalizeComposeProject(p.composeProject), id);
     if (p.githubRepoUrl !== undefined)
       ctx.db.prepare("UPDATE services SET github_repo_url = ? WHERE id = ?").run(p.githubRepoUrl, id);
     if (p.githubBranch !== undefined)
