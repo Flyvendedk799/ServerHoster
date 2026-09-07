@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
 import { buildApp } from "./app.js";
-import { gracefulShutdown, listeningPids } from "./services/runtime.js";
+import { gracefulShutdown, listeningPids, mergeListeners } from "./services/runtime.js";
 import { detectEmailConsumers } from "./services/emailConsumers.js";
 import { nowIso } from "./lib/core.js";
 
@@ -154,13 +154,55 @@ test("GET /services: www is still ranked below the apex", async () => {
 });
 
 /*
- * listeningPids() backs the EADDRINUSE recovery in freeServicePort(). It used to
- * ask lsof alone and swallow a non-zero exit as "port is free" — and on the host
- * this runs on, lsof reports nothing for the app processes the control plane
- * spawns while ss reports them fine. A port that is demonstrably bound must
- * never come back as unoccupied.
+ * mergeListeners() backs the EADDRINUSE recovery in freeServicePort(), which
+ * used to ask lsof alone and swallow its non-zero exit as "the port is free".
+ * On the host this project runs on, lsof reports NOTHING for ports held by the
+ * app processes the control plane spawns while ss names them correctly -- so the
+ * reclaim silently never ran and services crash-looped on a port their own
+ * orphan was holding. The merge is a pure function precisely so that case can be
+ * pinned here rather than depending on a host that reproduces it.
  */
-test("listeningPids: reports a port this process is actually listening on", async (t) => {
+test("mergeListeners: ss alone still identifies the holder when lsof sees nothing", () => {
+  const ssLine =
+    'LISTEN 0 511 0.0.0.0:3021 0.0.0.0:* users:(("next-server (v1",pid=2519967,fd=21))';
+  const merged = mergeListeners({ lsof: "", ss: ssLine });
+  assert.equal(merged.occupied, true);
+  assert.deepEqual(merged.pids, [2519967]);
+});
+
+test("mergeListeners: a failed lsof (null) does not mask a busy port", () => {
+  const ssLine = 'LISTEN 0 511 0.0.0.0:3021 0.0.0.0:* users:(("node",pid=42,fd=21))';
+  const merged = mergeListeners({ lsof: null, ss: ssLine });
+  assert.equal(merged.occupied, true);
+  assert.deepEqual(merged.pids, [42]);
+});
+
+test("mergeListeners: a busy port with no nameable owner is occupied, not free", () => {
+  // ss can print the socket while withholding the users:(()) column. Reporting
+  // this as free is the exact mistake that made the reclaim a no-op.
+  const merged = mergeListeners({ lsof: "", ss: "LISTEN 0 511 0.0.0.0:3021 0.0.0.0:*" });
+  assert.equal(merged.occupied, true);
+  assert.deepEqual(merged.pids, []);
+});
+
+test("mergeListeners: both tools silent means the port really is free", () => {
+  assert.deepEqual(mergeListeners({ lsof: null, ss: null }), { pids: [], occupied: false });
+  assert.deepEqual(mergeListeners({ lsof: "", ss: "" }), { pids: [], occupied: false });
+});
+
+test("mergeListeners: the two sources are unioned, not preferred", () => {
+  const merged = mergeListeners({
+    lsof: "111\n222\n",
+    ss: 'LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("a",pid=222,fd=3),("b",pid=333,fd=4))'
+  });
+  assert.equal(merged.occupied, true);
+  assert.deepEqual(
+    merged.pids.sort((a, b) => a - b),
+    [111, 222, 333]
+  );
+});
+
+test("listeningPids: a port this process holds is never reported free", async (t) => {
   if (process.platform === "win32") return t.skip("POSIX-only lookup");
   const server = net.createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -177,10 +219,10 @@ test("listeningPids: reports a port this process is actually listening on", asyn
 test("listeningPids: an unbound port is reported free", async (t) => {
   if (process.platform === "win32") return t.skip("POSIX-only lookup");
   // Bind then release, so the port is known-unused rather than merely guessed.
-  const probe = net.createServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const port = (probe.address() as net.AddressInfo).port;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const spare = net.createServer();
+  await new Promise<void>((resolve) => spare.listen(0, "127.0.0.1", resolve));
+  const port = (spare.address() as net.AddressInfo).port;
+  await new Promise<void>((resolve) => spare.close(() => resolve()));
 
   const { occupied } = await listeningPids(port);
   assert.equal(occupied, false);
