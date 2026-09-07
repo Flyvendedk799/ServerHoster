@@ -340,3 +340,49 @@ test("git url schemas: untrimmed .url() is what let the bad value through", () =
 test("git branch schemas: whitespace is stripped", () => {
   assert.equal(z.string().trim().default("main").parse(" master "), "master");
 });
+
+/*
+ * Setting a service env var twice used to INSERT a second row for the same key.
+ * project_env_vars has had UNIQUE(project_id, key) since it was written;
+ * env_vars never did, so which duplicate reached the process was down to row
+ * order and "I changed that variable and it did not take" was a real outcome.
+ */
+test("POST /services/:id/env: setting a key twice replaces it, never duplicates", async () => {
+  const ctx = await buildApp();
+  try {
+    const token = await authedToken(ctx);
+    const id = seedService(ctx, "env-upsert", 4301, "p-env");
+    const put = (value: string) =>
+      ctx.app.inject({
+        method: "POST",
+        url: `/services/${id}/env`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { key: "DATABASE_URL", value, isSecret: false }
+      });
+
+    assert.equal((await put("postgresql://old@localhost:5432/db")).statusCode, 200);
+    assert.equal((await put("postgresql://new@localhost:54331/db")).statusCode, 200);
+
+    const rows = ctx.db
+      .prepare("SELECT key, value FROM env_vars WHERE service_id = ? AND key = 'DATABASE_URL'")
+      .all(id) as Array<{ value: string }>;
+    assert.equal(rows.length, 1, "second write must replace, not add a row");
+    assert.equal(rows[0]?.value, "postgresql://new@localhost:54331/db");
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("env_vars carries a unique index on (service_id, key)", async () => {
+  const ctx = await buildApp();
+  try {
+    const indexes = ctx.db
+      .prepare("PRAGMA index_list('env_vars')")
+      .all() as Array<{ name: string; unique: number }>;
+    const unique = indexes.find((i) => i.name === "idx_env_vars_service_key");
+    assert.ok(unique, "expected idx_env_vars_service_key");
+    assert.equal(unique.unique, 1);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});

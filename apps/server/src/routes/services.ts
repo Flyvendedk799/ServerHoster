@@ -1265,7 +1265,10 @@ export function registerServiceRoutes(ctx: AppContext): void {
     const rowId = nanoid();
     ctx.db
       .prepare(
-        "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 0)"
+        // Upsert, like the project-level endpoint already did. A bare INSERT here
+        // left a second row for the same key and no way to tell which one won.
+        "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 0) " +
+          "ON CONFLICT(service_id, key) DO UPDATE SET value = excluded.value, is_secret = excluded.is_secret"
       )
       .run(rowId, serviceId, p.key, storedValue, p.isSecret ? 1 : 0);
     return {
