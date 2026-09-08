@@ -246,6 +246,92 @@ function nextLaunchCommand(pm: NodePackageManager, hasBuild: boolean): string {
   return packageExec(pm, `next ${sub} -p $PORT -H 0.0.0.0`);
 }
 
+/**
+ * Nitro presets that produce a standalone server which listens on $PORT.
+ * Every other preset (cloudflare-*, vercel, netlify, deno-deploy, static, …)
+ * emits a platform handler that exports a `fetch` and never opens a socket, so
+ * running it with `node` would exit immediately without serving anything.
+ */
+const NITRO_NODE_PRESETS = new Set(["node-server", "node-cluster", "node", "bun"]);
+
+type NitroBuildOutput = {
+  preset: string;
+  serverEntry: string;
+};
+
+/**
+ * Read `.output/nitro.json` from a finished build.
+ *
+ * Deliberately a *post-build* probe rather than a dependency guess. TanStack
+ * Start, Nuxt, SolidStart and plain Nitro all build through Vite, so `deps.vite`
+ * is present for every one of them and package.json cannot say which target the
+ * build will produce — the same repo emits a Node server or a Cloudflare Worker
+ * depending on its plugins and NITRO_PRESET. The build itself records the
+ * answer, so ask it instead of guessing.
+ */
+export function readNitroBuildOutput(dir: string): NitroBuildOutput | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, ".output", "nitro.json"), "utf8");
+    const parsed = JSON.parse(raw) as { preset?: unknown; serverEntry?: unknown };
+    const preset = typeof parsed.preset === "string" ? parsed.preset : "";
+    if (!preset) return null;
+    const serverEntry =
+      typeof parsed.serverEntry === "string" && parsed.serverEntry
+        ? parsed.serverEntry
+        : "server/index.mjs";
+    return { preset, serverEntry };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Upgrade a detected launch target once the build has actually run.
+ *
+ * Detection happens before the build, where the only signal is package.json —
+ * and because every Nitro-based framework depends on Vite they all land in the
+ * Vite branch and get launched with the *dev server*. That still serves the app,
+ * which is exactly why it goes unnoticed: a service can sit in production on an
+ * unminified dev build with an open HMR socket for weeks.
+ *
+ * Once `.output/nitro.json` exists we know what was really built:
+ *   - a Node preset -> run the built server, which is the point of building it
+ *   - anything else -> leave the command alone and say so loudly in the build
+ *                      log, because that bundle cannot run as a Node process and
+ *                      the operator needs NITRO_PRESET=node-server to fix it.
+ */
+export function refineNodeLaunchTarget(
+  target: NodeLaunchTarget,
+  buildCwd: string
+): { target: NodeLaunchTarget; note?: string } {
+  const nitro = readNitroBuildOutput(buildCwd);
+  if (!nitro) return { target };
+
+  if (!NITRO_NODE_PRESETS.has(nitro.preset)) {
+    return {
+      target,
+      note:
+        `This build produced a Nitro "${nitro.preset}" bundle, which exports a platform ` +
+        `handler instead of starting a server, so it cannot be launched with node. Keeping ` +
+        `the detected launch command. To serve the production build here instead, set the ` +
+        `environment variable NITRO_PRESET=node-server on this service and redeploy.\n`
+    };
+  }
+
+  const entry = `.output/${nitro.serverEntry}`;
+  if (!fs.existsSync(path.join(buildCwd, entry))) return { target };
+
+  return {
+    target: {
+      ...target,
+      kind: "web",
+      command: `node ${entry}`,
+      reason: `${target.reason}; Nitro "${nitro.preset}" build`
+    },
+    note: `Detected a Nitro "${nitro.preset}" build — launching ${entry} instead of the dev server.\n`
+  };
+}
+
 // Generated config that ServerHoster writes into a Vite app's directory at
 // deploy time so the dev server accepts the proxied Host header.
 const VITE_HOST_WRAPPER = ".survhub-vite.config.mjs";
@@ -1193,7 +1279,14 @@ export async function runBuildPipeline(
     buildLog += `\n$ ${buildCommand}\n${build.output}\n`;
     if (build.code !== 0) return { status: "failed", buildLog, artifactPath, buildType, nodeTarget };
     if (fs.existsSync(path.join(buildCwd, "dist"))) artifactPath = path.join(buildCwd, "dist");
-    return { status: "success", buildLog, artifactPath, buildType, nodeTarget };
+    // The build has now said what it actually produced; prefer that over the
+    // pre-build guess made from package.json. See refineNodeLaunchTarget().
+    const refined = refineNodeLaunchTarget(nodeTarget, buildCwd);
+    if (refined.note) {
+      buildLog += refined.note;
+      if (deploymentId) emitBuildLog(ctx, serviceId, deploymentId, refined.note);
+    }
+    return { status: "success", buildLog, artifactPath, buildType, nodeTarget: refined.target };
   } else if (buildType === "python") {
     opts.onPhase?.("installing");
     if (deploymentId) emitProgress(ctx, serviceId, deploymentId, "installing");
