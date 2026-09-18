@@ -2,6 +2,16 @@
 
 All endpoints are served by the Fastify API on `SURVHUB_PORT` (default `8787`).
 
+
+## Model Context Protocol (MCP)
+
+ServerHoster provides an MCP endpoint to allow AI bots (like Grok Bot or Claude) to control the server.
+
+- **Endpoint:** POST /mcp
+- **Spec:** Model Context Protocol (JSON-RPC 2.0 over HTTP/SSE)
+- **Authentication:** Requires Authorization: Bearer <SURVHUB_AUTH_TOKEN>
+- **More Info:** See [MCP Documentation](./mcp.md) for a complete list of tools and client setup instructions.
+
 ## Authentication
 
 - Bearer token in `Authorization: Bearer <token>`, or
@@ -241,3 +251,4 @@ curl -s http://localhost:8787/projects \
   -H 'content-type: application/json' \
   -d '{"name":"my-stack"}'
 ```
+

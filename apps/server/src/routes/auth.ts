@@ -125,9 +125,9 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // app's edge functions) in addition to dashboard sessions; both are
     // validated inside routes/saasDomains.ts.
     if (path === "/saas" || path.startsWith("/saas/")) return;
-    // MCP sessions use short-lived per-agent bearer tokens, validated inside
-    // the MCP route instead of dashboard session tokens.
-    if (path.startsWith("/mcp/")) return;
+    // MCP sessions use short-lived per-agent bearer tokens or global operator
+    // tokens, validated inside the MCP route instead of dashboard session tokens.
+    if (path === "/mcp" || path.startsWith("/mcp/")) return;
     // The admin reset endpoint authenticates via X-Admin-Reset-Token (a
     // pre-shared secret set on the host); skipping the bearer-token gate
     // here lets locked-out operators recover even when their session token
