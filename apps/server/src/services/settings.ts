@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import type { AppContext } from "../types.js";
 import { decryptSecret, encryptSecret, maskSecret } from "../security.js";
@@ -19,7 +20,8 @@ export const ENCRYPTED_SETTINGS = new Set<string>([
   "smtp_password",
   "email_routing_token",
   "host_memory_alert_webhook_url",
-  "host_memory_alert_webhook_auth"
+  "host_memory_alert_webhook_auth",
+  "api_token"
 ]);
 
 export function getSetting(ctx: AppContext, key: string): string | null {
@@ -139,4 +141,39 @@ export function getServerPublicKey(ctx: AppContext): {
     }
   }
   return { path: null, publicKey: null, source: "none" };
+}
+
+/**
+ * Get or initialize the durable API/MCP token. On first call (or when missing),
+ * seeds from SURVHUB_AUTH_TOKEN if set, otherwise generates a new secure token.
+ * Once persisted, the token remains stable across restarts unless explicitly rotated.
+ */
+export function getDurableApiToken(ctx: AppContext): string {
+  let token = getSecretSetting(ctx, "api_token");
+  if (!token) {
+    token = ctx.config.authToken || generateApiToken();
+    setSecretSetting(ctx, "api_token", token);
+  }
+  return token;
+}
+
+/**
+ * Generate a new secure API token (40 random characters).
+ */
+function generateApiToken(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.randomBytes(40);
+  return Array.from(bytes)
+    .map((b) => chars[b % chars.length])
+    .join("");
+}
+
+/**
+ * Rotate the API token: invalidate the old one and generate a new one.
+ * Returns the new token in plaintext (only time it's ever returned unmasked).
+ */
+export function rotateApiToken(ctx: AppContext): string {
+  const newToken = generateApiToken();
+  setSecretSetting(ctx, "api_token", newToken);
+  return newToken;
 }

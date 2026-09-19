@@ -8,9 +8,12 @@ import {
   getSetting,
   listMaskedSettings,
   setSecretSetting,
-  setSetting
+  setSetting,
+  getDurableApiToken,
+  rotateApiToken
 } from "../services/settings.js";
 import { ensureRepoWebhook, listUserRepos, parseRepoFullName } from "../services/github.js";
+import { maskSecret } from "../security.js";
 
 const putSettingSchema = z.object({
   key: z.string().min(1),
@@ -186,5 +189,24 @@ export function registerSettingsRoutes(ctx: AppContext): void {
     deleteSetting(ctx, "host_memory_alert_webhook_url");
     deleteSetting(ctx, "host_memory_alert_webhook_auth");
     return { ok: true };
+  });
+
+  // --- API Token (durable Bearer token for MCP and REST API) --------------
+  ctx.app.get("/settings/api-token", async () => {
+    const token = getDurableApiToken(ctx);
+    return {
+      configured: true,
+      tokenMasked: maskSecret(token),
+      tokenPrefix: token.slice(0, 8)
+    };
+  });
+
+  ctx.app.post("/settings/api-token/rotate", async () => {
+    const newToken = rotateApiToken(ctx);
+    return {
+      ok: true,
+      token: newToken,
+      message: "API token rotated. Update MCP clients and API consumers with the new token."
+    };
   });
 }

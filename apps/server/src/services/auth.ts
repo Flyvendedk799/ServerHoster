@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import crypto from "node:crypto";
 import { nowIso } from "../lib/core.js";
 import type { AppContext } from "../types.js";
+import { getDurableApiToken } from "./settings.js";
 
 export function enforceSecretPolicy(ctx: AppContext): void {
   if (ctx.config.nodeEnv === "production" && !ctx.config.secretKey) {
@@ -29,6 +30,8 @@ export function cleanupExpiredSessions(ctx: AppContext): void {
 export function isAuthorizedToken(ctx: AppContext, token: string): boolean {
   if (!isAuthEnabled(ctx)) return true;
   if (!token) return false;
+  const durableToken = getDurableApiToken(ctx);
+  if (token === durableToken) return true;
   if (ctx.config.authToken && token === ctx.config.authToken) return true;
   cleanupExpiredSessions(ctx);
   const row = ctx.db
@@ -40,6 +43,8 @@ export function isAuthorizedToken(ctx: AppContext, token: string): boolean {
 export function resolveActorFromToken(ctx: AppContext, token: string): string | null {
   if (!isAuthEnabled(ctx)) return "anonymous";
   if (!token) return null;
+  const durableToken = getDurableApiToken(ctx);
+  if (token === durableToken) return "api-token";
   if (ctx.config.authToken && token === ctx.config.authToken) return "root-token";
   cleanupExpiredSessions(ctx);
   const row = ctx.db

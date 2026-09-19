@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { buildApp } from "./app.js";
 import { gracefulShutdown } from "./services/runtime.js";
 import { ensureRepoWebhook } from "./services/github.js";
-import { injectGitCredentials, setSecretSetting, getSecretSetting } from "./services/settings.js";
+import {
+  injectGitCredentials,
+  setSecretSetting,
+  getSecretSetting,
+  getDurableApiToken,
+  rotateApiToken
+} from "./services/settings.js";
 
 test("settings: encrypted github_pat round-trip", async () => {
   const ctx = await buildApp();
@@ -110,6 +116,69 @@ test("ensureRepoWebhook: refreshes an existing hook with the current secret", as
   } finally {
     globalThis.fetch = originalFetch;
     ctx.db.prepare("DELETE FROM settings WHERE key = 'github_pat'").run();
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("getDurableApiToken: generates token on first call", async () => {
+  const ctx = await buildApp();
+  try {
+    const token1 = getDurableApiToken(ctx);
+    assert.ok(token1);
+    assert.equal(token1.length, 40);
+    const token2 = getDurableApiToken(ctx);
+    assert.equal(token1, token2);
+  } finally {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("getDurableApiToken: returns consistent token value", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    const token1 = getDurableApiToken(ctx);
+    assert.ok(token1);
+    assert.equal(token1.length, 40);
+    const token2 = getDurableApiToken(ctx);
+    assert.equal(token1, token2, "should return same token on subsequent calls");
+  } finally {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("rotateApiToken: generates new token and invalidates old", async () => {
+  const ctx = await buildApp();
+  try {
+    const token1 = getDurableApiToken(ctx);
+    const token2 = rotateApiToken(ctx);
+    assert.notEqual(token1, token2);
+    assert.equal(token2.length, 40);
+    const token3 = getDurableApiToken(ctx);
+    assert.equal(token2, token3);
+  } finally {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("durable API token persists across restarts", async () => {
+  let ctx = await buildApp();
+  let token1: string;
+  try {
+    token1 = getDurableApiToken(ctx);
+    assert.ok(token1);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+  ctx = await buildApp();
+  try {
+    const token2 = getDurableApiToken(ctx);
+    assert.equal(token1, token2);
+  } finally {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
     await gracefulShutdown(ctx);
   }
 });
