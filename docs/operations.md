@@ -21,10 +21,25 @@ Generate scripts from dashboard Settings or API endpoint `GET /ops/install-scrip
 
 Recommended minimum:
 
-- Set `SURVHUB_AUTH_TOKEN` to a strong value.
-- Set `SURVHUB_SECRET_KEY` to a long random key.
+- Set `SURVHUB_SECRET_KEY` to a long random key (32+ characters).
 - In production, never run with empty `SURVHUB_SECRET_KEY`.
 - Optionally bootstrap a local admin user via `POST /auth/bootstrap`.
+
+### API / MCP Authentication Token
+
+ServerHoster uses a **durable API token** for MCP and REST API authentication. This token:
+
+- Persists in encrypted settings storage (survives restarts/redeploys)
+- Is auto-generated on first start, or seeded from `SURVHUB_AUTH_TOKEN` if set
+- Can be viewed, copied, and rotated from **Settings → Dev Tools → API / MCP Token**
+- Remains valid indefinitely unless explicitly rotated
+
+**To use the token:**
+1. Copy it from the Settings UI (Dev Tools tab)
+2. Send it in API requests: `Authorization: Bearer <your-token>`
+3. Configure MCP clients (Grok Bot, Claude Desktop) with this same token
+
+**Legacy note:** `SURVHUB_AUTH_TOKEN` is still checked as a fallback, but the persisted durable token is preferred. After initial seed, changing the env var won't rotate the token — use the Settings UI or `POST /settings/api-token/rotate` instead.
 
 ## Backups
 
