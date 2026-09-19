@@ -29,6 +29,7 @@
   "dependencies": {
     "@fastify/cors": "^10.1.0",
     "@fastify/rate-limit": "^10.3.0",
+    "@flyvendedk799/ai-auth": "github:Flyvendedk799/ai-auth",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "acme-client": "^5.4.0",
     "better-sqlite3": "^11.9.1",
