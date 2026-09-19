@@ -67,6 +67,67 @@ live schema. Design and rationale: `docs/supabase-migrations-and-grants.md`.
 
 - Access latest structured audit logs from `GET /ops/audit-logs`.
 
+## Host Memory Alerts
+
+ServerHoster can push host memory alerts to a webhook when memory usage crosses a configured threshold, eliminating the need for external monitoring cron jobs.
+
+### Setup
+
+1. **Configure via API:**
+   - `GET /settings/alerts/memory` — view current configuration
+   - `PUT /settings/alerts/memory` — configure alerts with:
+     - `enabled`: boolean (default: false)
+     - `threshold`: number 1-100 (default: 80)
+     - `webhookUrl`: string (required when enabled)
+     - `webhookAuth`: string (optional Bearer token or custom Authorization header value)
+   - `DELETE /settings/alerts/memory` — remove all alert settings
+
+2. **Example configuration:**
+   ```bash
+   curl -X PUT http://localhost:8787/settings/alerts/memory \
+     -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "enabled": true,
+       "threshold": 80,
+       "webhookUrl": "https://your-webhook-endpoint.com/alerts",
+       "webhookAuth": "Bearer your-webhook-secret"
+     }'
+   ```
+
+### Webhook Payload
+
+When memory crosses the threshold, ServerHoster POSTs JSON to your webhook:
+
+```json
+{
+  "event": "host_memory_threshold_crossed",
+  "memoryUsedPercent": 85.2,
+  "threshold": 80,
+  "hostname": "server.example.com",
+  "checkedAt": "2026-09-18T23:45:00.000Z",
+  "loadAvg1m": 2.5,
+  "disk": {
+    "path": "/home/user/.survhub",
+    "usedPercent": 65.3,
+    "freeBytes": 50000000000
+  }
+}
+```
+
+### Anti-Spam Behavior
+
+- Alerts fire **once** when memory crosses the threshold
+- No repeated alerts while memory remains elevated
+- Alert **re-arms** automatically when memory drops below threshold
+- Check interval: every 5 minutes (same as existing health checks)
+
+### Use Cases
+
+- **Email alerts:** Configure a Grok Bot webhook routine to forward to email
+- **Chat notifications:** Send to Slack/Discord webhook endpoints
+- **Custom integrations:** POST to your own monitoring system
+
 ## HTTPS
 
 1. Generate local certs from Settings or `POST /ops/https/generate`
