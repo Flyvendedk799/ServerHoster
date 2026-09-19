@@ -5,6 +5,7 @@ import { AppContext } from "./types.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import Database from "better-sqlite3";
+import { getDurableApiToken } from "./services/settings.js";
 
 function setupTestCtx(): AppContext {
   const dbPath = `test-global-mcp-${Date.now()}.db`;
@@ -268,5 +269,44 @@ test("Global MCP accepts SURVHUB_AUTH_TOKEN", async () => {
   } catch (e) {
     console.error(e);
     throw e;
+  }
+});
+
+test("Global MCP accepts durable API token", async () => {
+  const ctx = setupTestCtx();
+  ctx.config.authToken = "";
+  ctx.config.secretKey = "test-secret-key-12345678901234567890123456789012";
+  ctx.app.decorate("ctx", ctx);
+  registerAuthRoutes(ctx);
+  registerMcpRoutes(ctx);
+  
+  const durableToken = getDurableApiToken(ctx);
+  assert.ok(durableToken);
+  assert.strictEqual(durableToken.length, 40);
+  
+  try {
+    const response = await ctx.app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { authorization: `Bearer ${durableToken}`, accept: "application/json, text/event-stream" },
+      payload: {
+        jsonrpc: "2.0",
+        method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+        id: 1
+      }
+    });
+    
+    console.log("TEST 3 (durable token) BODY:", response.body);
+    assert.strictEqual(response.statusCode, 200);
+    const dataLine = response.body.split("\n").find(l => l.startsWith("data: "));
+    const data = JSON.parse(dataLine!.substring(6));
+    assert.strictEqual(data.id, 1);
+    assert.ok(data.result.serverInfo.name === "serverhoster-control-plane");
+  } catch (e) {
+    console.error(e);
+    throw e;
+  } finally {
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
   }
 });

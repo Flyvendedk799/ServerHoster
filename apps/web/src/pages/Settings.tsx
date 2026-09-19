@@ -59,14 +59,24 @@ export function SettingsPage() {
   const [sslMode, setSslMode] = useState<"http-01" | "dns-01">("http-01");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [apiToken, setApiToken] = useState<{
+    configured: boolean;
+    tokenMasked: string;
+    tokenPrefix: string;
+  } | null>(null);
+  const [showApiToken, setShowApiToken] = useState(false);
+  const [revealedToken, setRevealedToken] = useState<string | null>(null);
 
   async function loadAll() {
     try {
-      const [gh, ssh, t, settings] = await Promise.all([
+      const [gh, ssh, t, settings, apiTok] = await Promise.all([
         api<any>("/settings/github/status", { silent: true }),
         api<any>("/settings/ssh", { silent: true }),
         api<TunnelStatus>("/cloudflare/status", { silent: true }),
         api<{ settings: Array<{ key: string; value: string; secret: boolean }> }>("/settings", {
+          silent: true
+        }),
+        api<{ configured: boolean; tokenMasked: string; tokenPrefix: string }>("/settings/api-token", {
           silent: true
         })
       ]);
@@ -74,6 +84,7 @@ export function SettingsPage() {
       setGithubWebhookUrl(gh?.webhookUrl ?? `${API_BASE_URL.replace(/\/$/, "")}/webhooks/github`);
       setSshInfo(ssh);
       setTunnel(t);
+      setApiToken(apiTok);
       if (t)
         setCfConfig({ accountId: t.accountId ?? "", tunnelId: t.tunnelId ?? "", zoneId: t.zoneId ?? "" });
       const storedSslMode = settings?.settings?.find((s) => s.key === "ssl_mode")?.value;
@@ -190,6 +201,42 @@ export function SettingsPage() {
     try {
       await api(path);
       toast.success(message);
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rotateApiToken() {
+    setBusy("api-token-rotate");
+    try {
+      const result = await api<{ token: string; message: string }>("/settings/api-token/rotate", {
+        method: "POST"
+      });
+      toast.success("API token rotated successfully");
+      const tempToken = result.token;
+      setRevealedToken(tempToken);
+      await navigator.clipboard.writeText(tempToken);
+      toast.success("New token copied to clipboard");
+      await loadAll();
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revealApiToken() {
+    if (revealedToken) {
+      setShowApiToken(!showApiToken);
+      return;
+    }
+    setBusy("api-token-reveal");
+    try {
+      const result = await api<{ token: string }>("/settings/api-token/reveal");
+      setRevealedToken(result.token);
+      setShowApiToken(true);
     } catch {
       /* toasted */
     } finally {
@@ -476,6 +523,67 @@ export function SettingsPage() {
                       >
                         <Copy size={14} /> Copy Public Key
                       </button>
+                    </div>
+
+                    <div className="card">
+                      <div className="row">
+                        <Shield className="text-accent" size={20} />
+                        <h3>API / MCP Token</h3>
+                      </div>
+                      <p className="muted small" style={{ margin: "1rem 0" }}>
+                        Durable Bearer token for MCP clients (Grok Bot, Claude Desktop) and REST API access. This token persists across restarts and redeploys.
+                      </p>
+                      <div className="form-group">
+                        <label className="tiny uppercase font-bold muted">Bearer Token</label>
+                        <div className="row" style={{ gap: "0.5rem", alignItems: "center" }}>
+                          <div className="ssh-box" style={{ flex: 1 }}>
+                            <code>
+                              {showApiToken && revealedToken
+                                ? revealedToken
+                                : `${apiToken?.tokenPrefix || "********"}********************************`}
+                            </code>
+                          </div>
+                          <button
+                            className="ghost small"
+                            onClick={revealApiToken}
+                            title={showApiToken ? "Hide token" : "Reveal token"}
+                            disabled={busy === "api-token-reveal"}
+                          >
+                            {busy === "api-token-reveal" ? <Loader2 size={14} className="spin" /> : showApiToken ? "Hide" : "Reveal"}
+                          </button>
+                        </div>
+                        <p className="muted tiny" style={{ marginTop: "0.5rem" }}>
+                          Use as: <code className="text-accent">Authorization: Bearer &lt;token&gt;</code>
+                        </p>
+                      </div>
+                      <div className="row" style={{ gap: "0.5rem", marginTop: "1rem" }}>
+                        <button
+                          className="ghost small font-bold"
+                          onClick={() => {
+                            if (revealedToken) {
+                              navigator.clipboard
+                                .writeText(revealedToken)
+                                .then(() => toast.success("Token copied to clipboard"))
+                                .catch(() => toast.error("Copy failed"));
+                            } else {
+                              toast.error("Reveal token first to copy");
+                            }
+                          }}
+                        >
+                          <Copy size={14} /> Copy Token
+                        </button>
+                        <button
+                          className="ghost small text-warning font-bold"
+                          onClick={() => {
+                            if (window.confirm("Rotate API token? This will invalidate the current token and break any MCP clients or scripts using it until updated.")) {
+                              rotateApiToken();
+                            }
+                          }}
+                          disabled={busy === "api-token-rotate"}
+                        >
+                          {busy === "api-token-rotate" && <Loader2 size={14} className="spin" />} Rotate
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

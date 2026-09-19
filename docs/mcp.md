@@ -9,7 +9,26 @@ There are two primary ways to connect to the ServerHoster MCP interface:
 The **Global Control Plane MCP** is a single endpoint that exposes tools to manage the entire host, all projects, and all services. This is ideal when you want to connect a persistent external AI bot (e.g. Grok Bot, Claude Desktop, or a custom Slack bot) directly to your server.
 
 **Endpoint:** POST /mcp
-**Authentication:** Requires a Bearer token with a valid SaaS API Key or the global SURVHUB_AUTH_TOKEN.
+**Authentication:** Requires a Bearer token. Use the **durable API token** from Settings → Dev Tools → API / MCP Token.
+
+### Getting Your API Token
+
+ServerHoster provides a durable API/MCP token that persists across restarts and redeploys:
+
+1. Navigate to **Settings** in the dashboard
+2. Go to the **Dev Tools** tab
+3. Find the **API / MCP Token** card
+4. Click **Reveal** to view the full token
+5. Click **Copy Token** to copy it to your clipboard
+
+The token is permanent until you explicitly rotate it. If you need to invalidate an old token, click **Rotate** to generate a new one.
+
+**Token Format:**
+```
+Authorization: Bearer <your-40-character-token>
+```
+
+**Legacy Bootstrap:** On first start (or if no persisted token exists), ServerHoster seeds the durable token from `SURVHUB_AUTH_TOKEN` if set. After that, the persisted token is the source of truth and survives redeploys even if the environment variable changes.
 
 ### Connecting via Claude Desktop or Grok Bot
 
