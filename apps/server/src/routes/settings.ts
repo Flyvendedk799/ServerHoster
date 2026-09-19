@@ -144,4 +144,47 @@ export function registerSettingsRoutes(ctx: AppContext): void {
     const secret = ctx.config.webhookInsecure ? undefined : ctx.config.webhookSecret || undefined;
     return ensureRepoWebhook(ctx, fullName, p.webhookUrl, secret);
   });
+
+  // --- Host memory alerts --------------------------------------------------
+  ctx.app.get("/settings/alerts/memory", async () => {
+    const enabled = getSetting(ctx, "host_memory_alert_enabled") === "1";
+    const threshold = Number(getSetting(ctx, "host_memory_alert_threshold") ?? 80);
+    const webhookUrl = getSecretSetting(ctx, "host_memory_alert_webhook_url");
+    const webhookAuth = getSecretSetting(ctx, "host_memory_alert_webhook_auth");
+    return {
+      enabled,
+      threshold,
+      webhookConfigured: Boolean(webhookUrl),
+      webhookUrl: webhookUrl ? webhookUrl.slice(0, 8) + "..." : null,
+      authConfigured: Boolean(webhookAuth)
+    };
+  });
+
+  const memoryAlertSchema = z.object({
+    enabled: z.boolean().default(false),
+    threshold: z.number().int().min(1).max(100).default(80),
+    webhookUrl: z.string().url().optional(),
+    webhookAuth: z.string().optional()
+  });
+
+  ctx.app.put("/settings/alerts/memory", async (req) => {
+    const p = memoryAlertSchema.parse(req.body);
+    setSetting(ctx, "host_memory_alert_enabled", p.enabled ? "1" : "0");
+    setSetting(ctx, "host_memory_alert_threshold", String(p.threshold));
+    if (p.webhookUrl) {
+      setSecretSetting(ctx, "host_memory_alert_webhook_url", p.webhookUrl);
+    }
+    if (p.webhookAuth) {
+      setSecretSetting(ctx, "host_memory_alert_webhook_auth", p.webhookAuth);
+    }
+    return { ok: true };
+  });
+
+  ctx.app.delete("/settings/alerts/memory", async () => {
+    deleteSetting(ctx, "host_memory_alert_enabled");
+    deleteSetting(ctx, "host_memory_alert_threshold");
+    deleteSetting(ctx, "host_memory_alert_webhook_url");
+    deleteSetting(ctx, "host_memory_alert_webhook_auth");
+    return { ok: true };
+  });
 }

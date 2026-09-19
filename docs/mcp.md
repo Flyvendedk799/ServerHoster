@@ -41,6 +41,12 @@ If you are using a local client like Claude Desktop that connects to remote MCP 
 - list_databases: List all managed databases and their status.
 - get_database_logs: Fetch recent container logs for a managed database.
 
+### Host Memory Alerts
+
+In addition to the pull-based `get_system_health` tool, ServerHoster supports **push-based host memory alerts**. When configured, ServerHoster automatically POSTs a webhook when memory usage crosses a threshold, eliminating the need for external polling cron jobs.
+
+See `docs/operations.md` for setup instructions.
+
 ## Ephemeral Service-Scoped Agents (Internal Terminal)
 
 ServerHoster also provides a built-in terminal AI companion. When you open an AI chat for a specific service in the ServerHoster dashboard, it provisions a **short-lived, service-scoped MCP session**.
