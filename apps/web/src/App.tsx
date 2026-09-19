@@ -35,6 +35,7 @@ import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
 import { DomainsPage } from "./pages/Domains";
 import { PlexPage } from "./pages/Plex";
+import { N8nPage } from "./pages/N8n";
 import { SettingsPage } from "./pages/Settings";
 import { NotificationsPage } from "./pages/Notifications";
 import { LoginPage } from "./pages/Login";
@@ -132,6 +133,7 @@ const routeLabels: Record<string, string> = {
   domains: "SaaS Domains",
   deployments: "Deployments",
   plex: "Plex",
+  n8n: "n8n",
   notifications: "Alerts",
   settings: "Settings",
   logs: "Logs"
@@ -382,6 +384,15 @@ export function App() {
             {!collapsed && <span>Plex</span>}
           </NavLink>
           <NavLink
+            to="/n8n"
+            aria-label="n8n"
+            title={collapsed ? "n8n" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Activity size={16} />
+            {!collapsed && <span>n8n</span>}
+          </NavLink>
+          <NavLink
             to="/notifications"
             aria-label="Alerts"
             title={collapsed ? "Alerts" : undefined}
@@ -546,6 +557,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <PlexPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/n8n"
+                  element={
+                    <ProtectedRoute>
+                      <N8nPage />
                     </ProtectedRoute>
                   }
                 />
