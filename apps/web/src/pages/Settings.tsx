@@ -65,6 +65,7 @@ export function SettingsPage() {
     tokenPrefix: string;
   } | null>(null);
   const [showApiToken, setShowApiToken] = useState(false);
+  const [revealedToken, setRevealedToken] = useState<string | null>(null);
 
   async function loadAll() {
     try {
@@ -215,9 +216,27 @@ export function SettingsPage() {
       });
       toast.success("API token rotated successfully");
       const tempToken = result.token;
+      setRevealedToken(tempToken);
       await navigator.clipboard.writeText(tempToken);
       toast.success("New token copied to clipboard");
       await loadAll();
+    } catch {
+      /* toasted */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revealApiToken() {
+    if (revealedToken) {
+      setShowApiToken(!showApiToken);
+      return;
+    }
+    setBusy("api-token-reveal");
+    try {
+      const result = await api<{ token: string }>("/settings/api-token/reveal");
+      setRevealedToken(result.token);
+      setShowApiToken(true);
     } catch {
       /* toasted */
     } finally {
@@ -519,17 +538,18 @@ export function SettingsPage() {
                         <div className="row" style={{ gap: "0.5rem", alignItems: "center" }}>
                           <div className="ssh-box" style={{ flex: 1 }}>
                             <code>
-                              {showApiToken
-                                ? apiToken?.tokenMasked || "Loading..."
+                              {showApiToken && revealedToken
+                                ? revealedToken
                                 : `${apiToken?.tokenPrefix || "********"}********************************`}
                             </code>
                           </div>
                           <button
                             className="ghost small"
-                            onClick={() => setShowApiToken(!showApiToken)}
+                            onClick={revealApiToken}
                             title={showApiToken ? "Hide token" : "Reveal token"}
+                            disabled={busy === "api-token-reveal"}
                           >
-                            {showApiToken ? "Hide" : "Reveal"}
+                            {busy === "api-token-reveal" ? <Loader2 size={14} className="spin" /> : showApiToken ? "Hide" : "Reveal"}
                           </button>
                         </div>
                         <p className="muted tiny" style={{ marginTop: "0.5rem" }}>
@@ -540,16 +560,13 @@ export function SettingsPage() {
                         <button
                           className="ghost small font-bold"
                           onClick={() => {
-                            if (apiToken?.tokenMasked) {
-                              const fullToken = apiToken.tokenMasked.replace(/\*/g, "");
-                              if (fullToken.length > 8) {
-                                navigator.clipboard
-                                  .writeText(fullToken)
-                                  .then(() => toast.success("Token copied (only visible segments)"))
-                                  .catch(() => toast.error("Copy failed"));
-                              } else {
-                                toast.error("Reveal token first to copy the full value");
-                              }
+                            if (revealedToken) {
+                              navigator.clipboard
+                                .writeText(revealedToken)
+                                .then(() => toast.success("Token copied to clipboard"))
+                                .catch(() => toast.error("Copy failed"));
+                            } else {
+                              toast.error("Reveal token first to copy");
                             }
                           }}
                         >

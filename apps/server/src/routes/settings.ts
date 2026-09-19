@@ -201,6 +201,13 @@ export function registerSettingsRoutes(ctx: AppContext): void {
     };
   });
 
+  ctx.app.get("/settings/api-token/reveal", async () => {
+    const token = getDurableApiToken(ctx);
+    return {
+      token
+    };
+  });
+
   ctx.app.post("/settings/api-token/rotate", async () => {
     const newToken = rotateApiToken(ctx);
     return {
