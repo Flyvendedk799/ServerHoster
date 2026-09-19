@@ -15,6 +15,10 @@ All notable changes to LocalSURV are documented here. Format based on [Keep a Ch
 - `SURVHUB_TRUST_PROXY` — believe `X-Forwarded-For` from a proxy you run. Without it, everything behind cloudflared/nginx shares one `req.ip`: per-IP rate limits become a single global bucket and a paired device's last-seen address is the tunnel's.
 - Companion device writes are recorded in the audit log as `companion:<device-id>`, with the method, path, resulting status, source IP and User-Agent — refused writes included.
 
+### Fixed
+
+- **Global MCP reliability for external agents.** `POST /mcp` now uses Streamable HTTP **JSON responses** (stateless), bounds Docker/disk probes and tool work so ops bots no longer hang until client `-32001`, and returns auth failures as fast **401** with JSON-RPC `-32000` (no longer reuses the timeout error code). See [docs/mcp.md](docs/mcp.md).
+
 ### Changed
 
 - **Companion reads are now an allowlist, not a denylist.** The denylist named `/secrets`, `/backup` and `/services/:id/env` and read as complete, while still serving a paired phone `GET /databases/:id` (every managed database's connection string in the clear), `/databases/:id/tables/:schema/:table/preview` (any row of any table), `/databases/:id/backups/:backupId/download` (the whole dump) and `/services/:id/requests` (the request inspector's captured Authorization headers). A device now reaches only the named fleet-status, log and metrics routes; everything else answers `403 COMPANION_SCOPE_DENIED`.

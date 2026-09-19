@@ -189,12 +189,20 @@ CREATE TABLE IF NOT EXISTS service_group_members (
   PRIMARY KEY(group_id, service_id)
 );
 
+CREATE TABLE IF NOT EXISTS saas_domains (
+  id TEXT PRIMARY KEY,
+  hostname TEXT,
+  service_id TEXT
+);
+
 CREATE TABLE IF NOT EXISTS service_resource_links (id TEXT PRIMARY KEY, service_id TEXT, resource_id TEXT, resource_type TEXT, active INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS managed_resources (id TEXT PRIMARY KEY, profile TEXT, ports_json TEXT, config_json TEXT, status TEXT);
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, count INTEGER);
 `);
   
   try { db.exec("ALTER TABLE services ADD COLUMN ssl_status TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE services ADD COLUMN github_repo_url TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE services ADD COLUMN github_branch TEXT;"); } catch (e) {}
   db.exec("INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('test', 'test', 'hash', 'admin', 'now', 'now')");
   const app = Fastify();
   return {
@@ -223,19 +231,21 @@ test("Global MCP rejects unauthenticated requests", async () => {
   registerMcpRoutes(ctx);
   
   try {
+    const start = Date.now();
     const response = await ctx.app.inject({
       method: "POST",
       url: "/mcp",
       payload: { jsonrpc: "2.0", method: "initialize", id: 1 }
     });
+    const elapsed = Date.now() - start;
     
-    console.log("TEST 1 BODY:", response.body);
     assert.strictEqual(response.statusCode, 401);
     const data = response.json();
-    assert.strictEqual(data.error.code, -32001);
-  } catch (e) {
-    console.error(e);
-    throw e;
+    assert.strictEqual(data.error.code, -32000);
+    assert.ok(elapsed < 2000, `auth failure should be fast, took ${elapsed}ms`);
+  } finally {
+    await ctx.app.close();
+    ctx.db.close();
   }
 });
 
@@ -260,15 +270,13 @@ test("Global MCP accepts SURVHUB_AUTH_TOKEN", async () => {
       }
     });
     
-    console.log("TEST 2 BODY:", response.body);
     assert.strictEqual(response.statusCode, 200);
-    const dataLine = response.body.split("\n").find(l => l.startsWith("data: "));
-    const data = JSON.parse(dataLine!.substring(6));
+    const data = parseMcpJson(response.body);
     assert.strictEqual(data.id, 1);
     assert.ok(data.result.serverInfo.name === "serverhoster-control-plane");
-  } catch (e) {
-    console.error(e);
-    throw e;
+  } finally {
+    await ctx.app.close();
+    ctx.db.close();
   }
 });
 
@@ -297,16 +305,141 @@ test("Global MCP accepts durable API token", async () => {
       }
     });
     
-    console.log("TEST 3 (durable token) BODY:", response.body);
     assert.strictEqual(response.statusCode, 200);
-    const dataLine = response.body.split("\n").find(l => l.startsWith("data: "));
-    const data = JSON.parse(dataLine!.substring(6));
+    const data = parseMcpJson(response.body);
     assert.strictEqual(data.id, 1);
     assert.ok(data.result.serverInfo.name === "serverhoster-control-plane");
-  } catch (e) {
-    console.error(e);
-    throw e;
   } finally {
     ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    await ctx.app.close();
+    ctx.db.close();
   }
 });
+
+test("Global MCP durable token initialize + list_services succeeds", async () => {
+  const ctx = setupTestCtx();
+  ctx.config.authToken = "";
+  ctx.config.secretKey = "test-secret-key-12345678901234567890123456789012";
+  ctx.app.decorate("ctx", ctx);
+  registerAuthRoutes(ctx);
+  registerMcpRoutes(ctx);
+
+  ctx.db
+    .prepare(
+      "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .run("p1", "demo", null, "now", "now");
+  ctx.db
+    .prepare(
+      "INSERT INTO services (id, project_id, name, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .run("s1", "p1", "web", "node", "stopped", "now", "now");
+
+  const durableToken = getDurableApiToken(ctx);
+  const headers = {
+    authorization: `Bearer ${durableToken}`,
+    accept: "application/json, text/event-stream"
+  };
+
+  try {
+    const init = await ctx.app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers,
+      payload: {
+        jsonrpc: "2.0",
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" }
+        },
+        id: 1
+      }
+    });
+    assert.strictEqual(init.statusCode, 200);
+    assert.strictEqual(parseMcpJson(init.body).result.serverInfo.name, "serverhoster-control-plane");
+
+    const start = Date.now();
+    const call = await ctx.app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers,
+      payload: {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "list_services", arguments: {} },
+        id: 2
+      }
+    });
+    const elapsed = Date.now() - start;
+    assert.strictEqual(call.statusCode, 200);
+    assert.ok(elapsed < 5000, `list_services should return promptly, took ${elapsed}ms`);
+    const result = parseMcpJson(call.body);
+    assert.strictEqual(result.id, 2);
+    assert.ok(!result.result?.isError, `tool error: ${JSON.stringify(result)}`);
+    const payload = JSON.parse(result.result.content[0].text);
+    assert.ok(Array.isArray(payload));
+    assert.strictEqual(payload[0].name, "web");
+  } finally {
+    await ctx.app.close();
+    ctx.db.close();
+  }
+});
+
+test("Global MCP get_system_health fails fast when Docker hangs", async () => {
+  const ctx = setupTestCtx();
+  ctx.config.authToken = "";
+  ctx.config.secretKey = "test-secret-key-12345678901234567890123456789012";
+  let settleHang!: () => void;
+  const hang = new Promise<void>((resolve) => {
+    settleHang = resolve;
+  });
+  ctx.docker = {
+    ping: async () => hang
+  } as any;
+  ctx.app.decorate("ctx", ctx);
+  registerAuthRoutes(ctx);
+  registerMcpRoutes(ctx);
+
+  const durableToken = getDurableApiToken(ctx);
+  try {
+    const start = Date.now();
+    const call = await ctx.app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        authorization: `Bearer ${durableToken}`,
+        accept: "application/json, text/event-stream"
+      },
+      payload: {
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { name: "get_system_health", arguments: {} },
+        id: 3
+      }
+    });
+    const elapsed = Date.now() - start;
+    assert.strictEqual(call.statusCode, 200);
+    assert.ok(elapsed < 15_000, `get_system_health must not hang; took ${elapsed}ms`);
+    const result = parseMcpJson(call.body);
+    const health = JSON.parse(result.result.content[0].text);
+    assert.strictEqual(health.dockerOk, false);
+    assert.ok(String(health.dockerError || "").includes("timed out"));
+  } finally {
+    settleHang();
+    await ctx.app.close();
+    ctx.db.close();
+  }
+});
+
+function parseMcpJson(body: string): any {
+  // JSON response mode returns application/json; tolerate legacy SSE if present.
+  const trimmed = body.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return JSON.parse(trimmed);
+  }
+  const dataLine = body.split("\n").find((l) => l.startsWith("data: "));
+  if (!dataLine) throw new Error(`No MCP JSON in body: ${body.slice(0, 200)}`);
+  return JSON.parse(dataLine.substring(6));
+}

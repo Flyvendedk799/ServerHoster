@@ -5,13 +5,15 @@ import { promisify } from "node:util";
 import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { getSetting, getSecretSetting } from "./settings.js";
-import { serializeError } from "../lib/core.js";
+import { serializeError, withTimeout } from "../lib/core.js";
 
 const exec = promisify(execFile);
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_DISK_WARN_PERCENT = 85;
 const DEFAULT_MEMORY_ALERT_THRESHOLD = 80;
+/** Bound host probes so MCP/REST health never hangs on a stuck Docker socket or df. */
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
 
 export type DiskInfo = {
   path: string;
@@ -34,7 +36,7 @@ export type SystemHealth = {
 /** Cross-platform disk check via `df -k`. Returns KB → bytes. */
 export async function checkDisk(path: string): Promise<DiskInfo | null> {
   try {
-    const { stdout } = await exec("df", ["-k", path]);
+    const { stdout } = await exec("df", ["-k", path], { timeout: HEALTH_PROBE_TIMEOUT_MS });
     const lines = stdout.trim().split("\n");
     if (lines.length < 2) return null;
     const parts = lines[1].split(/\s+/);
@@ -51,7 +53,7 @@ export async function checkDisk(path: string): Promise<DiskInfo | null> {
 
 async function checkDocker(ctx: AppContext): Promise<{ ok: boolean; error: string | null }> {
   try {
-    await ctx.docker.ping();
+    await withTimeout(ctx.docker.ping(), HEALTH_PROBE_TIMEOUT_MS, "Docker ping");
     return { ok: true, error: null };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };

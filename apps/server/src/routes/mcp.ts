@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AppContext } from "../types.js";
-import { getService, insertLog, serializeError } from "../lib/core.js";
+import { getService, insertLog, serializeError, withTimeout } from "../lib/core.js";
 import { listServiceEnvRequirements } from "../services/envScan.js";
 import {
   getContainerLogs,
@@ -19,12 +20,21 @@ import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.j
 
 type McpAuth = NonNullable<ReturnType<typeof validateMcpSessionToken>>;
 
+/** Keep MCP tool/request work under typical client timeouts (~30s) with headroom. */
+const MCP_REQUEST_TIMEOUT_MS = 25_000;
+const MCP_LOG_TEXT_CAP = 24_000;
+
 function text(content: unknown) {
+  const raw = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  const capped =
+    raw.length > MCP_LOG_TEXT_CAP
+      ? `${raw.slice(0, MCP_LOG_TEXT_CAP)}\n…[truncated ${raw.length - MCP_LOG_TEXT_CAP} chars]`
+      : raw;
   return {
     content: [
       {
         type: "text" as const,
-        text: typeof content === "string" ? content : JSON.stringify(content, null, 2)
+        text: capped
       }
     ]
   };
@@ -57,6 +67,14 @@ function recentLogs(ctx: AppContext, serviceId: string, limit: number) {
     message: string;
     timestamp: string;
   }>;
+}
+
+async function runTimedTool<T>(
+  label: string,
+  work: () => Promise<T>,
+  timeoutMs = MCP_REQUEST_TIMEOUT_MS
+): Promise<T> {
+  return withTimeout(Promise.resolve().then(work), timeoutMs, label);
 }
 
 function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
@@ -175,22 +193,24 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
       inputSchema: {}
     },
     async () => {
-      const service = getService(ctx, auth.serviceId) as {
-        project_id?: string;
-        linked_database_id?: string | null;
-      };
-      const rows = ctx.db
-        .prepare(
-          "SELECT id, project_id, name, engine, port, created_at FROM databases WHERE project_id = ? ORDER BY created_at DESC"
-        )
-        .all(service.project_id ?? "") as DatabaseRow[];
-      const enriched = await Promise.all(
-        rows.map(async (row) => ({
-          ...row,
-          linked: row.id === service.linked_database_id,
-          container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
-        }))
-      );
+      const enriched = await runTimedTool("database_summary", async () => {
+        const service = getService(ctx, auth.serviceId) as {
+          project_id?: string;
+          linked_database_id?: string | null;
+        };
+        const rows = ctx.db
+          .prepare(
+            "SELECT id, project_id, name, engine, port, created_at FROM databases WHERE project_id = ? ORDER BY created_at DESC"
+          )
+          .all(service.project_id ?? "") as DatabaseRow[];
+        return Promise.all(
+          rows.map(async (row) => ({
+            ...row,
+            linked: row.id === service.linked_database_id,
+            container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
+          }))
+        );
+      });
       auditTool(ctx, auth, "database_summary", 200);
       return text(enriched);
     }
@@ -211,7 +231,9 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
       const db = getDatabase(ctx, String(databaseId));
       if (!db || db.project_id !== service.project_id)
         throw new Error("Database not found in this service project");
-      const logs = await getContainerLogs(ctx, db, Number(tail ?? 120));
+      const logs = await runTimedTool("database_logs", () =>
+        getContainerLogs(ctx, db, Number(tail ?? 120))
+      );
       auditTool(ctx, auth, "database_logs", 200, `database=${databaseId}`);
       return text(logs.slice(-8000));
     }
@@ -226,7 +248,7 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     },
     async () => {
       assertMutationAllowed(auth, "service:start");
-      await startService(ctx, auth.serviceId);
+      await runTimedTool("start_service", () => startService(ctx, auth.serviceId));
       auditTool(ctx, auth, "start_service", 200);
       return text({ ok: true });
     }
@@ -241,7 +263,7 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     },
     async () => {
       assertMutationAllowed(auth, "service:stop");
-      await stopService(ctx, auth.serviceId);
+      await runTimedTool("stop_service", () => stopService(ctx, auth.serviceId));
       auditTool(ctx, auth, "stop_service", 200);
       return text({ ok: true });
     }
@@ -256,7 +278,7 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
     },
     async () => {
       assertMutationAllowed(auth, "service:restart");
-      await restartService(ctx, auth.serviceId);
+      await runTimedTool("restart_service", () => restartService(ctx, auth.serviceId));
       auditTool(ctx, auth, "restart_service", 200);
       return text({ ok: true });
     }
@@ -318,7 +340,7 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     inputSchema: {}
   }, async () => {
     try {
-      const health = await collectSystemHealth(ctx);
+      const health = await runTimedTool("get_system_health", () => collectSystemHealth(ctx));
       auditGlobalTool(ctx, actor, "get_system_health", 200);
       return text(health);
     } catch (error) {
@@ -376,14 +398,15 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     inputSchema: { service: z.string().describe("Service ID or exact service name") }
   }, async ({ service }) => {
     try {
-      const srv = resolveService(ctx, String(service));
-      const proxy = ctx.db.prepare("SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC").all(srv.id);
-      
-      const reqs = await listServiceEnvRequirements(ctx);
-      const envReqs = reqs.find((r) => r.service_id === srv.id) ?? { requirements: [] };
-      
-      auditGlobalTool(ctx, actor, "get_service_status", 200, `service=${srv.id}`);
-      return text({ service: srv, proxy, envRequirements: envReqs });
+      const result = await runTimedTool("get_service_status", async () => {
+        const srv = resolveService(ctx, String(service));
+        const proxy = ctx.db.prepare("SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC").all(srv.id);
+        const reqs = await listServiceEnvRequirements(ctx);
+        const envReqs = reqs.find((r) => r.service_id === srv.id) ?? { requirements: [] };
+        return { service: srv, proxy, envRequirements: envReqs };
+      });
+      auditGlobalTool(ctx, actor, "get_service_status", 200, `service=${(result.service as { id: string }).id}`);
+      return text(result);
     } catch (error) {
       auditGlobalTool(ctx, actor, "get_service_status", 500, serializeError(error));
       throw error;
@@ -426,7 +449,7 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     inputSchema: { service: z.string().describe("Service ID or exact service name") }
   }, async ({ service }) => {
     const srv = resolveService(ctx, String(service));
-    await startService(ctx, srv.id);
+    await runTimedTool("start_service", () => startService(ctx, srv.id));
     auditGlobalTool(ctx, actor, "start_service", 200, `service=${srv.id}`);
     return text({ ok: true });
   });
@@ -437,7 +460,7 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     inputSchema: { service: z.string().describe("Service ID or exact service name") }
   }, async ({ service }) => {
     const srv = resolveService(ctx, String(service));
-    await stopService(ctx, srv.id);
+    await runTimedTool("stop_service", () => stopService(ctx, srv.id));
     auditGlobalTool(ctx, actor, "stop_service", 200, `service=${srv.id}`);
     return text({ ok: true });
   });
@@ -448,7 +471,7 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     inputSchema: { service: z.string().describe("Service ID or exact service name") }
   }, async ({ service }) => {
     const srv = resolveService(ctx, String(service));
-    await restartService(ctx, srv.id);
+    await runTimedTool("restart_service", () => restartService(ctx, srv.id));
     auditGlobalTool(ctx, actor, "restart_service", 200, `service=${srv.id}`);
     return text({ ok: true });
   });
@@ -461,8 +484,15 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     const srv = resolveService(ctx, String(service));
     if (!srv.github_repo_url) throw new Error("Service has no github_repo_url — cannot redeploy");
     const branch = String(srv.github_branch || "main");
-    const deployment = await deployFromGit(ctx, srv.id, String(srv.github_repo_url), branch, "manual");
-    await applyPostDeployServiceState(ctx, srv.id, deployment, { startAfterDeploy: true });
+    const deployment = await runTimedTool(
+      "redeploy_service",
+      async () => {
+        const d = await deployFromGit(ctx, srv.id, String(srv.github_repo_url), branch, "manual");
+        await applyPostDeployServiceState(ctx, srv.id, d, { startAfterDeploy: true });
+        return d;
+      },
+      120_000
+    );
     auditGlobalTool(ctx, actor, "redeploy_service", 200, `service=${srv.id}`);
     return text(deployment);
   });
@@ -472,20 +502,22 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     description: "List all managed databases (Postgres, MySQL, Mongo, Redis), their container status, engine, and linked project.",
     inputSchema: { projectId: z.string().optional() }
   }, async ({ projectId }) => {
-    let query = "SELECT id, project_id, name, engine, port, created_at FROM databases";
-    const params: string[] = [];
-    if (projectId) {
-      query += " WHERE project_id = ?";
-      params.push(String(projectId));
-    }
-    query += " ORDER BY created_at DESC";
-    const rows = ctx.db.prepare(query).all(...params) as DatabaseRow[];
-    const enriched = await Promise.all(
-      rows.map(async (row) => ({
-        ...row,
-        container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
-      }))
-    );
+    const enriched = await runTimedTool("list_databases", async () => {
+      let query = "SELECT id, project_id, name, engine, port, created_at FROM databases";
+      const params: string[] = [];
+      if (projectId) {
+        query += " WHERE project_id = ?";
+        params.push(String(projectId));
+      }
+      query += " ORDER BY created_at DESC";
+      const rows = ctx.db.prepare(query).all(...params) as DatabaseRow[];
+      return Promise.all(
+        rows.map(async (row) => ({
+          ...row,
+          container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
+        }))
+      );
+    });
     auditGlobalTool(ctx, actor, "list_databases", 200);
     return text(enriched);
   });
@@ -499,7 +531,9 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     }
   }, async ({ database, tail }) => {
     const db = resolveDatabase(ctx, String(database));
-    const logs = await getContainerLogs(ctx, db, Number(tail ?? 120));
+    const logs = await runTimedTool("get_database_logs", () =>
+      getContainerLogs(ctx, db, Number(tail ?? 120))
+    );
     auditGlobalTool(ctx, actor, "get_database_logs", 200, `database=${db.id} tail=${tail}`);
     return text(logs.slice(-8000));
   });
@@ -515,80 +549,141 @@ function extractBearer(headers: Record<string, string | string[] | undefined>): 
   return match ? match[1] : "";
 }
 
+function unauthorizedMcp(reply: FastifyReply, message: string): void {
+  // Use -32000 (server error), not -32001 — MCP clients reserve -32001 for request timeouts.
+  reply.code(401).send({
+    jsonrpc: "2.0",
+    error: { code: -32000, message },
+    id: null
+  });
+}
+
+function methodNotAllowedMcp(reply: FastifyReply): void {
+  reply
+    .code(405)
+    .header("Allow", "POST")
+    .send({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed. Use POST for MCP Streamable HTTP." },
+      id: null
+    });
+}
+
+async function handleStatelessMcpRequest(
+  ctx: AppContext,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  createServer: () => McpServer,
+  logLabel: string
+): Promise<void> {
+  const mcpServer = createServer();
+  // Stateless + JSON responses: each POST is independent (matches mcp-remote).
+  // Use the web-standard transport so Fastify can send the body normally —
+  // avoiding reply.hijack() + @hono/node-server socket cleanup races.
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true
+  });
+  try {
+    await mcpServer.connect(transport);
+    const protocol = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim() || "http";
+    const host = (req.headers.host as string | undefined) || "localhost";
+    const webRequest = new Request(`${protocol}://${host}${req.url}`, {
+      method: "POST",
+      headers: headersFromFastify(req),
+      body: JSON.stringify(req.body ?? null)
+    });
+    const response = await transport.handleRequest(webRequest, { parsedBody: req.body });
+    reply.code(response.status);
+    response.headers.forEach((value, key) => {
+      // Fastify manages content-length / transfer-encoding itself.
+      if (key.toLowerCase() === "content-length" || key.toLowerCase() === "transfer-encoding") return;
+      reply.header(key, value);
+    });
+    if (response.status === 202 || response.body == null) {
+      reply.send();
+      return;
+    }
+    const buf = Buffer.from(await response.arrayBuffer());
+    reply.send(buf.length ? buf : undefined);
+  } catch (error) {
+    ctx.app.log.error({ err: error }, `${logLabel} failed`);
+    if (!reply.sent) {
+      reply.code(500).send({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal MCP server error" },
+        id: null
+      });
+    }
+  } finally {
+    await transport.close().catch(() => undefined);
+    await mcpServer.close().catch(() => undefined);
+  }
+}
+
+function headersFromFastify(req: FastifyRequest): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value == null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(key, item);
+    } else {
+      headers.set(key, value);
+    }
+  }
+  if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  if (!headers.has("accept")) headers.set("accept", "application/json, text/event-stream");
+  return headers;
+}
+
 export function registerMcpRoutes(ctx: AppContext): void {
-
-
   ctx.app.post("/mcp", async (req, reply) => {
     const token = extractBearer(req.headers as Record<string, string | string[] | undefined>);
     if (!isAuthorizedToken(ctx, token)) {
-      reply.code(401).send({
-        jsonrpc: "2.0",
-        error: { code: -32001, message: "Unauthorized MCP session" },
-        id: null
-      });
+      unauthorizedMcp(reply, "Unauthorized MCP session");
       return;
     }
     const actor = resolveActorFromToken(ctx, token) ?? "mcp-agent";
-    const mcpServer = createGlobalMcpServer(ctx, actor);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    try {
-      await mcpServer.connect(transport);
-      reply.hijack();
-      await transport.handleRequest(req.raw, reply.raw, req.body);
-    } catch (error) {
-      ctx.app.log.error({ err: error }, "Global MCP request failed");
-      if (!reply.raw.headersSent) {
-        reply.raw.writeHead(500, { "content-type": "application/json" });
-        reply.raw.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal MCP server error" },
-            id: null
-          })
-        );
-      }
-    } finally {
-      await transport.close().catch(() => undefined);
-      await mcpServer.close().catch(() => undefined);
-    }
+    await handleStatelessMcpRequest(
+      ctx,
+      req,
+      reply,
+      () => createGlobalMcpServer(ctx, actor),
+      "Global MCP request"
+    );
   });
 
+  ctx.app.get("/mcp", async (_req, reply) => {
+    methodNotAllowedMcp(reply);
+  });
+
+  ctx.app.delete("/mcp", async (_req, reply) => {
+    methodNotAllowedMcp(reply);
+  });
 
   ctx.app.post("/mcp/:tokenId", async (req, reply) => {
     const { tokenId } = req.params as { tokenId: string };
     const token = extractBearer(req.headers as Record<string, string | string[] | undefined>);
     const auth = validateMcpSessionToken(ctx, tokenId, token);
     if (!auth) {
-      reply.code(401).send({
-        jsonrpc: "2.0",
-        error: { code: -32001, message: "Unauthorized or expired MCP session" },
-        id: null
-      });
+      unauthorizedMcp(reply, "Unauthorized or expired MCP session");
       return;
     }
 
-    const mcpServer = createServiceMcpServer(ctx, auth);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    await handleStatelessMcpRequest(
+      ctx,
+      req,
+      reply,
+      () => createServiceMcpServer(ctx, auth),
+      "MCP request"
+    );
+  });
 
-    try {
-      await mcpServer.connect(transport);
-      reply.hijack();
-      await transport.handleRequest(req.raw, reply.raw, req.body);
-    } catch (error) {
-      ctx.app.log.error({ err: error, serviceId: auth.serviceId }, "MCP request failed");
-      if (!reply.raw.headersSent) {
-        reply.raw.writeHead(500, { "content-type": "application/json" });
-        reply.raw.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal MCP server error" },
-            id: null
-          })
-        );
-      }
-    } finally {
-      await transport.close().catch(() => undefined);
-      await mcpServer.close().catch(() => undefined);
-    }
+  ctx.app.get("/mcp/:tokenId", async (_req, reply) => {
+    methodNotAllowedMcp(reply);
+  });
+
+  ctx.app.delete("/mcp/:tokenId", async (_req, reply) => {
+    methodNotAllowedMcp(reply);
   });
 }
