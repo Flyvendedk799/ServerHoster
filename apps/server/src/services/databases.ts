@@ -5,10 +5,11 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
-import { nowIso, serializeError } from "../lib/core.js";
+import { nowIso, serializeError, withTimeout } from "../lib/core.js";
 import { createNotification } from "./notifications.js";
 
 const exec = promisify(execFile);
+const DOCKER_QUERY_TIMEOUT_MS = 8_000;
 
 /**
  * Run a command with a string as stdin. Resolves on exit 0, rejects on any
@@ -248,7 +249,7 @@ export async function getContainerStatus(
 }> {
   try {
     const container = ctx.docker.getContainer(db.container_id || containerNameForDatabase(db));
-    const info = await container.inspect();
+    const info = await withTimeout(container.inspect(), DOCKER_QUERY_TIMEOUT_MS, "Docker inspect");
     return {
       state: info.State?.Status ?? "unknown",
       startedAt: info.State?.StartedAt ?? null,
@@ -311,13 +312,17 @@ export async function removeDatabase(
 export async function getContainerLogs(ctx: AppContext, db: DatabaseRow, tail = 500): Promise<string> {
   try {
     const container = ctx.docker.getContainer(db.container_id || containerNameForDatabase(db));
-    const stream = (await container.logs({
-      stdout: true,
-      stderr: true,
-      tail,
-      timestamps: true,
-      follow: false
-    })) as unknown as Buffer;
+    const stream = (await withTimeout(
+      container.logs({
+        stdout: true,
+        stderr: true,
+        tail,
+        timestamps: true,
+        follow: false
+      }),
+      DOCKER_QUERY_TIMEOUT_MS,
+      "Docker logs"
+    )) as unknown as Buffer;
     return stream.toString("utf8");
   } catch (error) {
     return `Failed to read logs: ${serializeError(error)}`;

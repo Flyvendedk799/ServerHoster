@@ -41,6 +41,14 @@ ServerHoster uses a **durable API token** for MCP and REST API authentication. T
 
 **Legacy note:** `SURVHUB_AUTH_TOKEN` is still checked as a fallback, but the persisted durable token is preferred. After initial seed, changing the env var won't rotate the token — use the Settings UI or `POST /settings/api-token/rotate` instead.
 
+### MCP client timeouts (ops bots)
+
+External agents (e.g. Grok Bot via `mcp-remote` → `POST http://<host>:8787/mcp`) should:
+
+1. Use the **Settings → Dev Tools → API / MCP Token** value as `Authorization: Bearer …` (same token as REST).
+2. Set a **client timeout of ≥ 30s** (60s is comfortable for health/log tools; raise further for `redeploy_service`).
+3. Treat client `-32001 Request timed out` as “no response in time” — not as an auth error. Auth failures return **401** with JSON-RPC `-32000` immediately. See [docs/mcp.md](./mcp.md).
+
 ## Backups
 
 - Export from dashboard Settings or `GET /backup/export`
