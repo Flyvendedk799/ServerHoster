@@ -1085,7 +1085,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
         try {
           assertWithinServiceDir(ctx, id, p.workingDir);
         } catch {
-          errors.workingDir = "Working directory must stay inside the service's own project directory";
+          errors.workingDir = "Working directory must stay inside the ServerHoster projects directory";
         }
       }
     }

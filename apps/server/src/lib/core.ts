@@ -360,7 +360,9 @@ export function assertPortAvailable(ctx: AppContext, port: number, excludeServic
  * be pointed at another service's clone (or anywhere on disk).
  */
 export function assertWithinServiceDir(ctx: AppContext, serviceId: string, dir: string): void {
-  const base = path.resolve(ctx.config.projectsDir, serviceId);
+  // Allow working_dir to point anywhere inside projectsDir so monorepo services
+  // can share a single clone.
+  const base = path.resolve(ctx.config.projectsDir);
   const real = (p: string): string => {
     try {
       return fs.realpathSync(p);
@@ -371,7 +373,7 @@ export function assertWithinServiceDir(ctx: AppContext, serviceId: string, dir: 
   const realBase = real(base);
   const realTarget = real(path.resolve(dir));
   if (realTarget !== realBase && !realTarget.startsWith(realBase + path.sep)) {
-    const e = new Error("working_dir must stay inside the service's own project directory.") as Error & {
+    const e = new Error("working_dir must stay inside the projects directory.") as Error & {
       statusCode?: number;
     };
     e.statusCode = 400;
