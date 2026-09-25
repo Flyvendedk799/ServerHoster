@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 type Options = {
   /** Called on Escape and (if you wire it) overlay click. */
@@ -27,6 +27,13 @@ const FOCUSABLE =
  */
 export function useModalA11y(ref: RefObject<HTMLElement | null>, opts: Options = {}): void {
   const { onClose, onSubmit, noAutoFocus } = opts;
+  
+  // Keep fresh references to callbacks without triggering effect re-runs
+  const callbacksRef = useRef({ onClose, onSubmit });
+  useEffect(() => {
+    callbacksRef.current = { onClose, onSubmit };
+  }, [onClose, onSubmit]);
+
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
@@ -45,6 +52,7 @@ export function useModalA11y(ref: RefObject<HTMLElement | null>, opts: Options =
     }
 
     const onKeyDown = (e: KeyboardEvent): void => {
+      const { onClose, onSubmit } = callbacksRef.current;
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose?.();
@@ -81,5 +89,8 @@ export function useModalA11y(ref: RefObject<HTMLElement | null>, opts: Options =
 
     node.addEventListener("keydown", onKeyDown);
     return () => node.removeEventListener("keydown", onKeyDown);
-  }, [ref, onClose, onSubmit, noAutoFocus]);
+    // Explicitly do NOT include onClose/onSubmit in the dependency array
+    // so we don't refocus the first element on every render when callbacks change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ref, noAutoFocus]);
 }
