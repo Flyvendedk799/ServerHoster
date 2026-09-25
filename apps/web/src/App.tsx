@@ -20,7 +20,8 @@ import {
   ChevronRight,
   Command,
   Zap,
-  Mail
+  Mail,
+  Shield
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -36,6 +37,7 @@ import { ProxyPage } from "./pages/Proxy";
 import { DomainsPage } from "./pages/Domains";
 import { PlexPage } from "./pages/Plex";
 import { N8nPage } from "./pages/N8n";
+import { LicensePage } from "./pages/License";
 import { SettingsPage } from "./pages/Settings";
 import { NotificationsPage } from "./pages/Notifications";
 import { LoginPage } from "./pages/Login";
@@ -134,6 +136,7 @@ const routeLabels: Record<string, string> = {
   deployments: "Deployments",
   plex: "Plex",
   n8n: "n8n",
+  license: "License",
   notifications: "Alerts",
   settings: "Settings",
   logs: "Logs"
@@ -393,6 +396,15 @@ export function App() {
             {!collapsed && <span>n8n</span>}
           </NavLink>
           <NavLink
+            to="/license"
+            aria-label="License"
+            title={collapsed ? "License" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Shield size={16} />
+            {!collapsed && <span>License</span>}
+          </NavLink>
+          <NavLink
             to="/notifications"
             aria-label="Alerts"
             title={collapsed ? "Alerts" : undefined}
@@ -565,6 +577,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <N8nPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/license"
+                  element={
+                    <ProtectedRoute>
+                      <LicensePage />
                     </ProtectedRoute>
                   }
                 />

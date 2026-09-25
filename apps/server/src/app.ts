@@ -37,6 +37,7 @@ import { registerCloudflareRoutes } from "./routes/cloudflare.js";
 import { registerSaasDomainRoutes } from "./routes/saasDomains.js";
 import { registerPlexRoutes } from "./routes/plex.js";
 import { registerN8nRoutes } from "./routes/n8n.js";
+import { registerLicenseRoutes } from "./routes/license.js";
 import { reconcileLoginTunnelOnBoot } from "./services/cloudflare.js";
 import { usingDefaultSecretKey } from "./security.js";
 import { registerExposureRoutes } from "./routes/exposure.js";
@@ -304,6 +305,7 @@ export async function buildApp(): Promise<AppContext> {
   registerSaasDomainRoutes(ctx);
   registerPlexRoutes(ctx);
   registerN8nRoutes(ctx);
+  registerLicenseRoutes(ctx);
   registerExposureRoutes(ctx);
   registerObservabilityRoutes(ctx);
   registerEmailRoutes(ctx);
@@ -519,6 +521,7 @@ function registerDashboardStatic(app: ReturnType<typeof Fastify>): void {
     "/logs",
     "/plex",
     "/n8n",
+    "/license",
     "/companion",
     COMPANION_MOUNT_PATH
   ];

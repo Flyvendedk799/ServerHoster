@@ -74,6 +74,8 @@ const API_PREFIXES = [
   "/admin",
   "/logs",
   "/plex",
+  "/n8n",
+  "/license",
   "/companion"
 ];
 
@@ -139,6 +141,9 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // succeeds. Guarded by a single-use short-lived code plus a route-level
     // rate limit — see services/companion.ts.
     if (path === "/companion/pair/claim") return;
+    // Public license validation — rate-limited in the route; clients have no
+    // dashboard session. Key material is hashed server-side (see license.ts).
+    if (path === "/license/v1/validate") return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API
     // prefix) are served by registerDashboardStatic without auth. The
     // dashboard then attaches the Bearer token to its API calls.

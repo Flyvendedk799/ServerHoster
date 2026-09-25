@@ -1908,6 +1908,9 @@ export async function applyPostDeployServiceState(
       title: `Deployment succeeded: ${serviceName}`,
       serviceId
     });
+    void import("./n8n.js").then(({ emitN8nEvent }) =>
+      emitN8nEvent(ctx, "deployment.succeeded", { serviceId, serviceName })
+    );
     if (options.startAfterDeploy) {
       try {
         await startService(ctx, serviceId);
@@ -1929,6 +1932,9 @@ export async function applyPostDeployServiceState(
       body: snippet.slice(0, 400),
       serviceId
     });
+    void import("./n8n.js").then(({ emitN8nEvent }) =>
+      emitN8nEvent(ctx, "deployment.failed", { serviceId, serviceName })
+    );
     if (ctx.runtimeProcesses.has(serviceId)) return;
     if (options.startAfterDeploy) {
       try {
