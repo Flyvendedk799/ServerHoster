@@ -593,7 +593,56 @@ const migrations = [
      SELECT MAX(rowid) FROM env_vars GROUP BY service_id, key
    )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_env_vars_service_key ON env_vars(service_id, key)",
-  "CREATE INDEX IF NOT EXISTS idx_companion_pairings_code ON companion_pairings(code_hash)"
+  "CREATE INDEX IF NOT EXISTS idx_companion_pairings_code ON companion_pairings(code_hash)",
+  // --- License Server v1 --------------------------------------------------
+  // Products define seat defaults; keys store only SHA-256 hashes (plaintext
+  // shown once at mint, same pattern as ai_gateway_tokens / companion devices).
+  `CREATE TABLE IF NOT EXISTS license_products (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    max_activations INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS licenses (
+    id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    customer_email TEXT,
+    customer_name TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    expires_at TEXT,
+    max_activations INTEGER,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_licenses_product ON licenses(product_id, created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_licenses_hash ON licenses(key_hash)",
+  `CREATE TABLE IF NOT EXISTS license_activations (
+    id TEXT PRIMARY KEY,
+    license_id TEXT NOT NULL,
+    device_fingerprint TEXT NOT NULL,
+    device_name TEXT,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    deactivated_at TEXT,
+    UNIQUE(license_id, device_fingerprint)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_license_activations_license ON license_activations(license_id, created_at DESC)",
+  `CREATE TABLE IF NOT EXISTS license_audit (
+    id TEXT PRIMARY KEY,
+    license_id TEXT,
+    action TEXT NOT NULL,
+    detail TEXT,
+    source_ip TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_license_audit_created ON license_audit(created_at DESC)"
 ];
 
 for (const statement of migrations) {

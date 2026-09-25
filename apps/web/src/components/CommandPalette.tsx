@@ -13,7 +13,9 @@ import {
   KeyRound,
   Film,
   SunMoon,
-  Zap
+  Zap,
+  Workflow,
+  Shield
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -111,6 +113,20 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       icon: Film,
       category: "Infrastructure",
       action: () => navigate("/plex")
+    },
+    {
+      id: "n8n",
+      name: "n8n Workflows",
+      icon: Workflow,
+      category: "Infrastructure",
+      action: () => navigate("/n8n")
+    },
+    {
+      id: "license",
+      name: "License Server",
+      icon: Shield,
+      category: "Infrastructure",
+      action: () => navigate("/license")
     },
     {
       id: "sets",

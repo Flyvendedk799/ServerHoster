@@ -894,6 +894,9 @@ async function startProcessService(
               : `Exit code ${code}. Restart attempt ${nextCount}/${cfg.max_restarts} in ${backoffMs}ms.`,
             serviceId
           });
+          void import("./n8n.js").then(({ emitN8nEvent }) =>
+            emitN8nEvent(ctx, "service.crashed", { serviceId, serviceName, exitCode: code })
+          );
           setTimeout(() => {
             void withLock(ctx, serviceId, () =>
               startProcessService(ctx, serviceId, { resetRestartCount: false })

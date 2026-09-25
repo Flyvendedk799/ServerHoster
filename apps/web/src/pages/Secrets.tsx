@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   KeyRound,
@@ -319,6 +320,21 @@ export function SecretsPage() {
           Refresh
         </button>
       </header>
+
+      <section className="card" style={{ marginBottom: "1rem" }}>
+        <div className="section-title">
+          <div className="row">
+            <KeyRound size={17} />
+            <h3>LICENSE_SERVER_URL</h3>
+          </div>
+        </div>
+        <p className="muted small">
+          Apps that call LocalSURV License v1 need a base URL. Inject{" "}
+          <code>LICENSE_SERVER_URL</code> from the{" "}
+          <Link to="/license">License</Link> tab (Client integration), or add it as a shared
+          project secret here.
+        </p>
+      </section>
 
       {notice && (
         <section className="alert alert-amber secrets-redeploy-alert" role="status">

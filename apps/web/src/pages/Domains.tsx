@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Globe,
@@ -257,6 +258,16 @@ export function DomainsPage() {
           </p>
         </div>
       </header>
+
+      <section className="card" style={{ marginBottom: "1rem" }}>
+        <p className="muted small" style={{ margin: 0 }}>
+          Need a public hostname for <strong>n8n</strong> or the{" "}
+          <strong>License validate</strong> API? Point Edge Ingress / a tunnel hostname at this
+          control plane (or n8n&apos;s port 5678), then set the Public URL on the{" "}
+          <Link to="/n8n">n8n</Link> or <Link to="/license">License</Link> tab. SaaS Domains below
+          are for tenant-owned custom hostnames on your hosted apps.
+        </p>
+      </section>
 
       {/* ── Readiness / configuration ─────────────────────────────────── */}
       <section className="card" style={{ border: "1px solid var(--border-glow)" }}>
