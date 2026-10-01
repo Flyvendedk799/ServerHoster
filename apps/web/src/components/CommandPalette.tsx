@@ -15,7 +15,8 @@ import {
   SunMoon,
   Zap,
   Workflow,
-  Shield
+  Shield,
+  Inbox
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -83,6 +84,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       category: "Navigation",
       shortcut: "G E",
       action: () => navigate("/secrets")
+    },
+    {
+      id: "emailer",
+      name: "Emailer — conversations",
+      icon: Inbox,
+      category: "Navigation",
+      action: () => navigate("/emailer")
     },
     {
       id: "ai-gateway",
@@ -157,6 +165,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       icon: Server,
       category: `Recent Services • ${service.status}`,
       action: () => navigate("/services")
+    })),
+    ...recentServices.map((service) => ({
+      id: `service-inbox-${service.id}`,
+      name: `${service.name} inbox`,
+      icon: Inbox,
+      category: "Recent Services • Emailer",
+      action: () => navigate(`/emailer?service=${encodeURIComponent(service.id)}`)
     }))
   ];
 

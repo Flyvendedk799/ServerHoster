@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Mail, Server, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Send, RotateCw, Inbox, ArrowRight } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -532,7 +533,12 @@ export function EmailPage() {
               <h3>Receiving (forwarding)</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Forward inbound mail for your domains to an inbox — via Cloudflare Email Routing.
+              Forward inbound mail for your domains to an inbox — via Cloudflare Email Routing. To read and answer mail
+              per service inside LocalSURV instead, use the{" "}
+              <Link className="link" to="/emailer?view=setup">
+                Emailer
+              </Link>
+              .
             </p>
 
             {!rcvConfigured ? (

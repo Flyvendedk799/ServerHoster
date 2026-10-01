@@ -642,7 +642,73 @@ const migrations = [
     source_ip TEXT,
     created_at TEXT NOT NULL
   )`,
-  "CREATE INDEX IF NOT EXISTS idx_license_audit_created ON license_audit(created_at DESC)"
+  "CREATE INDEX IF NOT EXISTS idx_license_audit_created ON license_audit(created_at DESC)",
+  // --- Emailer --------------------------------------------------------------
+  // Two-way conversations. A mailbox is one of OUR addresses (or a `*@domain`
+  // catch-all) optionally owned by a service; inbound mail arrives through the
+  // token-guarded /emailer/inbound endpoint (Cloudflare Email Worker or any
+  // mail-to-webhook relay), outbound goes through the shared SMTP config.
+  // Mailbox API tokens are stored as SHA-256 hashes only, like AI Gateway tokens.
+  `CREATE TABLE IF NOT EXISTS emailer_mailboxes (
+    id TEXT PRIMARY KEY,
+    address TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    service_id TEXT,
+    forward_url TEXT,
+    signature TEXT,
+    api_token_hash TEXT,
+    api_token_prefix TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_emailer_mailboxes_service ON emailer_mailboxes(service_id)",
+  `CREATE TABLE IF NOT EXISTS emailer_threads (
+    id TEXT PRIMARY KEY,
+    mailbox_id TEXT,
+    service_id TEXT,
+    local_address TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    counterparty TEXT NOT NULL,
+    counterparty_name TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    starred INTEGER NOT NULL DEFAULT 0,
+    unread_count INTEGER NOT NULL DEFAULT 0,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    last_direction TEXT,
+    last_snippet TEXT,
+    last_message_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_emailer_threads_last ON emailer_threads(last_message_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_emailer_threads_service ON emailer_threads(service_id, last_message_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_emailer_threads_match ON emailer_threads(counterparty, subject_key)",
+  `CREATE TABLE IF NOT EXISTS emailer_messages (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    mailbox_id TEXT,
+    service_id TEXT,
+    direction TEXT NOT NULL,
+    message_id TEXT,
+    in_reply_to TEXT,
+    references_json TEXT NOT NULL DEFAULT '[]',
+    from_addr TEXT NOT NULL,
+    from_name TEXT,
+    to_json TEXT NOT NULL DEFAULT '[]',
+    cc_json TEXT NOT NULL DEFAULT '[]',
+    subject TEXT NOT NULL,
+    text_body TEXT,
+    html_body TEXT,
+    snippet TEXT,
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error TEXT,
+    source TEXT NOT NULL,
+    forward_status TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_emailer_messages_thread ON emailer_messages(thread_id, created_at)",
+  "CREATE INDEX IF NOT EXISTS idx_emailer_messages_msgid ON emailer_messages(message_id)"
 ];
 
 for (const statement of migrations) {

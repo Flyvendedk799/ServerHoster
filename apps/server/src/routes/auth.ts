@@ -76,6 +76,7 @@ const API_PREFIXES = [
   "/plex",
   "/n8n",
   "/license",
+  "/emailer",
   "/companion"
 ];
 
@@ -144,6 +145,10 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // Public license validation — rate-limited in the route; clients have no
     // dashboard session. Key material is hashed server-side (see license.ts).
     if (path === "/license/v1/validate") return;
+    // Emailer inbound relay (ingest token) and app send API (per-mailbox
+    // token): both verify their own credential inside routes/emailer.ts and
+    // are rate-limited there. Exact paths only — the rest of /emailer is gated.
+    if (path === "/emailer/inbound" || path === "/emailer/api/send") return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API
     // prefix) are served by registerDashboardStatic without auth. The
     // dashboard then attaches the Bearer token to its API calls.

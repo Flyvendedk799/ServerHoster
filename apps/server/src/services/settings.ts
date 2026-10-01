@@ -21,7 +21,11 @@ export const ENCRYPTED_SETTINGS = new Set<string>([
   "email_routing_token",
   "host_memory_alert_webhook_url",
   "host_memory_alert_webhook_auth",
-  "api_token"
+  "api_token",
+  "n8n_encryption_key",
+  "n8n_api_key",
+  "n8n_ai_gateway_token",
+  "emailer_ingest_token"
 ]);
 
 export function getSetting(ctx: AppContext, key: string): string | null {

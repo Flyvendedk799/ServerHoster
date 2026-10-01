@@ -27,7 +27,8 @@ import {
   Database as DatabaseIcon,
   KeyRound,
   Bot,
-  AlertTriangle
+  AlertTriangle,
+  Inbox
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -425,6 +426,9 @@ export function ServicesPage() {
     profile?: ResourceProfileId;
   } | null>(null);
   const [rescanningId, setRescanningId] = useState<string | null>(null);
+  const [mailSummary, setMailSummary] = useState<Map<string, { unread: number; threads: number; mailboxes: number }>>(
+    new Map()
+  );
 
   async function load(): Promise<void> {
     try {
@@ -459,6 +463,12 @@ export function ServicesPage() {
         .catch(() => undefined);
       listResources({ silent: true })
         .then(setResources)
+        .catch(() => undefined);
+      api<{ services: Array<{ service_id: string; unread: number; threads: number; mailboxes: number }> }>(
+        "/emailer/summary",
+        { silent: true }
+      )
+        .then((res) => setMailSummary(new Map(res.services.map((s) => [s.service_id, s]))))
         .catch(() => undefined);
       const logPairs = await Promise.all(
         serviceData.slice(0, 20).map(async (service) => {
@@ -2976,6 +2986,28 @@ export function ServicesPage() {
                                       >
                                         <Terminal size={14} /> Logs
                                       </Link>
+
+                                      {(() => {
+                                        const mail = mailSummary.get(service.id);
+                                        const tip = mail?.mailboxes
+                                          ? `${mail.threads} conversation${mail.threads === 1 ? "" : "s"}${mail.unread ? ` · ${mail.unread} unread` : ""}`
+                                          : "Email conversations for this service";
+                                        return (
+                                          <Link
+                                            to={`/emailer?service=${encodeURIComponent(service.id)}`}
+                                            className="button ghost xsmall"
+                                            aria-label={`Open inbox for ${service.name}`}
+                                            data-tooltip={tip}
+                                          >
+                                            <Inbox size={14} /> Inbox
+                                            {mail && mail.unread > 0 && (
+                                              <span className="nav-badge" style={{ marginLeft: "0.25rem" }}>
+                                                {mail.unread}
+                                              </span>
+                                            )}
+                                          </Link>
+                                        );
+                                      })()}
 
                                       <button
                                         className="ghost xsmall"
