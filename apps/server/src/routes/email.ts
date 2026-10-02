@@ -1,8 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
@@ -20,8 +15,7 @@ import {
   resourceConfig,
   updateResourceRuntimeState
 } from "../services/resources/lifecycle.js";
-
-const execFileP = promisify(execFile);
+import { sendSmtpMail } from "../services/smtp.js";
 
 /**
  * Central email (SMTP) settings + per-project "enable email".
@@ -207,9 +201,9 @@ export function registerEmailRoutes(ctx: AppContext): void {
   });
 
   // Send a test email through the shared SMTP config, so the operator can
-  // verify the credentials from the dashboard without deploying an app. Uses
-  // curl's SMTP client (already on the host) via a mode-600 config file so the
-  // token never lands in the process argv/list.
+  // verify the credentials from the dashboard without deploying an app. The
+  // transport (curl via a mode-600 config) lives in services/smtp.ts and is
+  // shared with the Emailer.
   ctx.app.post("/email/test", async (req) => {
     if (!emailConfigured(ctx)) {
       const e = new Error("Configure SMTP credentials first") as Error & { statusCode?: number };
@@ -217,10 +211,6 @@ export function registerEmailRoutes(ctx: AppContext): void {
       throw e;
     }
     const { to } = z.object({ to: z.string().email() }).parse(req.body);
-    const host = getSetting(ctx, "smtp_host") ?? "";
-    const port = getSetting(ctx, "smtp_port") ?? "465";
-    const user = getSetting(ctx, "smtp_user") ?? "api_token";
-    const pass = getSecretSetting(ctx, "smtp_password") ?? "";
     const from = getSetting(ctx, "smtp_from") ?? "";
     const fromName = getSetting(ctx, "smtp_from_name") ?? "";
     if (!from) {
@@ -228,45 +218,16 @@ export function registerEmailRoutes(ctx: AppContext): void {
       e.statusCode = 400;
       throw e;
     }
-    const fromHeader = fromName ? `${fromName} <${from}>` : from;
-    const message =
-      [
-        `From: ${fromHeader}`,
-        `To: ${to}`,
-        `Subject: ServerHoster SMTP test`,
-        `Content-Type: text/plain; charset=utf-8`,
-        ``,
-        `This is a test email sent from your ServerHoster Email settings.`,
-        `If you received it, the shared SMTP credentials work.`
-      ].join("\r\n") + "\r\n";
-    const suffix = nanoid();
-    const msgPath = path.join(os.tmpdir(), `sh-mailtest-${suffix}.txt`);
-    const cfgPath = path.join(os.tmpdir(), `sh-mailcfg-${suffix}`);
-    const q = (s: string) => s.replace(/"/g, '\\"');
-    const cfg = [
-      `url = "smtps://${q(host)}:${q(port)}"`,
-      `user = "${q(user)}:${q(pass)}"`,
-      `mail-from = "${q(from)}"`,
-      `mail-rcpt = "${q(to)}"`,
-      `upload-file = "${q(msgPath)}"`,
-      `ssl-reqd`,
-      `silent`,
-      `show-error`
-    ].join("\n");
-    try {
-      fs.writeFileSync(msgPath, message, "utf8");
-      fs.writeFileSync(cfgPath, cfg, { mode: 0o600 });
-      await execFileP("curl", ["--config", cfgPath], { timeout: 20000 });
-      return { ok: true, message: `Test email sent to ${to}.` };
-    } catch (err) {
-      const detail = (err as { stderr?: string }).stderr || (err as Error).message || "unknown error";
-      const e = new Error(`Send failed: ${detail}`) as Error & { statusCode?: number };
-      e.statusCode = 502;
-      throw e;
-    } finally {
-      try { fs.unlinkSync(msgPath); } catch { /* ignore */ }
-      try { fs.unlinkSync(cfgPath); } catch { /* ignore */ }
-    }
+    await sendSmtpMail(ctx, {
+      from,
+      fromName,
+      to: [to],
+      subject: "ServerHoster SMTP test",
+      text:
+        "This is a test email sent from your ServerHoster Email settings.\r\n" +
+        "If you received it, the shared SMTP credentials work."
+    });
+    return { ok: true, message: `Test email sent to ${to}.` };
   });
 
   ctx.app.post("/email/apply/:projectId", async (req) => {

@@ -21,7 +21,9 @@ import {
   Command,
   Zap,
   Mail,
-  Shield
+  Shield,
+  Inbox,
+  Workflow
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -30,6 +32,7 @@ import { ServiceLogsPage } from "./pages/ServiceLogs";
 import { DatabasesPage } from "./pages/Databases";
 import { SecretsPage } from "./pages/Secrets";
 import { EmailPage } from "./pages/Email";
+import { EmailerPage } from "./pages/Emailer";
 import { AiGatewayPage } from "./pages/AiGateway";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
@@ -82,6 +85,40 @@ function NotificationBadge() {
   return <span className="nav-badge danger">{count}</span>;
 }
 
+function EmailerUnreadBadge() {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      if (!localStorage.getItem("survhub_token")) return;
+      try {
+        const res = await api<{ unread: number }>("/emailer/summary", { silent: true });
+        if (!cancelled) setCount(res.unread);
+      } catch {
+        /* silent */
+      }
+    };
+    if (!localStorage.getItem("survhub_token")) return;
+    void refresh();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ws = connectLogs((payload) => {
+      const type = typeof payload === "object" && payload ? (payload as { type?: string }).type : undefined;
+      if (type !== "emailer_message" && type !== "emailer_update") return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void refresh(), 400);
+    });
+    const intv = setInterval(() => void refresh(), 60000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      ws.close();
+      clearInterval(intv);
+    };
+  }, []);
+  if (count === 0) return null;
+  return <span className="nav-badge">{count}</span>;
+}
+
 function ServicesCountBadge() {
   const [count, setCount] = useState<number | null>(null);
   useEffect(() => {
@@ -129,6 +166,7 @@ const routeLabels: Record<string, string> = {
   projects: "Projects",
   secrets: "Secrets",
   email: "Email",
+  emailer: "Emailer",
   "ai-gateway": "AI Gateway",
   databases: "Databases",
   proxy: "Edge Ingress",
@@ -333,6 +371,16 @@ export function App() {
             {!collapsed && <span>Email</span>}
           </NavLink>
           <NavLink
+            to="/emailer"
+            aria-label="Emailer"
+            title={collapsed ? "Emailer" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Inbox size={16} />
+            {!collapsed && <span>Emailer</span>}
+            {!collapsed && <EmailerUnreadBadge />}
+          </NavLink>
+          <NavLink
             to="/ai-gateway"
             aria-label="AI Gateway"
             title={collapsed ? "AI Gateway" : undefined}
@@ -392,7 +440,7 @@ export function App() {
             title={collapsed ? "n8n" : undefined}
             className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
           >
-            <Activity size={16} />
+            <Workflow size={16} />
             {!collapsed && <span>n8n</span>}
           </NavLink>
           <NavLink
@@ -521,6 +569,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <EmailPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/emailer"
+                  element={
+                    <ProtectedRoute>
+                      <EmailerPage />
                     </ProtectedRoute>
                   }
                 />

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Bot, Download, Eraser, Search, Terminal } from "lucide-react";
+import { Bot, Download, Eraser, Inbox, Search, Terminal } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs, type LiveStatus } from "../lib/ws";
 import { toast } from "../lib/toast";
@@ -181,6 +181,9 @@ export function ServiceLogsPage() {
             <button className="ghost small" onClick={() => openServiceTerminal(service, "agents")}>
               <Bot size={15} /> Agents
             </button>
+            <Link to={`/emailer?service=${encodeURIComponent(service.id)}`} className="button ghost small">
+              <Inbox size={15} /> Inbox
+            </Link>
           </>
         )}
       </div>
