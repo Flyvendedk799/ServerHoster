@@ -40,9 +40,10 @@ export type SystemHealth = {
     source: "memavailable" | "freemem";
   };
   /**
-   * Host memory attribution. `unaccountedMb` is host used minus
-   * (process services + all Docker containers) — a large remainder is the
-   * signal that something (Supabase, job-desk-*, etc.) is still invisible.
+   * Host memory attribution. `unaccountedMb` = host used − process trees −
+   * all Docker containers. Non-ServerHoster containers (Supabase, job-desk-*)
+   * appear under `topContainers` / `dockerAttributedMb`, not in unaccounted.
+   * Unaccounted is kernel / page-cache / non-docker host processes.
    */
   memoryBreakdown: HostMemoryBreakdown | null;
   loadAvg1m: number;
@@ -109,14 +110,22 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
   if (!docker.ok) warnings.push(`Docker daemon unreachable: ${docker.error ?? "unknown"}`);
   if (memoryUsedPercent >= 90) warnings.push(`Memory is ${memoryUsedPercent}% used`);
   if (memoryBreakdown && memoryBreakdown.unaccountedMb >= 512) {
+    // Do NOT pair this with topContainers — those are already inside
+    // dockerAttributedMb. Unaccounted is leftover non-docker (kernel/cache/etc.).
+    warnings.push(
+      `Unaccounted memory ~${memoryBreakdown.unaccountedMb}MB ` +
+        `(host used − process trees − all Docker; typically kernel/page-cache/non-docker processes)`
+    );
+  }
+  if (memoryBreakdown && memoryBreakdown.topContainers.length > 0) {
     const top = memoryBreakdown.topContainers
       .slice(0, 3)
       .map((c) => `${c.name} ${c.memoryMb}MB`)
       .join(", ");
-    warnings.push(
-      `Unaccounted memory ~${memoryBreakdown.unaccountedMb}MB` +
-        (top ? ` (top containers: ${top})` : "")
-    );
+    // Separate signal: heaviest containers on the host (SH-owned and not).
+    if (memoryBreakdown.dockerAttributedMb >= 512) {
+      warnings.push(`Top Docker memory: ${top} (total docker ~${memoryBreakdown.dockerAttributedMb}MB)`);
+    }
   }
 
   // Score starts at 100, deducts for warnings and severity.

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { normalizeComposeProject } from "./services/compose.js";
 import {
   aggregateProcessTreeSample,
   collectProcessTreePids,
+  composeProjectLabelName,
   computeUnaccountedMb,
   parseDockerMemUsage,
   parseDockerStatsLine,
@@ -74,7 +76,7 @@ test("collectProcessTreePids walks descendants and includes the root", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PSS vs RSS aggregation — do NOT prefer summed RSS when PSS is available
+// PSS vs RSS aggregation — full-tree PSS only; never partial undercount
 // ---------------------------------------------------------------------------
 
 test("parseSmapsRollupPssKb reads the Pss line", () => {
@@ -88,7 +90,7 @@ test("parseSmapsRollupPssKb reads the Pss line", () => {
   assert.equal(parseSmapsRollupPssKb("Rss: 1 kB\n"), null);
 });
 
-test("aggregateProcessTreeSample prefers summed PSS over RSS (avoids shared-page double-count)", () => {
+test("aggregateProcessTreeSample prefers summed PSS over RSS when the FULL tree has PSS", () => {
   const rows: ProcessRow[] = [
     { pid: 100, ppid: 1, cpu: 0.5, rssKb: 2048 },
     { pid: 101, ppid: 100, cpu: 10, rssKb: 100000 },
@@ -109,6 +111,26 @@ test("aggregateProcessTreeSample prefers summed PSS over RSS (avoids shared-page
   assert.equal(sample!.cpu, 18.5);
 });
 
+test("partial PSS must NOT return incomplete sum as authoritative PSS", () => {
+  const rows: ProcessRow[] = [
+    { pid: 100, ppid: 1, cpu: 0.5, rssKb: 2048 },
+    { pid: 101, ppid: 100, cpu: 10, rssKb: 102400 }, // 100 MiB RSS
+    { pid: 102, ppid: 100, cpu: 8, rssKb: 51200 } // missing smaps_rollup
+  ];
+  const byPid = new Map(rows.map((r) => [r.pid, r]));
+  // Only 2 of 3 pids have PSS — returning PSS here would undercount pid 102.
+  const pssByPid = new Map<number, number>([
+    [100, 500],
+    [101, 40000]
+  ]);
+  const sample = aggregateProcessTreeSample([100, 101, 102], byPid, pssByPid);
+  assert.ok(sample);
+  assert.equal(sample!.memorySource, "rss");
+  // Full RSS sum: (2048+102400+51200)/1024 = 152.0
+  assert.equal(sample!.memoryMb, 152);
+  assert.equal(sample!.cpu, 18.5);
+});
+
 test("aggregateProcessTreeSample falls back to RSS and labels memorySource=rss", () => {
   const rows: ProcessRow[] = [
     { pid: 100, ppid: 1, cpu: 1, rssKb: 10240 },
@@ -120,6 +142,25 @@ test("aggregateProcessTreeSample falls back to RSS and labels memorySource=rss",
   assert.equal(sample!.memorySource, "rss");
   assert.equal(sample!.memoryMb, 30); // (10240+20480)/1024
   assert.equal(sample!.cpu, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Compose project label normalization (must match deploy)
+// ---------------------------------------------------------------------------
+
+test("composeProjectLabelName matches deploy normalizeComposeProject", () => {
+  const cases = ["My App/Stack", "__gamehub", "PlayerZero-api", "playerzero_api", "///"];
+  for (const raw of cases) {
+    assert.equal(
+      composeProjectLabelName(raw),
+      normalizeComposeProject(raw),
+      `label name must match deploy normalization for ${JSON.stringify(raw)}`
+    );
+  }
+  // Concrete expectations shared with compose.test.ts
+  assert.equal(composeProjectLabelName("My App/Stack"), "my-app-stack");
+  assert.equal(composeProjectLabelName("__gamehub"), "gamehub");
+  assert.equal(composeProjectLabelName("///"), "compose");
 });
 
 // ---------------------------------------------------------------------------
@@ -136,10 +177,25 @@ test("parseMeminfo prefers MemAvailable", () => {
   assert.equal(parsed!.freeKb, 1000000);
 });
 
-test("computeUnaccountedMb is hostUsed − process − docker (floored at 0)", () => {
-  // 8 GB used, 0.4 GB process services, 3 GB docker → ~4.6 GB unaccounted
+test("computeUnaccountedMb is hostUsed − process − ALL docker (floored at 0)", () => {
+  // Supabase / job-desk are already inside dockerAttributed (3072), not unaccounted.
+  // Unaccounted here (~4.6 GB) is kernel / page-cache / non-docker processes.
   assert.equal(computeUnaccountedMb(8192, 400, 3072), 4720);
   assert.equal(computeUnaccountedMb(100, 80, 50), 0);
+});
+
+test("non-SH containers live in dockerAttributed, not unaccounted", () => {
+  const rows = parseDockerStatsOutput(
+    [
+      "survhub-abc|1.0%|100MiB / 1GiB",
+      "supabase_db_app|2.0%|800MiB / 2GiB",
+      "job-desk-xyz|0.5%|200MiB / 1GiB"
+    ].join("\n")
+  );
+  const dockerMb = sumContainerMemoryMb(rows);
+  assert.equal(dockerMb, 1100);
+  // Host used 2000, process 50, docker 1100 → unaccounted 850 (NOT the supabase/job-desk bytes).
+  assert.equal(computeUnaccountedMb(2000, 50, dockerMb), 850);
 });
 
 test("compose-style sum of container MemUsage does not inflate with limit side", () => {
@@ -151,6 +207,5 @@ test("compose-style sum of container MemUsage does not inflate with limit side",
     ].join("\n")
   );
   assert.equal(sumContainerMemoryMb(rows), 800);
-  // Unaccounted surfaces the invisible remainder after known docker + process.
   assert.equal(computeUnaccountedMb(6000, 100, sumContainerMemoryMb(rows)), 5100);
 });

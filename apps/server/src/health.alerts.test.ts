@@ -194,10 +194,12 @@ test("collectSystemHealth: returns memory percentage", async () => {
   assert.ok(health.memory);
   assert.ok(typeof health.memory.totalMb === "number");
   assert.ok(typeof health.memory.usedMb === "number");
-  // Breakdown may be null if docker stats is unavailable in the test env,
-  // but when present it must expose the unaccounted remainder field.
+  // Breakdown may be null if docker stats is unavailable in the test env.
+  // When present: unaccounted = used − process − all docker; topContainers
+  // is where non-SH stacks (Supabase, job-desk-*) show up.
   if (health.memoryBreakdown) {
     assert.ok(typeof health.memoryBreakdown.unaccountedMb === "number");
+    assert.ok(typeof health.memoryBreakdown.dockerAttributedMb === "number");
     assert.ok(Array.isArray(health.memoryBreakdown.topContainers));
   }
 });

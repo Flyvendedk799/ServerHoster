@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { AppContext } from "../types.js";
 import { broadcast, nowIso, serializeError } from "../lib/core.js";
-import { resolveComposeConfig } from "./compose.js";
+import { normalizeComposeProject, resolveComposeConfig } from "./compose.js";
 
 const exec = promisify(execFile);
 
@@ -36,8 +36,11 @@ const TOP_CONTAINERS_LIMIT = 25;
  *
  * Host breakdown:
  *   Prefer MemAvailable from `/proc/meminfo` for used = total − available.
- *   `unaccountedMb = hostUsedMb − (processServiceMb + allDockerMb)` so a large
- *   remainder surfaces missing consumers (Supabase stacks, ad-hoc job-desk-*, …).
+ *   `unaccountedMb = hostUsedMb − (processServiceMb + allDockerMb)`.
+ *   Non-ServerHoster containers (Supabase, job-desk-*, …) are already inside
+ *   `dockerAttributedMb` / `topContainers` — they are NOT "unaccounted".
+ *   Unaccounted is the leftover: kernel, reclaimable page cache the MemAvailable
+ *   model still counts as used, non-docker host processes, etc.
  */
 
 export type MemorySource = "pss" | "cgroup" | "rss" | "docker_stats";
@@ -79,7 +82,12 @@ export type HostMemoryBreakdown = {
   dockerAttributedMb: number;
   /** processAttributedMb + dockerAttributedMb (no double-count: process services are not containers). */
   measuredMb: number;
-  /** usedMb − measuredMb; large values mean something is still invisible. */
+  /**
+   * usedMb − measuredMb (= processAttributed + dockerAttributed).
+   * Non-ServerHoster containers already sit in dockerAttributed/topContainers;
+   * a large unaccounted figure means kernel / page-cache / non-docker processes,
+   * not "missing Docker stacks".
+   */
   unaccountedMb: number;
   topContainers: ContainerStat[];
   checkedAt: string;
@@ -190,6 +198,10 @@ export function parseMeminfo(content: string): { totalKb: number; availableKb: n
 /**
  * Aggregate tree memory given per-pid PSS (preferred) or RSS fallback.
  * CPU is always the sum of %cpu across the tree.
+ *
+ * PSS is authoritative only when EVERY pid in the tree has a PSS reading.
+ * A partial map would silently undercount missing children — in that case we
+ * fall through to RSS (caller may still prefer cgroup before accepting RSS).
  */
 export function aggregateProcessTreeSample(
   treePids: number[],
@@ -213,16 +225,18 @@ export function aggregateProcessTreeSample(
       pssHits += 1;
     }
   }
-  if (pssHits > 0) {
+  const cpuRounded = Math.round(cpu * 10) / 10;
+  // Require the full tree — partial PSS must not be labeled authoritative.
+  if (pssHits === treePids.length && treePids.length > 0) {
     return {
-      cpu: Math.round(cpu * 10) / 10,
+      cpu: cpuRounded,
       memoryMb: Math.round((pssKb / 1024) * 10) / 10,
       memorySource: "pss"
     };
   }
   if (rssKb <= 0 && cpu === 0) return null;
   return {
-    cpu: Math.round(cpu * 10) / 10,
+    cpu: cpuRounded,
     memoryMb: Math.round((rssKb / 1024) * 10) / 10,
     memorySource: "rss"
   };
@@ -347,13 +361,22 @@ export async function sampleContainer(name: string): Promise<SampleResult | null
   }
 }
 
+/**
+ * Normalize a compose project name the same way deploy does before using it as
+ * a `com.docker.compose.project` label filter (see `normalizeComposeProject`).
+ */
+export function composeProjectLabelName(raw: string): string {
+  return normalizeComposeProject(raw);
+}
+
 /** List running container names for a compose project via the compose project label. */
 export async function listComposeContainerNames(project: string): Promise<string[]> {
+  const normalized = composeProjectLabelName(project);
   try {
     const { stdout } = await exec("docker", [
       "ps",
       "--filter",
-      `label=com.docker.compose.project=${project}`,
+      `label=com.docker.compose.project=${normalized}`,
       "--format",
       "{{.Names}}"
     ]);
@@ -449,8 +472,9 @@ export function readHostMemory(): HostMemoryInfo {
 
 /**
  * Read-only host memory breakdown for health/alerts: MemAvailable-style used,
- * top Docker containers (including ones ServerHoster does not own), and the
- * unaccounted remainder after process + docker attribution.
+ * top Docker containers (including ones ServerHoster does not own — look here
+ * for Supabase / job-desk-*), and unaccountedMb = host used − process trees −
+ * all Docker. Unaccounted is NOT where non-SH containers hide.
  */
 export async function getHostMemoryBreakdown(
   opts: { processAttributedMb?: number; limit?: number } = {}
@@ -489,11 +513,13 @@ export async function getHostMemoryBreakdown(
 
 function resolveComposeProjectName(ctx: AppContext, serviceId: string, stored: string | null | undefined): string | null {
   const fromColumn = stored?.trim();
-  if (fromColumn) return fromColumn;
+  // Always normalize — stored values should already be clean, but a hand-edited
+  // or pre-normalization row must match the label compose actually sets.
+  if (fromColumn) return composeProjectLabelName(fromColumn);
   try {
     const projectPath = path.join(ctx.config.projectsDir, serviceId);
     const cfg = resolveComposeConfig(ctx, serviceId, projectPath);
-    return cfg?.project ?? null;
+    return cfg?.project ? composeProjectLabelName(cfg.project) : null;
   } catch {
     return null;
   }

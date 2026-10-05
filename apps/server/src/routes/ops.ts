@@ -47,7 +47,8 @@ export function registerOpsRoutes(ctx: AppContext): void {
         usedMb: host.usedMb,
         source: host.source
       },
-      // Top containers + unaccounted remainder (host used − process − all docker).
+      // topContainers / dockerAttributed include non-SH stacks (Supabase, job-desk-*).
+      // unaccountedMb = host used − process trees − all Docker (kernel/cache/non-docker).
       memoryBreakdown: breakdown,
       loadAvg: os.loadavg(),
       cpus: os.cpus().length,

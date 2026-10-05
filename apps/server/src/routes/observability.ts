@@ -10,7 +10,7 @@ import { dockerUnavailableMessage } from "../lib/core.js";
 export function registerObservabilityRoutes(ctx: AppContext): void {
   ctx.app.get("/metrics/services", async () => getLatestMetrics(ctx));
 
-  /** Host memory attribution: MemAvailable used, top Docker containers, unaccounted remainder. */
+  /** Host memory: MemAvailable used, top Docker (incl. non-SH), unaccounted = used − process − all docker. */
   ctx.app.get("/metrics/host-memory", async () => getHostMemoryBreakdown());
 
   ctx.app.get("/metrics/services/:id", async (req) => {
