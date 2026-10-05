@@ -6,6 +6,11 @@ import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { getSetting, getSecretSetting } from "./settings.js";
 import { serializeError, withTimeout } from "../lib/core.js";
+import {
+  getHostMemoryBreakdown,
+  readHostMemory,
+  type HostMemoryBreakdown
+} from "./metrics.js";
 
 const exec = promisify(execFile);
 
@@ -27,6 +32,19 @@ export type SystemHealth = {
   dockerOk: boolean;
   dockerError: string | null;
   memoryUsedPercent: number;
+  /** Prefer MemAvailable-based used when present; falls back to os.freemem(). */
+  memory: {
+    totalMb: number;
+    availableMb: number | null;
+    usedMb: number;
+    source: "memavailable" | "freemem";
+  };
+  /**
+   * Host memory attribution. `unaccountedMb` is host used minus
+   * (process services + all Docker containers) — a large remainder is the
+   * signal that something (Supabase, job-desk-*, etc.) is still invisible.
+   */
+  memoryBreakdown: HostMemoryBreakdown | null;
   loadAvg1m: number;
   score: number;
   warnings: string[];
@@ -62,12 +80,26 @@ async function checkDocker(ctx: AppContext): Promise<{ ok: boolean; error: strin
 
 export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth> {
   const dataDir = ctx.config.dataRoot ?? os.homedir();
-  const [disk, docker] = await Promise.all([
+  const [disk, docker, memoryBreakdown] = await Promise.all([
     checkDisk(fs.existsSync(dataDir) ? dataDir : os.homedir()),
-    checkDocker(ctx)
+    checkDocker(ctx),
+    withTimeout(getHostMemoryBreakdown(), HEALTH_PROBE_TIMEOUT_MS, "host memory breakdown").catch(
+      () => null
+    )
   ]);
+  const hostMem = memoryBreakdown
+    ? {
+        totalMb: memoryBreakdown.totalMb,
+        availableMb: memoryBreakdown.availableMb,
+        usedMb: memoryBreakdown.usedMb,
+        source: memoryBreakdown.hostMemorySource
+      }
+    : (() => {
+        const m = readHostMemory();
+        return { totalMb: m.totalMb, availableMb: m.availableMb, usedMb: m.usedMb, source: m.source };
+      })();
   const memoryUsedPercent =
-    os.totalmem() > 0 ? Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 10000) / 100 : 0;
+    hostMem.totalMb > 0 ? Math.round((hostMem.usedMb / hostMem.totalMb) * 10000) / 100 : 0;
   const loadAvg1m = os.loadavg()[0] ?? 0;
 
   const warnings: string[] = [];
@@ -76,6 +108,16 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
   }
   if (!docker.ok) warnings.push(`Docker daemon unreachable: ${docker.error ?? "unknown"}`);
   if (memoryUsedPercent >= 90) warnings.push(`Memory is ${memoryUsedPercent}% used`);
+  if (memoryBreakdown && memoryBreakdown.unaccountedMb >= 512) {
+    const top = memoryBreakdown.topContainers
+      .slice(0, 3)
+      .map((c) => `${c.name} ${c.memoryMb}MB`)
+      .join(", ");
+    warnings.push(
+      `Unaccounted memory ~${memoryBreakdown.unaccountedMb}MB` +
+        (top ? ` (top containers: ${top})` : "")
+    );
+  }
 
   // Score starts at 100, deducts for warnings and severity.
   let score = 100;
@@ -91,6 +133,8 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
     dockerOk: docker.ok,
     dockerError: docker.error,
     memoryUsedPercent,
+    memory: hostMem,
+    memoryBreakdown,
     loadAvg1m,
     score,
     warnings,
@@ -115,6 +159,10 @@ async function postMemoryAlertWebhook(
     hostname: os.hostname(),
     checkedAt: health.checkedAt,
     loadAvg1m: health.loadAvg1m,
+    memory: health.memory,
+    unaccountedMb: health.memoryBreakdown?.unaccountedMb ?? null,
+    measuredMb: health.memoryBreakdown?.measuredMb ?? null,
+    topContainers: (health.memoryBreakdown?.topContainers ?? []).slice(0, 10),
     disk: health.disk
       ? {
           path: health.disk.path,
