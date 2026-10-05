@@ -468,6 +468,7 @@ const READ_ALLOW_PATTERNS: RegExp[] = [
   /^\/health$/,
   /^\/health\/(system|docker)$/,
   /^\/metrics\/system$/,
+  /^\/metrics\/host-memory$/,
   /^\/metrics\/services(\/[^/]+)?$/
 ];
 

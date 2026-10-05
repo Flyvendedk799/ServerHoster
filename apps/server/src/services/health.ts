@@ -6,6 +6,11 @@ import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { getSetting, getSecretSetting } from "./settings.js";
 import { serializeError, withTimeout } from "../lib/core.js";
+import {
+  getHostMemoryBreakdown,
+  readHostMemory,
+  type HostMemoryBreakdown
+} from "./metrics.js";
 
 const exec = promisify(execFile);
 
@@ -27,6 +32,20 @@ export type SystemHealth = {
   dockerOk: boolean;
   dockerError: string | null;
   memoryUsedPercent: number;
+  /** Prefer MemAvailable-based used when present; falls back to os.freemem(). */
+  memory: {
+    totalMb: number;
+    availableMb: number | null;
+    usedMb: number;
+    source: "memavailable" | "freemem";
+  };
+  /**
+   * Host memory attribution. `unaccountedMb` = host used − process trees −
+   * all Docker containers. Non-ServerHoster containers (Supabase, job-desk-*)
+   * appear under `topContainers` / `dockerAttributedMb`, not in unaccounted.
+   * Unaccounted is kernel / page-cache / non-docker host processes.
+   */
+  memoryBreakdown: HostMemoryBreakdown | null;
   loadAvg1m: number;
   score: number;
   warnings: string[];
@@ -62,12 +81,26 @@ async function checkDocker(ctx: AppContext): Promise<{ ok: boolean; error: strin
 
 export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth> {
   const dataDir = ctx.config.dataRoot ?? os.homedir();
-  const [disk, docker] = await Promise.all([
+  const [disk, docker, memoryBreakdown] = await Promise.all([
     checkDisk(fs.existsSync(dataDir) ? dataDir : os.homedir()),
-    checkDocker(ctx)
+    checkDocker(ctx),
+    withTimeout(getHostMemoryBreakdown(), HEALTH_PROBE_TIMEOUT_MS, "host memory breakdown").catch(
+      () => null
+    )
   ]);
+  const hostMem = memoryBreakdown
+    ? {
+        totalMb: memoryBreakdown.totalMb,
+        availableMb: memoryBreakdown.availableMb,
+        usedMb: memoryBreakdown.usedMb,
+        source: memoryBreakdown.hostMemorySource
+      }
+    : (() => {
+        const m = readHostMemory();
+        return { totalMb: m.totalMb, availableMb: m.availableMb, usedMb: m.usedMb, source: m.source };
+      })();
   const memoryUsedPercent =
-    os.totalmem() > 0 ? Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 10000) / 100 : 0;
+    hostMem.totalMb > 0 ? Math.round((hostMem.usedMb / hostMem.totalMb) * 10000) / 100 : 0;
   const loadAvg1m = os.loadavg()[0] ?? 0;
 
   const warnings: string[] = [];
@@ -76,6 +109,24 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
   }
   if (!docker.ok) warnings.push(`Docker daemon unreachable: ${docker.error ?? "unknown"}`);
   if (memoryUsedPercent >= 90) warnings.push(`Memory is ${memoryUsedPercent}% used`);
+  if (memoryBreakdown && memoryBreakdown.unaccountedMb >= 512) {
+    // Do NOT pair this with topContainers — those are already inside
+    // dockerAttributedMb. Unaccounted is leftover non-docker (kernel/cache/etc.).
+    warnings.push(
+      `Unaccounted memory ~${memoryBreakdown.unaccountedMb}MB ` +
+        `(host used − process trees − all Docker; typically kernel/page-cache/non-docker processes)`
+    );
+  }
+  if (memoryBreakdown && memoryBreakdown.topContainers.length > 0) {
+    const top = memoryBreakdown.topContainers
+      .slice(0, 3)
+      .map((c) => `${c.name} ${c.memoryMb}MB`)
+      .join(", ");
+    // Separate signal: heaviest containers on the host (SH-owned and not).
+    if (memoryBreakdown.dockerAttributedMb >= 512) {
+      warnings.push(`Top Docker memory: ${top} (total docker ~${memoryBreakdown.dockerAttributedMb}MB)`);
+    }
+  }
 
   // Score starts at 100, deducts for warnings and severity.
   let score = 100;
@@ -91,6 +142,8 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
     dockerOk: docker.ok,
     dockerError: docker.error,
     memoryUsedPercent,
+    memory: hostMem,
+    memoryBreakdown,
     loadAvg1m,
     score,
     warnings,
@@ -115,6 +168,10 @@ async function postMemoryAlertWebhook(
     hostname: os.hostname(),
     checkedAt: health.checkedAt,
     loadAvg1m: health.loadAvg1m,
+    memory: health.memory,
+    unaccountedMb: health.memoryBreakdown?.unaccountedMb ?? null,
+    measuredMb: health.memoryBreakdown?.measuredMb ?? null,
+    topContainers: (health.memoryBreakdown?.topContainers ?? []).slice(0, 10),
     disk: health.disk
       ? {
           path: health.disk.path,

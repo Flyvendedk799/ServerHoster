@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { getLatestMetrics, getServiceSparkline, snapshotDeployKpis } from "../services/metrics.js";
+import { getLatestMetrics, getServiceSparkline, snapshotDeployKpis, getHostMemoryBreakdown } from "../services/metrics.js";
 import { listNotifications, markAllRead, markRead, unreadCount } from "../services/notifications.js";
 import { collectSystemHealth } from "../services/health.js";
 import { setSetting } from "../services/settings.js";
@@ -9,6 +9,9 @@ import { dockerUnavailableMessage } from "../lib/core.js";
 
 export function registerObservabilityRoutes(ctx: AppContext): void {
   ctx.app.get("/metrics/services", async () => getLatestMetrics(ctx));
+
+  /** Host memory: MemAvailable used, top Docker (incl. non-SH), unaccounted = used − process − all docker. */
+  ctx.app.get("/metrics/host-memory", async () => getHostMemoryBreakdown());
 
   ctx.app.get("/metrics/services/:id", async (req) => {
     const { id } = req.params as { id: string };

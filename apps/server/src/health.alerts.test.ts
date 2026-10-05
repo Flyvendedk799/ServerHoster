@@ -183,12 +183,23 @@ test("memory alert settings: webhook URL must be valid", async () => {
 test("collectSystemHealth: returns memory percentage", async () => {
   const ctx = setupTestCtx();
   ctx.docker.ping = async () => {};
-  
+
   const health = await collectSystemHealth(ctx);
-  
+
   assert.ok(typeof health.memoryUsedPercent === "number");
   assert.ok(health.memoryUsedPercent >= 0);
   assert.ok(health.memoryUsedPercent <= 100);
   assert.ok(health.checkedAt);
   assert.ok(typeof health.loadAvg1m === "number");
+  assert.ok(health.memory);
+  assert.ok(typeof health.memory.totalMb === "number");
+  assert.ok(typeof health.memory.usedMb === "number");
+  // Breakdown may be null if docker stats is unavailable in the test env.
+  // When present: unaccounted = used − process − all docker; topContainers
+  // is where non-SH stacks (Supabase, job-desk-*) show up.
+  if (health.memoryBreakdown) {
+    assert.ok(typeof health.memoryBreakdown.unaccountedMb === "number");
+    assert.ok(typeof health.memoryBreakdown.dockerAttributedMb === "number");
+    assert.ok(Array.isArray(health.memoryBreakdown.topContainers));
+  }
 });

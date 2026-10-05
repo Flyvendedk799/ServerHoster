@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { buildHttpsTrustGuide, generateHttpsCerts, getInstallScripts } from "../services/ops.js";
+import { getHostMemoryBreakdown, readHostMemory } from "../services/metrics.js";
 
 const exec = promisify(execFile);
 
@@ -27,14 +28,33 @@ export function registerOpsRoutes(ctx: AppContext): void {
     };
   });
 
-  ctx.app.get("/metrics/system", async () => ({
-    uptime: os.uptime(),
-    totalMemory: os.totalmem(),
-    freeMemory: os.freemem(),
-    loadAvg: os.loadavg(),
-    cpus: os.cpus().length,
-    platform: os.platform()
-  }));
+  ctx.app.get("/metrics/system", async () => {
+    const host = readHostMemory();
+    let breakdown = null;
+    try {
+      breakdown = await getHostMemoryBreakdown();
+    } catch {
+      breakdown = null;
+    }
+    return {
+      uptime: os.uptime(),
+      totalMemory: os.totalmem(),
+      freeMemory: os.freemem(),
+      // MemAvailable-style figures when /proc/meminfo is present.
+      memory: {
+        totalMb: host.totalMb,
+        availableMb: host.availableMb,
+        usedMb: host.usedMb,
+        source: host.source
+      },
+      // topContainers / dockerAttributed include non-SH stacks (Supabase, job-desk-*).
+      // unaccountedMb = host used − process trees − all Docker (kernel/cache/non-docker).
+      memoryBreakdown: breakdown,
+      loadAvg: os.loadavg(),
+      cpus: os.cpus().length,
+      platform: os.platform()
+    };
+  });
 
   ctx.app.get("/service-templates", async () => ({
     linux: `[Unit]
