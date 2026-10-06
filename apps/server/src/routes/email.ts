@@ -16,16 +16,18 @@ import {
   updateResourceRuntimeState
 } from "../services/resources/lifecycle.js";
 import { sendSmtpMail } from "../services/smtp.js";
+import { resolveEmailBranding } from "../services/emailBranding.js";
 
 /**
  * Central email (SMTP) settings + per-project "enable email".
  *
- * The shared SMTP credentials (e.g. Cloudflare Email Service) are stored ONCE in
- * the `settings` table — the password encrypted at rest via setSecretSetting.
- * "Enable email" on a project copies them into that project's `project_env_vars`
- * (SMTP_PASSWORD encrypted, like every other project secret), which the runtime
- * layer injects into every service in the project. Callers must redeploy/restart
- * the project's services for the new env to take effect.
+ * The shared SMTP *transport* credentials (e.g. Cloudflare Email Service) are
+ * stored ONCE in the `settings` table — the password encrypted at rest via
+ * setSecretSetting. Branding (SMTP_FROM / SMTP_FROM_NAME) is per project:
+ * "Enable email" copies the shared host/user/password plus that app's own From
+ * + From name into `project_env_vars`. Global smtp_from / smtp_from_name remain
+ * as a fallback for new enables, the SMTP test, and platform mail. Callers must
+ * redeploy/restart the project's services for the new env to take effect.
  *
  * Env alone only reaches apps that read SMTP_* themselves. Apps backed by a
  * local Supabase stack send their auth mail from GoTrue, configured out of
@@ -127,9 +129,14 @@ export function registerEmailRoutes(ctx: AppContext): void {
     const projects = ctx.db
       .prepare("SELECT id, name FROM projects ORDER BY name ASC")
       .all() as Array<{ id: string; name: string }>;
+    const defaultFrom = getSetting(ctx, "smtp_from") ?? "";
+    const defaultFromName = getSetting(ctx, "smtp_from_name") ?? "";
     return projects.map((pr) => {
       const fromRow = ctx.db
         .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_FROM' LIMIT 1")
+        .get(pr.id) as { value: string } | undefined;
+      const fromNameRow = ctx.db
+        .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_FROM_NAME' LIMIT 1")
         .get(pr.id) as { value: string } | undefined;
       const applied = Boolean(
         ctx.db
@@ -149,7 +156,23 @@ export function registerEmailRoutes(ctx: AppContext): void {
           smtp_configured: audit ? audit.smtp_configured : null
         };
       });
-      return { id: pr.id, name: pr.name, applied, from: fromRow?.value ?? "", supabase_stacks: supabaseStacks };
+      // Branding is per app. For apps not yet enabled (or missing a stored
+      // value), surface the global fallback so the UI can seed the inputs —
+      // enabling then persists that app's own copy.
+      const branding = resolveEmailBranding({
+        existingFrom: fromRow?.value,
+        existingFromName: fromNameRow?.value,
+        defaultFrom,
+        defaultFromName
+      });
+      return {
+        id: pr.id,
+        name: pr.name,
+        applied,
+        from: branding.from,
+        from_name: branding.fromName,
+        supabase_stacks: supabaseStacks
+      };
     });
   });
 
@@ -240,14 +263,32 @@ export function registerEmailRoutes(ctx: AppContext): void {
       throw e;
     }
     const body = z.object({ from: z.string().optional(), fromName: z.string().optional() }).parse(req.body ?? {});
+    const existingFrom = (
+      ctx.db
+        .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_FROM' LIMIT 1")
+        .get(projectId) as { value?: string } | undefined
+    )?.value;
+    const existingFromName = (
+      ctx.db
+        .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_FROM_NAME' LIMIT 1")
+        .get(projectId) as { value?: string } | undefined
+    )?.value;
+    const branding = resolveEmailBranding({
+      from: body.from,
+      fromName: body.fromName,
+      existingFrom,
+      existingFromName,
+      defaultFrom: getSetting(ctx, "smtp_from"),
+      defaultFromName: getSetting(ctx, "smtp_from_name")
+    });
     const vals: Array<[string, string, boolean]> = [
       ["EMAIL_ENABLED", "true", false],
       ["SMTP_HOST", getSetting(ctx, "smtp_host") ?? "", false],
       ["SMTP_PORT", getSetting(ctx, "smtp_port") ?? "465", false],
       ["SMTP_USER", getSetting(ctx, "smtp_user") ?? "api_token", false],
       ["SMTP_PASSWORD", getSecretSetting(ctx, "smtp_password") ?? "", true],
-      ["SMTP_FROM", (body.from && body.from.trim()) || getSetting(ctx, "smtp_from") || "", false],
-      ["SMTP_FROM_NAME", (body.fromName && body.fromName.trim()) || getSetting(ctx, "smtp_from_name") || "", false]
+      ["SMTP_FROM", branding.from, false],
+      ["SMTP_FROM_NAME", branding.fromName, false]
     ];
     const up = ctx.db.prepare(
       "INSERT INTO project_env_vars (id, project_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?) " +
@@ -267,8 +308,8 @@ export function registerEmailRoutes(ctx: AppContext): void {
       host: getSetting(ctx, "smtp_host") ?? "",
       port: Number(getSetting(ctx, "smtp_port") ?? "465") || 465,
       user: getSetting(ctx, "smtp_user") ?? "api_token",
-      from: (body.from && body.from.trim()) || getSetting(ctx, "smtp_from") || "",
-      fromName: (body.fromName && body.fromName.trim()) || getSetting(ctx, "smtp_from_name") || ""
+      from: branding.from,
+      fromName: branding.fromName
     };
     const stacks = projectSupabaseStacks(ctx, projectId).map((stack) => {
       if (!stack.public_origin) {
