@@ -75,7 +75,6 @@ function setupTestCtx(): AppContext {
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     activeDeploys: new Set(),
-    manuallyStopped: new Set(),
     shutdownTasks: []
   };
   return ctx;
