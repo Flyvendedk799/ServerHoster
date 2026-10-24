@@ -919,7 +919,6 @@ export function registerServiceRoutes(ctx: AppContext): void {
     }
 
     ctx.runtimeProcesses.delete(id);
-    ctx.manuallyStopped.delete(id);
     ctx.actionLocks.delete(id);
     ctx.db.prepare("DELETE FROM services WHERE id = ?").run(id);
     return { ok: true };

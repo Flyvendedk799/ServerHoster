@@ -129,7 +129,6 @@ export async function buildApp(): Promise<AppContext> {
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     activeDeploys: new Set(),
-    manuallyStopped: new Set(),
     config,
     shutdownTasks: []
   });
@@ -247,7 +246,6 @@ export async function buildApp(): Promise<AppContext> {
     runtimeProcesses: new Map(),
     actionLocks: new Set(),
     activeDeploys: new Set(),
-    manuallyStopped: new Set(),
     config,
     shutdownTasks: []
   };

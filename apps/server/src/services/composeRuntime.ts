@@ -212,9 +212,6 @@ export async function startComposeService(
     stage: "starting",
     composeProject: cfg.project
   });
-  // Mirror the process and docker paths: a (re)start clears any lingering stop
-  // intent, so a prior stop cannot leave a stale manuallyStopped entry behind.
-  ctx.manuallyStopped.delete(serviceId);
 
   const result = await composeUp(ctx, serviceId, cfg, env, (chunk) => {
     const text = chunk.trimEnd();
