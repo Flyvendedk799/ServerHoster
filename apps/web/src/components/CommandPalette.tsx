@@ -14,6 +14,7 @@ import {
   Film,
   SunMoon,
   Zap,
+  Wallet,
   Workflow,
   Shield,
   Inbox
@@ -99,6 +100,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       category: "Navigation",
       shortcut: "G A",
       action: () => navigate("/ai-gateway")
+    },
+    {
+      id: "ai-usage",
+      name: "AI Usage — spend and stats per app",
+      icon: Wallet,
+      category: "Navigation",
+      action: () => navigate("/ai-usage")
     },
     {
       id: "deps",

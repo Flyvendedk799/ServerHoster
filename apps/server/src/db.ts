@@ -541,6 +541,43 @@ const migrations = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_ai_gateway_usage_created ON ai_gateway_usage(created_at DESC)",
   "CREATE INDEX IF NOT EXISTS idx_ai_gateway_usage_token ON ai_gateway_usage(token_id, created_at DESC)",
+  // --- AI API usage reported by hosted apps ----------------------------------
+  // One ingest token per service (only the SHA-256 hash is stored; the plain
+  // value lives in the service's encrypted env so the app can send it).
+  `CREATE TABLE IF NOT EXISTS ai_usage_tokens (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  )`,
+  // Per-call metering, metadata only: never prompt or completion text.
+  // cost_micro_usd is NULL when the model has no known price (cost_source
+  // 'unpriced'), so a missing price is visible instead of being counted as 0.
+  `CREATE TABLE IF NOT EXISTS ai_usage_events (
+    id TEXT PRIMARY KEY,
+    service_id TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    feature TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_micro_usd INTEGER,
+    cost_source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    request_ref TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created ON ai_usage_events(created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_ai_usage_events_service ON ai_usage_events(service_id, created_at DESC)",
+  // Idempotent reporting: an app that retries a report must not double count.
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_ref ON ai_usage_events(service_id, request_ref) WHERE request_ref IS NOT NULL",
   // A companion service (auto-created from an extra root Dockerfile — e.g. a
   // worker) inherits its env from a primary tier at deploy time via this link,
   // rather than getting a one-time snapshot copy. NULL for normal services.

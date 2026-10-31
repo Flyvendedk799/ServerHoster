@@ -149,6 +149,9 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // token): both verify their own credential inside routes/emailer.ts and
     // are rate-limited there. Exact paths only — the rest of /emailer is gated.
     if (path === "/emailer/inbound" || path === "/emailer/api/send") return;
+    // Hosted apps report AI usage with their per-service token (verified in
+    // routes/aiUsage.ts). Exact path only — the rest of /api/ai-usage is gated.
+    if (path === "/api/ai-usage/report" && (req.method ?? "GET").toUpperCase() === "POST") return;
     // Dashboard HTML, JS, CSS, and SPA routes (anything NOT under an API
     // prefix) are served by registerDashboardStatic without auth. The
     // dashboard then attaches the Bearer token to its API calls.

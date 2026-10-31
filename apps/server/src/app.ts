@@ -50,6 +50,7 @@ import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAiGatewayRoutes } from "./routes/aiGateway.js";
+import { registerAiUsageRoutes } from "./routes/aiUsage.js";
 import { getGatewayConfig, primeCredentialRedaction } from "./services/aiGateway.js";
 import { startInferenceServer, stopInferenceServer } from "./services/aiGatewayServer.js";
 import { isExternalMode, primeExternalRedaction } from "./services/aiGatewayExternal.js";
@@ -313,6 +314,7 @@ export async function buildApp(): Promise<AppContext> {
   registerAgentRoutes(ctx);
   registerMcpRoutes(ctx);
   registerAiGatewayRoutes(ctx);
+  registerAiUsageRoutes(ctx);
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
