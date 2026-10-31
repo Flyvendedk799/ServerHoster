@@ -28,6 +28,8 @@ type ProjectRow = {
   name: string;
   applied: boolean;
   from: string;
+  /** Per-app display name; falls back to the global default when unset. */
+  from_name: string;
   supabase_stacks?: SupabaseStackRow[];
 };
 
@@ -78,6 +80,7 @@ export function EmailPage() {
   });
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [appFrom, setAppFrom] = useState<Record<string, string>>({});
+  const [appFromName, setAppFromName] = useState<Record<string, string>>({});
   const [testTo, setTestTo] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -109,6 +112,7 @@ export function EmailPage() {
       });
       setProjects(p);
       setAppFrom(Object.fromEntries(p.map((pr) => [pr.id, pr.from || s.from || ""])));
+      setAppFromName(Object.fromEntries(p.map((pr) => [pr.id, pr.from_name || s.from_name || ""])));
       if (!testTo && s.from) setTestTo(s.from);
     } catch {
       /* silent */
@@ -175,7 +179,12 @@ export function EmailPage() {
     try {
       const res = (await api(`/email/apply/${id}`, {
         method: "POST",
-        body: JSON.stringify({ from: appFrom[id]?.trim() || undefined })
+        body: JSON.stringify({
+          from: appFrom[id]?.trim() || undefined,
+          // Always send fromName (even "") so a cleared display name persists
+          // and an Update never silently reverts to the global shared name.
+          fromName: appFromName[id] ?? ""
+        })
       })) as ApplyResult;
       // A flat success toast here is what made a missing mail path in the app
       // look like broken infrastructure. When nothing can consume the env, the
@@ -344,7 +353,7 @@ export function EmailPage() {
       <header className="page-header">
         <div className="title-group">
           <h2>Email</h2>
-          <p className="muted">Shared SMTP for your apps — configure once, enable per app.</p>
+          <p className="muted">Shared SMTP transport for your apps — branding (From + name) is set per app.</p>
         </div>
       </header>
 
@@ -364,7 +373,7 @@ export function EmailPage() {
               <h3>SMTP credentials</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Shared outbound SMTP (e.g. Cloudflare Email Service) reused by every app you enable below.
+              Shared outbound SMTP transport (e.g. Cloudflare Email Service). Host, port, user, and password are reused by every app; each app sets its own From branding below.
             </p>
 
             <div className="form-row">
@@ -396,12 +405,12 @@ export function EmailPage() {
 
             <div className="form-row">
               <div className="form-group">
-                <label className="tiny uppercase font-bold muted">Default From</label>
-                <input value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} placeholder="noreply@yourdomain.com" />
+                <label className="tiny uppercase font-bold muted">Default From (fallback)</label>
+                <input value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} placeholder="noreply@yourdomain.com" title="Used for the SMTP test and as the seed when enabling an app that has no From yet" />
               </div>
               <div className="form-group">
-                <label className="tiny uppercase font-bold muted">From name</label>
-                <input value={form.fromName} onChange={(e) => setForm({ ...form, fromName: e.target.value })} placeholder="Your App" />
+                <label className="tiny uppercase font-bold muted">Default From name (fallback)</label>
+                <input value={form.fromName} onChange={(e) => setForm({ ...form, fromName: e.target.value })} placeholder="Your App" title="Fallback display name for new apps and the SMTP test — each enabled app keeps its own" />
               </div>
             </div>
 
@@ -433,7 +442,7 @@ export function EmailPage() {
               <h3>Apps</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Enable email on an app to inject the SMTP env vars into it. Each app can send from its own address (defaults to the shared From). Redeploy/restart the app's services to apply.
+              Enable email on an app to inject the SMTP env vars into it. Set each app's From address and From name (branding) here — they are stored per app, not shared. New apps seed from the defaults above. Redeploy/restart the app's services to apply.
             </p>
 
             {!configured && (
@@ -462,6 +471,16 @@ export function EmailPage() {
                       placeholder="from@app-domain.com"
                       disabled={!configured || busy === `app-${pr.id}`}
                       title="From address for this app"
+                      aria-label={`From address for ${pr.name}`}
+                    />
+                    <input
+                      className="email-from-input email-from-name-input"
+                      value={appFromName[pr.id] ?? ""}
+                      onChange={(e) => setAppFromName((m) => ({ ...m, [pr.id]: e.target.value }))}
+                      placeholder="App display name"
+                      disabled={!configured || busy === `app-${pr.id}`}
+                      title="From name (branding) for this app"
+                      aria-label={`From name for ${pr.name}`}
                     />
                     <button
                       className="button small"
@@ -655,7 +674,8 @@ export function EmailPage() {
         .email-page .email-app-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; padding: 0.6rem 0.75rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-sunken); }
         .email-page .email-conf { width: 100%; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 0.35rem; }
         .email-page .email-conf-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
-        .email-page .email-from-input { font-size: 0.8rem; padding: 0.3rem 0.5rem; width: 220px; max-width: 46vw; }
+        .email-page .email-from-input { font-size: 0.8rem; padding: 0.3rem 0.5rem; width: 200px; max-width: 42vw; }
+        .email-page .email-from-name-input { width: 160px; max-width: 36vw; }
         .email-page .email-test { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); }
         .email-page .badge-ok { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.7rem; font-weight: 700; color: var(--success); background: var(--accent-soft); padding: 0.15rem 0.45rem; border-radius: var(--radius-md); }
         .email-page .badge-warn { display: inline-flex; align-items: center; font-size: 0.65rem; font-weight: 700; color: #b45309; background: rgba(180,83,9,0.14); padding: 0.1rem 0.4rem; border-radius: var(--radius-md); white-space: nowrap; }

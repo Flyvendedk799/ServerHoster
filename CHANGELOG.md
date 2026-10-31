@@ -21,6 +21,8 @@ All notable changes to LocalSURV are documented here. Format based on [Keep a Ch
 
 ### Fixed
 
+- **Email tab branding was shared across every app.** From address + From name are now edited and stored per enabled app (`SMTP_FROM` / `SMTP_FROM_NAME` in that project's env). The global values remain as a fallback for new enables, the SMTP test, and platform mail — existing installs need no data migration. Updating one app no longer silently rewrites its From name from the shared default.
+
 - **n8n workflow listing never authenticated.** The add-on injected an `N8N_API_KEY` env var that n8n does not read; the Public API key has to be created in n8n (Settings → n8n API). The tab now asks for that key, verifies it against the API before storing it, and always calls the API on loopback. Login over plain http (no https public URL) works again via `N8N_SECURE_COOKIE=false`; `N8N_PROXY_HOPS=1` is set behind a public URL.
 - **Global MCP reliability for external agents.** `POST /mcp` now uses Streamable HTTP **JSON responses** (stateless), bounds Docker/disk probes and tool work so ops bots no longer hang until client `-32001`, and returns auth failures as fast **401** with JSON-RPC `-32000` (no longer reuses the timeout error code). See [docs/mcp.md](docs/mcp.md).
 

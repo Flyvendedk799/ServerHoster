@@ -625,61 +625,63 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
 }
 
-/**
- * SIGKILL a runtime immediately — no SIGTERM grace period. Used by the
- * force-stop path to recover a process that ignored or stalled on a graceful
- * stop. Kills the whole process group when we have one, else the direct child.
- */
-function killRuntimeProcessNow(runtime: {
-  process: { kill(signal?: NodeJS.Signals): boolean };
+type StoppableRuntime = {
+  process: {
+    kill(signal?: NodeJS.Signals): boolean;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+  };
   processGroupPid?: number;
-}): void {
+};
+
+const STOP_GRACE_MS = 5000;
+const KILL_WAIT_MS = 2000;
+
+/** Signal the runtime's whole process group when we have one, else the direct child. */
+function signalRuntime(runtime: StoppableRuntime, signal: NodeJS.Signals): void {
   if (process.platform !== "win32" && runtime.processGroupPid) {
     try {
-      process.kill(-runtime.processGroupPid, "SIGKILL");
+      process.kill(-runtime.processGroupPid, signal);
       return;
     } catch {
       /* process group already exited — fall back to the direct child */
     }
   }
   try {
-    runtime.process.kill("SIGKILL");
+    runtime.process.kill(signal);
   } catch {
     /* process already exited */
   }
 }
 
-function terminateRuntimeProcess(runtime: {
-  process: { kill(signal?: NodeJS.Signals): boolean };
-  processGroupPid?: number;
-}): void {
+/** True while any process in the runtime's group (or the direct child, without a group) is alive. */
+function runtimeAlive(runtime: StoppableRuntime): boolean {
   if (process.platform !== "win32" && runtime.processGroupPid) {
     try {
-      process.kill(-runtime.processGroupPid, "SIGTERM");
-      setTimeout(() => {
-        try {
-          process.kill(-runtime.processGroupPid!, "SIGKILL");
-        } catch {
-          /* process group already exited */
-        }
-      }, 5000);
-      return;
-    } catch {
-      /* fall back to the direct child below */
+      process.kill(-runtime.processGroupPid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
     }
   }
-  try {
-    runtime.process.kill("SIGTERM");
-    setTimeout(() => {
-      try {
-        runtime.process.kill("SIGKILL");
-      } catch {
-        /* process already exited */
-      }
-    }, 5000);
-  } catch {
-    /* process already exited */
+  return runtime.process.exitCode === null && runtime.process.signalCode === null;
+}
+
+async function waitForRuntimeExit(runtime: StoppableRuntime, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (runtimeAlive(runtime)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  return true;
+}
+
+/** SIGTERM the runtime, wait for it to exit, then SIGKILL whatever is left. */
+async function terminateRuntimeProcess(runtime: StoppableRuntime): Promise<void> {
+  signalRuntime(runtime, "SIGTERM");
+  if (await waitForRuntimeExit(runtime, STOP_GRACE_MS)) return;
+  signalRuntime(runtime, "SIGKILL");
+  await waitForRuntimeExit(runtime, KILL_WAIT_MS);
 }
 
 async function startProcessService(
@@ -714,7 +716,6 @@ async function startProcessService(
   updateServiceStatus(ctx, serviceId, "starting");
   insertLog(ctx, serviceId, "info", `Starting process service from ${cwd}`);
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", message: `Starting ${command}` });
-  ctx.manuallyStopped.delete(serviceId);
   const serviceEnvFromLinks = getServiceEnvWithLinks(ctx, serviceId);
   const portEnv = service.port && !serviceEnvFromLinks.PORT ? { PORT: String(service.port) } : {};
   // Nudge frameworks that read HOST (e.g. CRA, some Node servers) to bind all
@@ -812,10 +813,10 @@ async function startProcessService(
   child.on("exit", (code) => {
     clearTimeout(runtime.stabilityTimer);
     const current = ctx.runtimeProcesses.get(serviceId);
-    // Stale exit: a newer instance already replaced this one (e.g. via restart).
-    // Ignore it so a dead child can't flip the live instance's status or queue a
-    // duplicate restart.
-    if (current && current.instanceId !== instanceId) return;
+    // Only the tracked instance can crash. A stop/restart untracks the old
+    // instance before signalling it, so its late exit can't flip the new
+    // instance's status or queue a duplicate start.
+    if (current?.instanceId !== instanceId) return;
     const cfg = ctx.db
       .prepare(
         "SELECT auto_restart, restart_count, max_restarts, start_mode, stop_with_hoster FROM services WHERE id = ?"
@@ -830,26 +831,11 @@ async function startProcessService(
         }
       | undefined;
     if (!cfg) return;
-    if (ctx.manuallyStopped.has(serviceId)) {
-      ctx.runtimeProcesses.delete(serviceId);
-      ctx.manuallyStopped.delete(serviceId);
-      clearRuntimePgid(ctx, serviceId); // dead → don't carry a stale pgid into the recycle window
-      updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
-      return;
-    }
     setTimeout(() => {
       void (async () => {
-        // A stop issued during this 500ms window must win — don't resurrect a
-        // service the user just stopped.
-        if (ctx.manuallyStopped.has(serviceId)) {
-          ctx.runtimeProcesses.delete(serviceId);
-          ctx.manuallyStopped.delete(serviceId);
-          clearRuntimePgid(ctx, serviceId);
-          updateServiceStatus(ctx, serviceId, "stopped", code ?? 0);
-          return;
-        }
-        const childRuntime = runtime ?? ctx.runtimeProcesses.get(serviceId);
-        if ((code ?? 0) === 0 && (await hasLiveProcessGroup(childRuntime?.processGroupPid))) {
+        // A stop or restart issued during this 500ms window must win.
+        if (ctx.runtimeProcesses.get(serviceId)?.instanceId !== instanceId) return;
+        if ((code ?? 0) === 0 && (await hasLiveProcessGroup(runtime.processGroupPid))) {
           updateServiceStatus(ctx, serviceId, "running", 0);
           insertLog(
             ctx,
@@ -945,9 +931,6 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
   updateServiceStatus(ctx, serviceId, "starting");
   insertLog(ctx, serviceId, "info", `Starting Docker service with image ${image}`);
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "starting", image, port });
-  // Mirror the process path: a (re)start clears any lingering stop intent so a
-  // prior force/stop doesn't leave a stale manuallyStopped entry for this id.
-  ctx.manuallyStopped.delete(serviceId);
 
   try {
     if (shouldPullImage(image)) {
@@ -1051,7 +1034,6 @@ async function startDockerService(ctx: AppContext, serviceId: string): Promise<v
 
 export async function stopService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
-  ctx.manuallyStopped.add(serviceId);
   updateServiceStatus(ctx, serviceId, "stopping");
   insertLog(ctx, serviceId, "info", "Stopping service...");
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "stopping" });
@@ -1083,8 +1065,8 @@ export async function stopService(ctx: AppContext, serviceId: string): Promise<v
   } else {
     const runtime = ctx.runtimeProcesses.get(serviceId);
     if (runtime) {
-      terminateRuntimeProcess(runtime);
       ctx.runtimeProcesses.delete(serviceId);
+      await terminateRuntimeProcess(runtime);
     }
     // Also kill an adopted survivor (tracked only via the persisted pgid, e.g.
     // a detached child carried across a ServerHoster restart).
@@ -1253,7 +1235,6 @@ export async function restartService(ctx: AppContext, serviceId: string): Promis
  */
 export async function forceStopService(ctx: AppContext, serviceId: string): Promise<void> {
   const service = getService(ctx, serviceId);
-  ctx.manuallyStopped.add(serviceId);
   updateServiceStatus(ctx, serviceId, "stopping");
   insertLog(ctx, serviceId, "warn", "Force stop requested — killing service immediately.");
   broadcast(ctx, { type: "service_lifecycle", serviceId, stage: "stopping" });
@@ -1290,7 +1271,11 @@ export async function forceStopService(ctx: AppContext, serviceId: string): Prom
     }
   } else {
     const runtime = ctx.runtimeProcesses.get(serviceId);
-    if (runtime) killRuntimeProcessNow(runtime);
+    if (runtime) {
+      ctx.runtimeProcesses.delete(serviceId);
+      signalRuntime(runtime, "SIGKILL");
+      await waitForRuntimeExit(runtime, KILL_WAIT_MS);
+    }
     // Capture our own process group BEFORE clearing it, so the port sweep can
     // confirm any remaining port-holder is ours (and not another service) before
     // SIGKILL. Kill our adopted survivor by its persisted pgid first.
@@ -1732,7 +1717,8 @@ export async function gracefulShutdown(ctx: AppContext): Promise<void> {
       insertLog(ctx, serviceId, "info", "Always on service left running while ServerHoster stops.");
       continue;
     }
-    terminateRuntimeProcess(runtime);
+    ctx.runtimeProcesses.delete(serviceId);
+    void terminateRuntimeProcess(runtime);
     insertLog(ctx, serviceId, "warn", "Service received shutdown signal.");
   }
   for (const task of ctx.shutdownTasks) {
