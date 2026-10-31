@@ -23,6 +23,7 @@ import {
   Mail,
   Shield,
   Inbox,
+  Wallet,
   Workflow
 } from "lucide-react";
 
@@ -34,6 +35,7 @@ import { SecretsPage } from "./pages/Secrets";
 import { EmailPage } from "./pages/Email";
 import { EmailerPage } from "./pages/Emailer";
 import { AiGatewayPage } from "./pages/AiGateway";
+import { AiUsagePage } from "./pages/AiUsage";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
@@ -168,6 +170,7 @@ const routeLabels: Record<string, string> = {
   email: "Email",
   emailer: "Emailer",
   "ai-gateway": "AI Gateway",
+  "ai-usage": "AI Usage",
   databases: "Databases",
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
@@ -390,6 +393,15 @@ export function App() {
             {!collapsed && <span>AI Gateway</span>}
           </NavLink>
           <NavLink
+            to="/ai-usage"
+            aria-label="AI Usage"
+            title={collapsed ? "AI Usage" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Wallet size={16} />
+            {!collapsed && <span>AI Usage</span>}
+          </NavLink>
+          <NavLink
             to="/databases"
             aria-label="Databases"
             title={collapsed ? "Databases" : undefined}
@@ -585,6 +597,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <AiGatewayPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ai-usage"
+                  element={
+                    <ProtectedRoute>
+                      <AiUsagePage />
                     </ProtectedRoute>
                   }
                 />
