@@ -157,13 +157,15 @@ export function registerEmailRoutes(ctx: AppContext): void {
         };
       });
       // Branding is per app. For apps not yet enabled (or missing a stored
-      // value), surface the global fallback so the UI can seed the inputs —
-      // enabling then persists that app's own copy.
+      // value), surface the fallback so the UI can seed the inputs — the app's
+      // own name for From name, never another app's brand — and enabling then
+      // persists that app's own copy.
       const branding = resolveEmailBranding({
         existingFrom: fromRow?.value,
         existingFromName: fromNameRow?.value,
         defaultFrom,
-        defaultFromName
+        defaultFromName,
+        projectName: pr.name
       });
       return {
         id: pr.id,
@@ -255,7 +257,9 @@ export function registerEmailRoutes(ctx: AppContext): void {
 
   ctx.app.post("/email/apply/:projectId", async (req) => {
     const { projectId } = req.params as { projectId: string };
-    const project = ctx.db.prepare("SELECT id, name FROM projects WHERE id = ?").get(projectId);
+    const project = ctx.db.prepare("SELECT id, name FROM projects WHERE id = ?").get(projectId) as
+      | { id: string; name: string }
+      | undefined;
     if (!project) throw new Error("Project not found");
     if (!emailConfigured(ctx)) {
       const e = new Error("Configure SMTP credentials first") as Error & { statusCode?: number };
@@ -279,7 +283,8 @@ export function registerEmailRoutes(ctx: AppContext): void {
       existingFrom,
       existingFromName,
       defaultFrom: getSetting(ctx, "smtp_from"),
-      defaultFromName: getSetting(ctx, "smtp_from_name")
+      defaultFromName: getSetting(ctx, "smtp_from_name"),
+      projectName: project.name
     });
     const vals: Array<[string, string, boolean]> = [
       ["EMAIL_ENABLED", "true", false],

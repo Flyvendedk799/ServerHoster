@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppContext } from "../../types.js";
 import { getSetting, getSecretSetting } from "../settings.js";
+import { resolveEmailBranding } from "../emailBranding.js";
 import { getResource, listLinksForService, resourceConfig } from "./lifecycle.js";
-import { applyPortOffsetToToml, setTomlValues } from "./supabasePorts.js";
+import { applyPortOffsetToToml } from "./supabasePorts.js";
+import { setTomlValues, tomlError } from "./tomlEdit.js";
 import { publicOriginForLinkedResource } from "./publicExposure.js";
 import {
   applyAuthMailToToml,
@@ -117,14 +119,29 @@ function projectEnv(ctx: AppContext, projectId: string, key: string): string | u
  * Email tab stored must win — exactly the precedence `/email/apply` uses. Using
  * the central From here was the bug that made a signup 550 "not authorized to
  * send from domain".
+ *
+ * The From name (GoTrue's sender_name) follows the same per-app rule, through
+ * resolveEmailBranding: the app's own SMTP_FROM_NAME, else the app's own name.
+ * Falling back to the global smtp_from_name is what mailed Awaire's auth email
+ * as "MetaView" — the first app's brand, copied into every later enable.
  */
-function smtpForProject(ctx: AppContext, projectId: string): AuthMailSmtp {
+export function smtpForProject(ctx: AppContext, projectId: string): AuthMailSmtp {
+  const project = ctx.db.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as
+    | { name?: string }
+    | undefined;
+  const branding = resolveEmailBranding({
+    existingFrom: projectEnv(ctx, projectId, "SMTP_FROM"),
+    existingFromName: projectEnv(ctx, projectId, "SMTP_FROM_NAME"),
+    defaultFrom: getSetting(ctx, "smtp_from"),
+    defaultFromName: getSetting(ctx, "smtp_from_name"),
+    projectName: project?.name
+  });
   return {
     host: getSetting(ctx, "smtp_host") ?? "",
     port: Number(getSetting(ctx, "smtp_port") ?? "465") || 465,
     user: getSetting(ctx, "smtp_user") ?? "api_token",
-    from: projectEnv(ctx, projectId, "SMTP_FROM") ?? getSetting(ctx, "smtp_from") ?? "",
-    fromName: projectEnv(ctx, projectId, "SMTP_FROM_NAME") ?? getSetting(ctx, "smtp_from_name") ?? ""
+    from: branding.from,
+    fromName: branding.fromName
   };
 }
 
@@ -172,6 +189,22 @@ export function reconcileManagedSupabaseConfig(
       const { toml: reconciled, applied } = reconciledConfigToml(toml, { portOffset: offset, email });
       // The config references template files; write the ones it points at (never
       // overwriting a custom one) so GoTrue can fetch them.
+      // The Supabase CLI refuses an invalid config.toml outright (no start, no
+      // migrations), so a result that does not parse is reported and the
+      // checkout's own file is left exactly as committed.
+      const committedInvalid = tomlError(toml);
+      if (committedInvalid) {
+        throw new Error(
+          `the committed supabase/config.toml is not valid TOML (${committedInvalid}); nothing was reapplied`
+        );
+      }
+      const invalid = reconciled !== toml ? tomlError(reconciled) : null;
+      if (invalid) {
+        throw new Error(
+          `reapplying ${applied.join(", ") || "managed config"} would produce invalid TOML (${invalid}); ` +
+            "supabase/config.toml was left as committed"
+        );
+      }
       if (email) writeDefaultAuthMailTemplates(targetPath);
       if (reconciled !== toml) fs.writeFileSync(configPath, reconciled, "utf8");
       results.push({ resourceId: resource.id, name: resource.name, applied });

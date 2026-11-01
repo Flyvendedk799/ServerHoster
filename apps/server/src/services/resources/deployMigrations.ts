@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AppContext } from "../../types.js";
-import { getResource, listLinksForService, resourceConfig } from "./lifecycle.js";
+import { groupDuplicates } from "./duplicates.js";
+import { getResource, listLinksForService, resourceConfig, type ManagedResourceRow } from "./lifecycle.js";
 import { supabaseMigrationApply } from "./supabaseCli.js";
 
 /**
@@ -25,6 +26,8 @@ import { supabaseMigrationApply } from "./supabaseCli.js";
  *   - NEVER GUESSES WHICH DATABASE. A service can carry several active links,
  *     including to `failed` duplicates from earlier provisioning attempts. Exactly
  *     one started supabase stack is migrated; two or more means skip and warn.
+ *     Several records of the SAME stack (same workdir, ports and db_url — see
+ *     duplicates.ts) count as one stack, with a warning to remove the extras.
  *   - NEVER seeds. `supabase migration up` only applies schema migrations and
  *     records them; `db reset` / seed.sql stay behind the explicit provision mode.
  *   - Runs exactly the SQL the repo committed — nothing generated, nothing dropped.
@@ -41,6 +44,7 @@ import { supabaseMigrationApply } from "./supabaseCli.js";
 export type MigrationSkipReason =
   | "no-supabase-resource"
   | "ambiguous-resources"
+  | "config-not-reconciled"
   | "disabled"
   | "stack-not-running"
   | "no-migrations-dir"
@@ -55,6 +59,11 @@ export type MigrationRunResult = {
   skipped?: MigrationSkipReason;
   /** Stack names considered when more than one matched. */
   candidates?: string[];
+  /**
+   * Records that describe the SAME stack as the target (same workdir, ports and
+   * db_url) and were treated as one with it — "Name (id)" per extra record.
+   */
+  duplicateRecords?: string[];
   /** Versions the repo has that the stack had not recorded. */
   pending: string[];
   /** Versions confirmed recorded after the apply. */
@@ -240,17 +249,33 @@ export type MigrationTarget = {
 export function resolveMigrationTarget(
   ctx: AppContext,
   serviceId: string
-): { target: MigrationTarget | null; candidates: string[] } {
-  const started: MigrationTarget[] = [];
+): { target: MigrationTarget | null; candidates: string[]; duplicateRecords: string[] } {
+  const startedRows: ManagedResourceRow[] = [];
   for (const link of listLinksForService(ctx, serviceId)) {
     const resource = getResource(ctx, link.resource_id);
     if (!resource || resource.profile !== "supabase") continue;
     if (!STARTED_STATUSES.has(resource.status)) continue;
-    if (started.some((entry) => entry.resourceId === resource.id)) continue; // duplicate links
-    started.push({ resourceId: resource.id, name: resource.name, config: resourceConfig(resource) });
+    if (startedRows.some((row) => row.id === resource.id)) continue; // duplicate links
+    startedRows.push(resource);
   }
+
+  // Two records of ONE stack (same profile, workdir, ports and db_url) are not
+  // ambiguous: there is a single database. Collapse them to one record and
+  // report the extras, so the deploy migrates and warns instead of skipping.
+  // Genuinely different stacks still stay distinct and are refused below.
+  const duplicateRecords: string[] = [];
+  const dropped = new Set<string>();
+  for (const group of groupDuplicates(startedRows)) {
+    for (const dup of group.duplicates) {
+      dropped.add(dup.id);
+      duplicateRecords.push(`${dup.name} (${dup.id}, duplicate of ${group.keep.id})`);
+    }
+  }
+  const started: MigrationTarget[] = startedRows
+    .filter((row) => !dropped.has(row.id))
+    .map((row) => ({ resourceId: row.id, name: row.name, config: resourceConfig(row) }));
   const candidates = started.map((entry) => entry.name);
-  return { target: started.length === 1 ? started[0] : null, candidates };
+  return { target: started.length === 1 ? started[0]! : null, candidates, duplicateRecords };
 }
 
 // ---- entry point ------------------------------------------------------------
@@ -269,18 +294,27 @@ const EMPTY: Omit<MigrationRunResult, "resourceId" | "name"> = {
 export async function applyPendingSupabaseMigrations(
   ctx: AppContext,
   serviceId: string,
-  targetPath: string
+  targetPath: string,
+  options: {
+    /**
+     * Stacks whose managed config.toml could not be re-applied this deploy. The
+     * CLI would read the checkout's committed (default) ports and could reach a
+     * different tenant's database, so such a stack is skipped, never migrated.
+     */
+    unreconciledResourceIds?: ReadonlySet<string>;
+  } = {}
 ): Promise<MigrationRunResult> {
   const linkedSupabase = listLinksForService(ctx, serviceId).some((link) => {
     const resource = getResource(ctx, link.resource_id);
     return resource?.profile === "supabase";
   });
-  const { target, candidates } = resolveMigrationTarget(ctx, serviceId);
+  const { target, candidates, duplicateRecords } = resolveMigrationTarget(ctx, serviceId);
+  const duplicates = duplicateRecords.length ? { duplicateRecords } : {};
 
   if (!target) {
     if (candidates.length > 1) {
       // Two started stacks: skip and name them rather than migrate the wrong one.
-      return { ...EMPTY, resourceId: null, name: "", skipped: "ambiguous-resources", candidates };
+      return { ...EMPTY, ...duplicates, resourceId: null, name: "", skipped: "ambiguous-resources", candidates };
     }
     return {
       ...EMPTY,
@@ -291,7 +325,16 @@ export async function applyPendingSupabaseMigrations(
     };
   }
 
-  const base: MigrationRunResult = { ...EMPTY, resourceId: target.resourceId, name: target.name };
+  const base: MigrationRunResult = {
+    ...EMPTY,
+    ...duplicates,
+    resourceId: target.resourceId,
+    name: target.name
+  };
+
+  if (options.unreconciledResourceIds?.has(target.resourceId)) {
+    return { ...base, skipped: "config-not-reconciled" };
+  }
 
   if (!autoMigrateEnabled(target.config)) return { ...base, skipped: "disabled" };
 
@@ -372,12 +415,38 @@ export async function applyPendingSupabaseMigrations(
   }
 }
 
+/**
+ * Outcomes that leave the app possibly running on a stale schema without the
+ * deploy failing. These must reach the owner as a notification, not only a
+ * build-log line nobody reads: a skipped run is how Awaire sat four migrations
+ * behind for a month. An explicit opt-out (auto_migrate=false), a hosted
+ * database, and "nothing to do" are deliberate and stay quiet.
+ */
+export function migrationSkipNeedsAttention(result: MigrationRunResult): boolean {
+  return (
+    result.skipped === "ambiguous-resources" ||
+    result.skipped === "config-not-reconciled" ||
+    result.skipped === "stack-not-running" ||
+    result.skipped === "no-history-table"
+  );
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** Build-log line for one run. Empty string when the result is worth no line. */
 export function migrationLogLine(result: MigrationRunResult): string {
+  const duplicateNote = result.duplicateRecords?.length
+    ? "Supabase migrations: WARNING — the same stack is recorded more than once (same workdir, ports " +
+      `and database): ${result.duplicateRecords.join("; ")}. Treated as one stack. Remove the duplicate ` +
+      "record with POST /resources/duplicates/merge (database bookkeeping only; no container or volume " +
+      "is touched).\n"
+    : "";
+  return duplicateNote + migrationOutcomeLine(result);
+}
+
+function migrationOutcomeLine(result: MigrationRunResult): string {
   if (result.skipped === "no-supabase-resource" || result.skipped === "no-migrations-dir") return "";
   if (result.skipped === "ambiguous-resources") {
     return (
@@ -388,6 +457,11 @@ export function migrationLogLine(result: MigrationRunResult): string {
   const prefix = `Supabase migrations (${result.name || "unlinked"}): `;
   if (result.error) return `${prefix}FAILED — ${result.error}\n`;
   switch (result.skipped) {
+    case "config-not-reconciled":
+      return (
+        `${prefix}SKIPPED — supabase/config.toml could not be reapplied (see above), so the CLI ` +
+        "would not reach this stack's ports. Fix config.toml and redeploy.\n"
+      );
     case "disabled":
       return `${prefix}auto-migrate is off for this stack — skipped.\n`;
     case "stack-not-running":

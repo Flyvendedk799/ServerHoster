@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveEmailBranding } from "./services/emailBranding.js";
+import { isInheritedDefaultFromName, resolveEmailBranding } from "./services/emailBranding.js";
 
 test("resolveEmailBranding: explicit from + fromName win", () => {
   const b = resolveEmailBranding({
@@ -67,4 +67,46 @@ test("resolveEmailBranding: trims whitespace on explicit values", () => {
     fromName: "  App  "
   });
   assert.deepEqual(b, { from: "a@b.dk", fromName: "App" });
+});
+
+test("resolveEmailBranding: a new enable takes the app's own name, not another app's brand", () => {
+  const b = resolveEmailBranding({
+    existingFrom: "noreply@awaire.dk",
+    defaultFrom: "noreply@mymetaview.com",
+    defaultFromName: "MetaView",
+    projectName: "Awaire"
+  });
+  assert.deepEqual(b, { from: "noreply@awaire.dk", fromName: "Awaire" });
+});
+
+test("resolveEmailBranding: the global name copied onto an app with its own domain is ignored", () => {
+  // The live Awaire row: SMTP_FROM noreply@awaire.dk, SMTP_FROM_NAME "MetaView"
+  // (seeded from the global default at enable time) — GoTrue mailed as MetaView.
+  const b = resolveEmailBranding({
+    existingFrom: "noreply@awaire.dk",
+    existingFromName: "MetaView",
+    defaultFrom: "noreply@mymetaview.com",
+    defaultFromName: "MetaView",
+    projectName: "Awaire"
+  });
+  assert.equal(b.fromName, "Awaire");
+});
+
+test("resolveEmailBranding: a stored name on the default's own domain is kept", () => {
+  const b = resolveEmailBranding({
+    existingFrom: "noreply@mymetaview.com",
+    existingFromName: "MetaView",
+    defaultFrom: "noreply@mymetaview.com",
+    defaultFromName: "MetaView",
+    projectName: "MyMetaView"
+  });
+  assert.equal(b.fromName, "MetaView");
+});
+
+test("isInheritedDefaultFromName only flags the default name on a different domain", () => {
+  const base = { defaultFrom: "noreply@host.dk", defaultFromName: "Host" };
+  assert.equal(isInheritedDefaultFromName({ ...base, fromName: "Host", from: "noreply@app.dk" }), true);
+  assert.equal(isInheritedDefaultFromName({ ...base, fromName: "App", from: "noreply@app.dk" }), false);
+  assert.equal(isInheritedDefaultFromName({ ...base, fromName: "Host", from: "other@host.dk" }), false);
+  assert.equal(isInheritedDefaultFromName({ ...base, fromName: "Host", from: "" }), false);
 });

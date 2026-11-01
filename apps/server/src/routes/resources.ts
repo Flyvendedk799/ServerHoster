@@ -35,6 +35,7 @@ import {
   type BootstrapRequest
 } from "../services/resources/bootstrap.js";
 import { getProfile, listProfiles } from "../services/resources/profiles.js";
+import { mergeDuplicateResources, mergeIfDuplicate } from "../services/resources/duplicates.js";
 import {
   autoMigrateEnabled,
   diffMigrations,
@@ -308,6 +309,21 @@ export function registerResourceRoutes(ctx: AppContext): void {
     return listResources(ctx).map((resource) => serializeResource(ctx, resource));
   });
 
+  /**
+   * Records that describe the same physical stack (same profile, workdir, host
+   * ports and db_url) — e.g. a re-provision that added a second row for a stack
+   * that already had one. GET reports them; POST merges each group into one
+   * record (links, secrets and missing config move over, the extra row is
+   * deleted). Database bookkeeping only: no container, volume or process is
+   * touched. `{ "dryRun": true }` reports without changing anything.
+   */
+  ctx.app.get("/resources/duplicates", async () => mergeDuplicateResources(ctx, { dryRun: true }));
+
+  ctx.app.post("/resources/duplicates/merge", async (req) => {
+    const { dryRun } = z.object({ dryRun: z.boolean().default(false) }).parse(req.body ?? {});
+    return mergeDuplicateResources(ctx, { dryRun });
+  });
+
   ctx.app.get("/resources/:id", async (req) => {
     const resource = getResource(ctx, (req.params as { id: string }).id);
     if (!resource) throw new Error("Resource not found");
@@ -359,6 +375,20 @@ export function registerResourceRoutes(ctx: AppContext): void {
   ctx.app.delete("/resources/:id", async (req) => {
     const resource = getResource(ctx, (req.params as { id: string }).id);
     if (!resource) throw new Error("Resource not found");
+    // A duplicate record of a stack another record still describes: the
+    // profile's remove() would stop (and may wipe) that live stack. Drop only
+    // the record, folding its links into the surviving one.
+    const mergedInto = mergeIfDuplicate(ctx, resource.id);
+    if (mergedInto) {
+      refreshPublicResourceIngress(ctx);
+      broadcast(ctx, {
+        type: "resource_status",
+        resourceId: resource.id,
+        status: "removed",
+        profile: resource.profile
+      });
+      return { ok: true, strandedServices: 0, mergedInto: mergedInto.id };
+    }
     const links = listLinksForResource(ctx, resource.id);
     for (const link of links) {
       const svc = ctx.db.prepare("SELECT id, name FROM services WHERE id = ?").get(link.service_id) as

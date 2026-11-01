@@ -29,7 +29,8 @@ import { ensurePersistedPaths, unlinkPersistedSymlinks } from "./persistence.js"
 import { reconcileManagedSupabaseConfig } from "./resources/reconcileConfig.js";
 import {
   applyPendingSupabaseMigrations,
-  migrationLogLine
+  migrationLogLine,
+  migrationSkipNeedsAttention
 } from "./resources/deployMigrations.js";
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
@@ -1661,17 +1662,30 @@ async function deployFromGitLocked(
     // just stripped (host ports, the real JWT secret, email/SMTP + templates), so
     // it persists across deploys without having to be committed to the app repo.
     // Runs before the build so a build that reads config.toml sees the real one.
+    const unreconciledResourceIds = new Set<string>();
     {
       const reconciled = reconcileManagedSupabaseConfig(ctx, serviceId, targetPath);
       for (const r of reconciled) {
+        if (r.error) unreconciledResourceIds.add(r.resourceId);
         const msg = r.error
-          ? `Supabase config (${r.name}): could not reconcile: ${r.error}\n`
+          ? `Supabase config (${r.name}): ERROR — could not reapply managed config: ${r.error}\n`
           : r.applied.length
             ? `Supabase config (${r.name}): reapplied ${r.applied.join(", ")}.\n`
             : "";
         if (msg) {
           buildLog += msg;
-          emitBuildLog(ctx, serviceId, deploymentId, msg);
+          emitBuildLog(ctx, serviceId, deploymentId, msg, r.error ? "stderr" : "stdout");
+        }
+        if (r.error) {
+          createNotification(ctx, {
+            kind: "deployment",
+            severity: "warning",
+            title: `Supabase config not reapplied: ${r.name}`,
+            body:
+              `${r.error}. The stack's next start would use the committed config.toml ` +
+              "(default ports, no managed JWT/email settings).",
+            serviceId
+          });
         }
       }
     }
@@ -1682,11 +1696,39 @@ async function deployFromGitLocked(
     // exact breakage this exists to prevent.
     {
       failureStage = "building";
-      const migrations = await applyPendingSupabaseMigrations(ctx, serviceId, targetPath);
+      const migrations = await applyPendingSupabaseMigrations(ctx, serviceId, targetPath, {
+        unreconciledResourceIds
+      });
       const msg = migrationLogLine(migrations);
+      const needsAttention = migrationSkipNeedsAttention(migrations);
       if (msg) {
         buildLog += msg;
-        emitBuildLog(ctx, serviceId, deploymentId, msg, migrations.error ? "stderr" : "stdout");
+        emitBuildLog(
+          ctx,
+          serviceId,
+          deploymentId,
+          msg,
+          migrations.error || needsAttention ? "stderr" : "stdout"
+        );
+      }
+      // A skipped run does not fail the deploy, but the app may now run on a
+      // stale schema — that has to reach the owner, not only the build log.
+      if (needsAttention || migrations.duplicateRecords?.length) {
+        const serviceName =
+          (
+            ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
+              | { name?: string }
+              | undefined
+          )?.name ?? serviceId;
+        createNotification(ctx, {
+          kind: "deployment",
+          severity: "warning",
+          title: needsAttention
+            ? `Supabase migrations skipped: ${serviceName}`
+            : `Duplicate Supabase stack record: ${serviceName}`,
+          body: msg.trim(),
+          serviceId
+        });
       }
       if (migrations.error) {
         throw new Error(

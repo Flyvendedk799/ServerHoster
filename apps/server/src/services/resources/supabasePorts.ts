@@ -1,5 +1,6 @@
 import net from "node:net";
 import type { AppContext } from "../../types.js";
+import { setTomlValues } from "./tomlEdit.js";
 
 /**
  * Unique host-port allocation for local Supabase stacks.
@@ -33,43 +34,10 @@ const MAX_OFFSET = 50_000;
 const OFFSET_STEP = 100;
 
 /**
- * Values this module can write. `raw` is an escape hatch for TOML that must not
- * be quoted — `env(SUPABASE_AUTH_SMTP_PASS)` is a string in the file but the CLI
- * only resolves it when it appears as a quoted env() call, and arrays have no
- * scalar form at all.
+ * TOML editing lives in tomlEdit.ts (structure-aware: multi-line arrays, inline
+ * tables, comments, CRLF). Re-exported here for the existing callers.
  */
-export type TomlValue = number | string | boolean | { raw: string };
-
-function formatTomlValue(value: TomlValue): string {
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value === "string") return JSON.stringify(value);
-  return value.raw;
-}
-
-/**
- * Set `[section] key = value` in a TOML string, creating the key or the whole
- * section if absent. Line-oriented and dependency-free: a section body runs from
- * its header to the next `[`-header (or EOF); an existing `key =` inside it is
- * replaced, otherwise the key is inserted just under the header, otherwise the
- * section is appended. Keys grouped by section so a new [db] gets both its ports.
- */
-export function setTomlValues(
-  toml: string,
-  entries: ReadonlyArray<{ section: string; key: string; value: TomlValue }>
-): string {
-  const bySection = new Map<string, Array<{ key: string; value: TomlValue }>>();
-  for (const e of entries) {
-    const list = bySection.get(e.section) ?? [];
-    list.push({ key: e.key, value: e.value });
-    bySection.set(e.section, list);
-  }
-
-  let lines = toml.split("\n");
-  for (const [section, kvs] of bySection) {
-    lines = setSection(lines, section, kvs);
-  }
-  return lines.join("\n");
-}
+export { setTomlValues, type TomlValue } from "./tomlEdit.js";
 
 /** Port-shaped wrapper, kept because the port block is the original caller. */
 export function setTomlPorts(
@@ -77,36 +45,6 @@ export function setTomlPorts(
   entries: ReadonlyArray<{ section: string; key: string; value: number }>
 ): string {
   return setTomlValues(toml, entries);
-}
-
-function setSection(
-  lines: string[],
-  section: string,
-  kvs: Array<{ key: string; value: TomlValue }>
-): string[] {
-  const header = `[${section}]`;
-  const start = lines.findIndex((l) => l.trim() === header);
-  if (start === -1) {
-    const block = ["", header, ...kvs.map((kv) => `${kv.key} = ${formatTomlValue(kv.value)}`)];
-    // Trim a single trailing empty line so we don't accumulate blank lines.
-    const base = lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
-    return [...base, ...block];
-  }
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^\s*\[/.test(lines[i] ?? "")) {
-      end = i;
-      break;
-    }
-  }
-  const body = lines.slice(start + 1, end);
-  for (const kv of kvs) {
-    const line = `${kv.key} = ${formatTomlValue(kv.value)}`;
-    const idx = body.findIndex((l) => new RegExp(`^\\s*${kv.key}\\s*=`).test(l));
-    if (idx !== -1) body[idx] = line;
-    else body.unshift(line);
-  }
-  return [...lines.slice(0, start + 1), ...body, ...lines.slice(end)];
 }
 
 /** Rewrite config.toml so every Supabase host port = default + offset. */
