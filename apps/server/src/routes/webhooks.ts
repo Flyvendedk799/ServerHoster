@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.js";
+import { handleIncomingCommit } from "../services/ci.js";
 import { parseRepoFullName } from "../services/github.js";
 import { writeAuditLog } from "../services/audit.js";
 
@@ -9,6 +10,7 @@ const githubPushPayloadSchema = z
   .object({
     ref: z.string(),
     deleted: z.boolean().optional(),
+    after: z.string().optional(),
     repository: z
       .object({
         clone_url: z.string().optional(),
@@ -148,7 +150,7 @@ export function registerWebhookRoutes(ctx: AppContext): void {
         return reply.code(400).send({ error: "Invalid GitHub payload" });
       }
 
-      const { ref, repository, deleted } = parseResult.data;
+      const { ref, repository, deleted, after } = parseResult.data;
       if (deleted) {
         return { ok: true, message: "Branch deletion ignored", matched: 0, skippedDeleted: true };
       }
@@ -208,11 +210,20 @@ export function registerWebhookRoutes(ctx: AppContext): void {
       Promise.allSettled(
         matchedServices.map(async (service) => {
           try {
+            const branch = service.github_branch || "main";
+            const plan = handleIncomingCommit(ctx, {
+              serviceId: service.id,
+              repoUrl: service.github_repo_url,
+              branch,
+              commit: after && !/^0+$/.test(after) ? after : "",
+              trigger: "webhook"
+            });
+            if (plan === "ci-then-deploy") return;
             const deployment = await deployFromGit(
               ctx,
               service.id,
               service.github_repo_url,
-              service.github_branch || "main",
+              branch,
               "webhook"
             );
             // startAfterDeploy: true to be "similar to railway" - always restarts on new pulls

@@ -18,7 +18,8 @@ import {
   CreditCard,
   Workflow,
   Shield,
-  Inbox
+  Inbox,
+  Cpu
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -123,6 +124,14 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       category: "Navigation",
       shortcut: "G L",
       action: () => navigate("/deployments")
+    },
+    {
+      id: "ci",
+      name: "CI — self-hosted on this machine",
+      icon: Cpu,
+      category: "Navigation",
+      shortcut: "G C",
+      action: () => navigate("/ci")
     },
     {
       id: "proxy",
@@ -279,12 +288,7 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
               </button>
             </div>
 
-            <div
-              className="command-results"
-              id="command-results-listbox"
-              role="listbox"
-              ref={resultsRef}
-            >
+            <div className="command-results" id="command-results-listbox" role="listbox" ref={resultsRef}>
               {filtered.map((cmd, i) => (
                 <div
                   key={cmd.id}
