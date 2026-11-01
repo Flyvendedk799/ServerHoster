@@ -194,7 +194,7 @@ describe("CI config", () => {
     assert.equal(ciContainerUser("linux", 1000, 1000), "1000:1000");
     assert.equal(ciContainerUser("linux", 0, 0), undefined);
     assert.equal(ciContainerUser("win32", 1000, 1000), undefined);
-    assert.equal(ciContainerUser("linux", undefined, undefined), undefined);
+    assert.equal(ciContainerUser("linux", null, null), undefined);
   });
 });
 

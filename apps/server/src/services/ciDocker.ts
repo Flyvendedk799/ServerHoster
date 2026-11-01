@@ -38,10 +38,12 @@ export type CiSandbox = {
  */
 export function ciContainerUser(
   platform: NodeJS.Platform = process.platform,
-  uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined,
-  gid: number | undefined = typeof process.getgid === "function" ? process.getgid() : undefined
+  uid: number | null = typeof process.getuid === "function" ? (process.getuid() ?? null) : null,
+  gid: number | null = typeof process.getgid === "function" ? (process.getgid() ?? null) : null
 ): string | undefined {
-  if (platform === "win32" || uid === undefined || uid === 0) return undefined;
+  // null is an explicit "no id" so tests can cover a missing uid without
+  // passing undefined, which would fire these defaults and read the real user.
+  if (platform === "win32" || uid == null || uid === 0) return undefined;
   return `${uid}:${gid ?? uid}`;
 }
 
