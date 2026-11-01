@@ -8,6 +8,7 @@ import {
   createResource,
   getResource,
   linkResourceToService,
+  unlinkResource,
   listLinksForService,
   resourceConfig
 } from "./services/resources/lifecycle.js";
@@ -214,4 +215,38 @@ test("removing a duplicate record merges it instead of tearing down the shared s
     "the service's link moved to the surviving record"
   );
   assert.equal(mergeIfDuplicate(ctx, b.id), null, "a lone record is not a duplicate");
+});
+
+test("merging keeps the effective link overrides and the started status", async () => {
+  const { ctx, projectId, serviceId, workdir } = await setup();
+  // Kept record (functions enabled) is stopped and its link inactive; the
+  // duplicate is the running one with the link that is actually in effect.
+  const kept = createResource(ctx, {
+    projectId,
+    name: "k",
+    profile: "supabase",
+    status: "stopped",
+    config: { workdir, db_url: DB_URL, functions: { enabled: true } },
+    ports: PORTS
+  });
+  const dup = createResource(ctx, {
+    projectId,
+    name: "d",
+    profile: "supabase",
+    status: "running",
+    config: { workdir, db_url: DB_URL },
+    ports: PORTS
+  });
+  linkResourceToService(ctx, { serviceId, resourceId: kept.id, envMap: { A: "stale", ONLY_KEPT: "1" } });
+  unlinkResource(ctx, serviceId, kept.id);
+  linkResourceToService(ctx, { serviceId, resourceId: dup.id, envMap: { A: "live", B: "2" } });
+
+  const into = mergeIfDuplicate(ctx, dup.id);
+  assert.equal(into?.id, kept.id);
+  const survivor = getResource(ctx, kept.id)!;
+  assert.equal(survivor.status, "running", "boot still restarts the stack");
+  const links = listLinksForService(ctx, serviceId);
+  assert.equal(links.length, 1);
+  assert.equal(links[0]!.resource_id, kept.id);
+  assert.deepEqual(JSON.parse(links[0]!.env_map_json), { A: "live", B: "2", ONLY_KEPT: "1" });
 });

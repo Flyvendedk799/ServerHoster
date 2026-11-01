@@ -111,6 +111,18 @@ export function findDuplicateResourceGroups(ctx: AppContext): DuplicateGroup[] {
   return groupDuplicates(rows);
 }
 
+/** Statuses reconcileSupabaseResourcesOnBoot restarts. */
+const BOOT_STARTED = new Set(["ready", "running", "degraded"]);
+
+function parseEnvMap(json: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(json || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 /** Config keys never carried over from a duplicate: stale per-row state. */
 const NON_MERGED_CONFIG_KEYS = new Set(["error", "merged_duplicates"]);
 
@@ -143,11 +155,15 @@ function mergeInto(ctx: AppContext, keepId: string, duplicateId: string): void {
     const emptyJson = (value: string, empty: string) => !value || value.trim() === empty;
     const ports = emptyJson(keep.ports_json, "{}") ? dup.ports_json : keep.ports_json;
     const containers = emptyJson(keep.containers_json, "[]") ? dup.containers_json : keep.containers_json;
+    // The stack is started if either record says so: boot only restarts rows in
+    // a started status, so keeping a stopped row's status would leave the live
+    // stack down after the next host restart.
+    const status = !BOOT_STARTED.has(keep.status) && BOOT_STARTED.has(dup.status) ? dup.status : keep.status;
     ctx.db
       .prepare(
-        "UPDATE managed_resources SET config_json = ?, ports_json = ?, containers_json = ?, updated_at = ? WHERE id = ?"
+        "UPDATE managed_resources SET status = ?, config_json = ?, ports_json = ?, containers_json = ?, updated_at = ? WHERE id = ?"
       )
-      .run(JSON.stringify(merged), ports, containers, now, keep.id);
+      .run(status, JSON.stringify(merged), ports, containers, now, keep.id);
 
     ctx.db
       .prepare(
@@ -165,11 +181,18 @@ function mergeInto(ctx: AppContext, keepId: string, duplicateId: string): void {
         .prepare("SELECT * FROM service_resource_links WHERE service_id = ? AND resource_id = ?")
         .get(link.service_id, keep.id) as ServiceResourceLinkRow | undefined;
       if (existing) {
-        if (link.active === 1 && existing.active !== 1) {
-          ctx.db
-            .prepare("UPDATE service_resource_links SET active = 1, updated_at = ? WHERE id = ?")
-            .run(now, existing.id);
-        }
+        // Keep the overrides that were actually in effect: an active link's env
+        // map wins over an inactive one's (kept record's wins when both are
+        // active), and keys only the other link set are filled in, not dropped.
+        const primary = existing.active === 1 || link.active !== 1 ? existing : link;
+        const secondary = primary === existing ? link : existing;
+        const envMap = { ...parseEnvMap(secondary.env_map_json), ...parseEnvMap(primary.env_map_json) };
+        const active = existing.active === 1 || link.active === 1 ? 1 : 0;
+        ctx.db
+          .prepare(
+            "UPDATE service_resource_links SET active = ?, env_map_json = ?, updated_at = ? WHERE id = ?"
+          )
+          .run(active, JSON.stringify(envMap), now, existing.id);
         ctx.db.prepare("DELETE FROM service_resource_links WHERE id = ?").run(link.id);
       } else {
         ctx.db
