@@ -293,7 +293,8 @@ function isCredentialEscalationPath(method: string, path: string): boolean {
   if (path === "/settings/api-token/reveal" || path === "/settings/api-token/rotate") return true;
   if (path === "/saas/token/rotate") return true;
   if (verb === "POST" && path === "/companion/pairings") return true;
-  if (verb === "DELETE" && path.startsWith("/settings/")) {
+  // Any verb: reading the plaintext dashboard password is as good as a login.
+  if (path.startsWith("/settings/") && path.indexOf("/", "/settings/".length) === -1) {
     let key = path.slice("/settings/".length);
     try {
       key = decodeURIComponent(key);

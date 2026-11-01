@@ -249,7 +249,9 @@ test("api tokens over HTTP: an API token cannot list, mint or revoke tokens", as
       { method: "POST", url: "/companion/pairings", payload: {} },
       { method: "PUT", url: "/settings", payload: { key: "api_token", value: "planted" } },
       { method: "PUT", url: "/settings", payload: { key: "dashboard_password", value: "planted" } },
-      { method: "DELETE", url: "/settings/dashboard_password" }
+      { method: "DELETE", url: "/settings/dashboard_password" },
+      { method: "GET", url: "/settings/dashboard_password" },
+      { method: "GET", url: "/settings/api_token" }
     ];
     for (const req of escalations) {
       const resp = await ctx.app.inject({ ...req, headers: bearer(token) });
@@ -260,6 +262,10 @@ test("api tokens over HTTP: an API token cannot list, mint or revoke tokens", as
       value: string;
     };
     assert.equal(pw.value, "test-pass", "the dashboard password must be untouched");
+    // …and the settings list never shows it in the clear.
+    const all = await ctx.app.inject({ method: "GET", url: "/settings", headers: bearer(token) });
+    assert.equal(all.statusCode, 200);
+    assert.ok(!all.body.includes("test-pass"), "the settings list must not leak the dashboard password");
     // Ordinary settings and the masked token view stay available.
     assert.equal(
       (
