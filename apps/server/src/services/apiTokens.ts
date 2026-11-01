@@ -292,6 +292,9 @@ function isCredentialEscalationPath(method: string, path: string): boolean {
   const verb = method.toUpperCase();
   if (path === "/settings/api-token/reveal" || path === "/settings/api-token/rotate") return true;
   if (path === "/saas/token/rotate") return true;
+  // The JSON export carries live session tokens, users and the plaintext
+  // dashboard password; the import can write sessions, users and settings.
+  if (path === "/backup/export" || path === "/backup/import") return true;
   if (verb === "POST" && path === "/companion/pairings") return true;
   // Any verb: reading the plaintext dashboard password is as good as a login.
   if (path.startsWith("/settings/") && path.indexOf("/", "/settings/".length) === -1) {

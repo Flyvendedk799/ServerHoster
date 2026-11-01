@@ -251,7 +251,13 @@ test("api tokens over HTTP: an API token cannot list, mint or revoke tokens", as
       { method: "PUT", url: "/settings", payload: { key: "dashboard_password", value: "planted" } },
       { method: "DELETE", url: "/settings/dashboard_password" },
       { method: "GET", url: "/settings/dashboard_password" },
-      { method: "GET", url: "/settings/api_token" }
+      { method: "GET", url: "/settings/api_token" },
+      { method: "GET", url: "/backup/export" },
+      {
+        method: "POST",
+        url: "/backup/import",
+        payload: { data: { sessions: [{ id: "x", token: "planted", expires_at: 9e15, created_at: "now" }] } }
+      }
     ];
     for (const req of escalations) {
       const resp = await ctx.app.inject({ ...req, headers: bearer(token) });
