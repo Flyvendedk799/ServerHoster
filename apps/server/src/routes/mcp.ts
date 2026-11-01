@@ -17,6 +17,7 @@ import { writeAuditLog } from "../services/audit.js";
 import { isAuthorizedToken, resolveActorFromToken } from "../services/auth.js";
 import { collectSystemHealth } from "../services/health.js";
 import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.js";
+import { registerStripeMcpTools } from "./mcpStripe.js";
 
 type McpAuth = NonNullable<ReturnType<typeof validateMcpSessionToken>>;
 
@@ -537,6 +538,9 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     auditGlobalTool(ctx, actor, "get_database_logs", 200, `database=${db.id} tail=${tail}`);
     return text(logs.slice(-8000));
   });
+
+  // Operator-only: Stripe key status, setup helpers and app wiring (never keys).
+  registerStripeMcpTools(ctx, server, actor);
 
   return server;
 }

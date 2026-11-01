@@ -25,7 +25,14 @@ export const ENCRYPTED_SETTINGS = new Set<string>([
   "n8n_encryption_key",
   "n8n_api_key",
   "n8n_ai_gateway_token",
-  "emailer_ingest_token"
+  "emailer_ingest_token",
+  // Stripe keys, one trio per mode (see services/stripe.ts)
+  "stripe_test_secret_key",
+  "stripe_test_publishable_key",
+  "stripe_test_webhook_secret",
+  "stripe_live_secret_key",
+  "stripe_live_publishable_key",
+  "stripe_live_webhook_secret"
 ]);
 
 export function getSetting(ctx: AppContext, key: string): string | null {

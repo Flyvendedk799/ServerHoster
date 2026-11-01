@@ -128,7 +128,7 @@ const USAGE_TOKEN_KEY = "SURVHUB_AI_USAGE_TOKEN";
 // Connecting an app (token + env injection)
 // ---------------------------------------------------------------------------
 
-function setSecretSystemEnv(ctx: AppContext, serviceId: string, key: string, value: string, secret: boolean): void {
+export function setSecretSystemEnv(ctx: AppContext, serviceId: string, key: string, value: string, secret: boolean): void {
   const stored = secret ? encryptSecret(value, ctx.config.secretKey) : value;
   const existing = ctx.db
     .prepare("SELECT id FROM env_vars WHERE service_id = ? AND key = ? AND COALESCE(system, 0) = 1")

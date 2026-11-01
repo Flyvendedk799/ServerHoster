@@ -15,6 +15,7 @@ import {
   SunMoon,
   Zap,
   Wallet,
+  CreditCard,
   Workflow,
   Shield,
   Inbox
@@ -107,6 +108,13 @@ export function CommandPalette({ theme = "dark", onToggleTheme, recentServices =
       icon: Wallet,
       category: "Navigation",
       action: () => navigate("/ai-usage")
+    },
+    {
+      id: "stripe",
+      name: "Stripe — keys, apps and billing setup",
+      icon: CreditCard,
+      category: "Navigation",
+      action: () => navigate("/stripe")
     },
     {
       id: "deps",

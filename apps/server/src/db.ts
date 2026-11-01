@@ -578,6 +578,17 @@ const migrations = [
   "CREATE INDEX IF NOT EXISTS idx_ai_usage_events_service ON ai_usage_events(service_id, created_at DESC)",
   // Idempotent reporting: an app that retries a report must not double count.
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_ref ON ai_usage_events(service_id, request_ref) WHERE request_ref IS NOT NULL",
+  // --- Stripe: which apps have Stripe env injected, and in which mode ---------
+  // Keys themselves live in the encrypted `settings` table (stripe_<mode>_*);
+  // this table only records the link. extra_env_json lists additional
+  // system-managed vars (e.g. STRIPE_PRICE_ID) so Disconnect can remove them.
+  `CREATE TABLE IF NOT EXISTS stripe_app_links (
+    service_id TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    connected_at TEXT NOT NULL,
+    synced_at TEXT NOT NULL,
+    extra_env_json TEXT NOT NULL DEFAULT '[]'
+  )`,
   // A companion service (auto-created from an extra root Dockerfile — e.g. a
   // worker) inherits its env from a primary tier at deploy time via this link,
   // rather than getting a one-time snapshot copy. NULL for normal services.

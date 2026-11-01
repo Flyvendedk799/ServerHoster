@@ -72,6 +72,7 @@ Use the token from **Settings → Dev Tools → API / MCP Token** (not a dashboa
 - redeploy_service: Trigger a fresh git pull and rebuild/redeploy for a service (may take longer than other tools; raise the client timeout for deploys).
 - list_databases: List all managed databases and their status.
 - get_database_logs: Fetch recent container logs for a managed database.
+- stripe_status, stripe_verify, stripe_list_apps, stripe_connect_app, stripe_disconnect_app, stripe_ensure_product_price, stripe_ensure_webhook, stripe_ensure_portal: Stripe key status, app wiring and idempotent billing setup. Operator endpoint only (not on service-scoped agent sessions). No tool accepts or returns a key; keys are entered on the dashboard Stripe page. Live-mode writes need `confirmLive: true`. See the Stripe section of the API reference.
 
 ### Host Memory Alerts
 
