@@ -248,5 +248,9 @@ test("merging keeps the effective link overrides and the started status", async 
   const links = listLinksForService(ctx, serviceId);
   assert.equal(links.length, 1);
   assert.equal(links[0]!.resource_id, kept.id);
-  assert.deepEqual(JSON.parse(links[0]!.env_map_json), { A: "live", B: "2", ONLY_KEPT: "1" });
+  assert.deepEqual(
+    JSON.parse(links[0]!.env_map_json),
+    { A: "live", B: "2" },
+    "inactive overrides never become live"
+  );
 });

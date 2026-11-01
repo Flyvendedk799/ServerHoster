@@ -186,7 +186,14 @@ function mergeInto(ctx: AppContext, keepId: string, duplicateId: string): void {
         // active), and keys only the other link set are filled in, not dropped.
         const primary = existing.active === 1 || link.active !== 1 ? existing : link;
         const secondary = primary === existing ? link : existing;
-        const envMap = { ...parseEnvMap(secondary.env_map_json), ...parseEnvMap(primary.env_map_json) };
+        // Only a link that is in effect may contribute: filling keys from an
+        // inactive link would turn its stale overrides (an old SUPABASE_URL)
+        // into live ones.
+        const secondaryCounts = secondary.active === 1 || primary.active !== 1;
+        const envMap = {
+          ...(secondaryCounts ? parseEnvMap(secondary.env_map_json) : {}),
+          ...parseEnvMap(primary.env_map_json)
+        };
         const active = existing.active === 1 || link.active === 1 ? 1 : 0;
         ctx.db
           .prepare(
