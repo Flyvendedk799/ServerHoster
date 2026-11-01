@@ -6,6 +6,14 @@ import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import type Database from "better-sqlite3";
+import {
+  createApiToken,
+  ensureApiTokensTable,
+  listApiTokens,
+  revokeApiToken,
+  type ApiTokenInfo
+} from "./services/apiTokens.js";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "start";
@@ -25,7 +33,13 @@ Commands:
   reset-admin [username] Reset the admin password (run on the host, not over HTTP)
   prune-services         Delete stale "svc-*" test-fixture services from the DB
                          (pass --dry-run to preview without deleting)
-  version                Print version information
+  token create --name <name> [--expires-days N] [--quiet]
+                         Mint an automation API token (shk_…) directly in the DB.
+                         The token is printed once; --quiet prints only the token.
+  token list             List API tokens (never shows the secret)
+  token revoke <id|prefix>
+                         Revoke an API token by id or by its displayed prefix
+  version               Print version information
   help                   Show this help
 
 Environment:
@@ -213,6 +227,141 @@ function cmdPruneServices(opts: { dryRun: boolean }): void {
   }
 }
 
+function openDataDb(): Database.Database {
+  const dataDir = process.env.SURVHUB_DATA_DIR ?? path.join(os.homedir(), ".survhub");
+  const dbPath = path.join(dataDir, "survhub.db");
+  if (!fs.existsSync(dbPath)) {
+    process.stderr.write(`No database found at ${dbPath}. Has LocalSURV been started yet?\n`);
+    process.exit(1);
+  }
+  const requireFn = createRequire(import.meta.url);
+  const DatabaseCtor = requireFn("better-sqlite3") as typeof Database;
+  const db = new DatabaseCtor(dbPath);
+  // The server may be running against the same file; wait out its write locks.
+  db.pragma("busy_timeout = 5000");
+  return db;
+}
+
+/** Value of `--flag value` or `--flag=value`, or undefined. */
+function flagValue(argv: string[], flag: string): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === flag) return argv[i + 1];
+    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+  }
+  return undefined;
+}
+
+function formatTokenRow(t: ApiTokenInfo): string[] {
+  return [
+    t.id,
+    t.tokenPrefix,
+    t.name,
+    t.status,
+    t.createdAt.slice(0, 19).replace("T", " "),
+    t.lastUsedAt ? t.lastUsedAt.slice(0, 19).replace("T", " ") : "never",
+    t.expiresAt ? t.expiresAt.slice(0, 10) : "never"
+  ];
+}
+
+function cmdToken(argv: string[]): void {
+  const sub = argv[0];
+  if (sub !== "create" && sub !== "list" && sub !== "revoke") {
+    process.stderr.write(
+      "Usage:\n" +
+        "  survhub token create --name <name> [--expires-days N] [--quiet]\n" +
+        "  survhub token list\n" +
+        "  survhub token revoke <id|prefix>\n"
+    );
+    process.exit(2);
+  }
+  const db = openDataDb();
+  try {
+    // The server creates the table on boot, but the CLI may run against a
+    // database written by an older build — make sure it is there.
+    ensureApiTokensTable(db);
+
+    if (sub === "create") {
+      const name = flagValue(argv, "--name");
+      if (!name || name.startsWith("--")) {
+        process.stderr.write("token create: --name <name> is required\n");
+        process.exit(2);
+      }
+      const daysRaw = flagValue(argv, "--expires-days");
+      let expiresInDays: number | null = null;
+      if (daysRaw !== undefined) {
+        expiresInDays = Number(daysRaw);
+        if (!Number.isInteger(expiresInDays) || expiresInDays < 1) {
+          process.stderr.write("token create: --expires-days must be a positive whole number\n");
+          process.exit(2);
+        }
+      }
+      let created: ReturnType<typeof createApiToken>;
+      try {
+        created = createApiToken(db, { name, expiresInDays });
+      } catch (err) {
+        process.stderr.write(`token create: ${(err as Error).message}\n`);
+        process.exit(2);
+      }
+      if (argv.includes("--quiet")) {
+        process.stdout.write(`${created.token}\n`);
+        return;
+      }
+      process.stdout.write(
+        `Created API token "${created.info.name}" (id ${created.info.id})\n` +
+          `Expires: ${created.info.expiresAt ?? "never"}\n\n` +
+          `${created.token}\n\n` +
+          "This is the only time the token is shown. Use it as: Authorization: Bearer <token>\n"
+      );
+      return;
+    }
+
+    if (sub === "list") {
+      const tokens = listApiTokens(db);
+      if (tokens.length === 0) {
+        process.stdout.write("No API tokens.\n");
+        return;
+      }
+      const header = ["ID", "PREFIX", "NAME", "STATUS", "CREATED (UTC)", "LAST USED (UTC)", "EXPIRES"];
+      const rows = [header, ...tokens.map(formatTokenRow)];
+      const widths = header.map((_, col) => Math.max(...rows.map((r) => r[col].length)));
+      for (const row of rows) {
+        process.stdout.write(
+          `${row
+            .map((cell, col) => cell.padEnd(widths[col]))
+            .join("  ")
+            .trimEnd()}\n`
+        );
+      }
+      return;
+    }
+
+    const needle = argv[1];
+    if (!needle) {
+      process.stderr.write("token revoke: pass the token id or its prefix (see `survhub token list`)\n");
+      process.exit(2);
+    }
+    const result = revokeApiToken(db, needle, { allowPrefix: true });
+    if (!result.ok) {
+      if (result.reason === "ambiguous") {
+        process.stderr.write(`"${needle}" matches more than one token — use the full id:\n`);
+        for (const t of result.matches ?? [])
+          process.stderr.write(`  ${t.id}  ${t.tokenPrefix}  ${t.name}\n`);
+      } else {
+        process.stderr.write(`No API token matches "${needle}".\n`);
+      }
+      process.exit(1);
+    }
+    process.stdout.write(
+      result.alreadyRevoked
+        ? `API token "${result.info.name}" (${result.info.tokenPrefix}) was already revoked.\n`
+        : `Revoked API token "${result.info.name}" (${result.info.tokenPrefix}). It stops working immediately.\n`
+    );
+  } finally {
+    db.close();
+  }
+}
+
 function cmdStart(): void {
   if (!process.env.SURVHUB_SECRET_KEY) {
     process.stderr.write(
@@ -237,6 +386,10 @@ switch (command) {
     break;
   case "prune-services":
     cmdPruneServices({ dryRun: args.includes("--dry-run") });
+    break;
+  case "token":
+  case "tokens":
+    cmdToken(args.slice(1));
     break;
   case "version":
   case "--version":

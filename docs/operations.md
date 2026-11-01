@@ -41,6 +41,38 @@ ServerHoster uses a **durable API token** for MCP and REST API authentication. T
 
 **Legacy note:** `SURVHUB_AUTH_TOKEN` is still checked as a fallback, but the persisted durable token is preferred. After initial seed, changing the env var won't rotate the token — use the Settings UI or `POST /settings/api-token/rotate` instead.
 
+### Automation API tokens
+
+For scripts and agents that drive the REST API, use an **automation API token** (`shk_…`) instead of borrowing a dashboard session. Sessions expire and vanish when the `sessions` table is cleared (which locked an agent out after a `systemctl restart localsurv`); an API token is its own row in `survhub.db` and works until it is revoked or reaches its optional expiry.
+
+- Only the SHA-256 hash is stored. The plaintext is printed **once**, at creation.
+- Scope `admin`: the full API, except creating/listing/revoking API tokens (session-only).
+- Mutating requests are audit-logged as actor `apitoken:<id>` (`GET /ops/audit-logs`).
+- `last_used_at` (shown in the list) is updated at most once a minute.
+
+**Mint one on the host** (works whether or not the server is running, no login needed — the CLI writes straight into `$SURVHUB_DATA_DIR/survhub.db`, default `~/.survhub`). Store it in a root-only file, e.g. `/root/.survhub/automation.token` with mode `600`:
+
+```bash
+# On the VPS, as root. The subshell umask makes the file 0600 from the start.
+(umask 077; survhub token create --name claude-automation --quiet > /root/.survhub/automation.token)
+chmod 600 /root/.survhub/automation.token   # belt and braces
+# Optional expiry: add --expires-days 90
+
+# Use it
+curl -s -H "Authorization: Bearer $(cat /root/.survhub/automation.token)" http://localhost:8787/projects
+```
+
+If `survhub` is not on `PATH`, run the CLI from the checkout: `node apps/server/dist/cli.js token …` (with the same `SURVHUB_DATA_DIR` the service uses).
+
+**List / revoke:**
+
+```bash
+survhub token list                      # id, prefix, name, status, created, last used, expiry — never the secret
+survhub token revoke shk_AbC1dEf2       # by the displayed prefix, or by the full id
+```
+
+Revocation takes effect on the next request. The same create/list/revoke is available in the dashboard under **Settings → API tokens** and over HTTP (`GET`/`POST /auth/tokens`, `DELETE /auth/tokens/:id`; session-only — see [api-reference.md](./api-reference.md#automation-api-tokens)).
+
 ### MCP client timeouts (ops bots)
 
 External agents (e.g. Grok Bot via `mcp-remote` → `POST http://<host>:8787/mcp`) should:

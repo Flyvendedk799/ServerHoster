@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { nowIso } from "../lib/core.js";
 import type { AppContext } from "../types.js";
 import { getDurableApiToken } from "./settings.js";
+import { looksLikeApiToken, resolveApiToken } from "./apiTokens.js";
 
 export function enforceSecretPolicy(ctx: AppContext): void {
   if (ctx.config.nodeEnv === "production" && !ctx.config.secretKey) {
@@ -30,6 +31,9 @@ export function cleanupExpiredSessions(ctx: AppContext): void {
 export function isAuthorizedToken(ctx: AppContext, token: string): boolean {
   if (!isAuthEnabled(ctx)) return true;
   if (!token) return false;
+  // Automation API tokens (shk_…) are checked against their own table and
+  // never fall through to the session lookup.
+  if (looksLikeApiToken(token) && resolveApiToken(ctx.db, token)) return true;
   const durableToken = getDurableApiToken(ctx);
   if (token === durableToken) return true;
   if (ctx.config.authToken && token === ctx.config.authToken) return true;
@@ -41,8 +45,12 @@ export function isAuthorizedToken(ctx: AppContext, token: string): boolean {
 }
 
 export function resolveActorFromToken(ctx: AppContext, token: string): string | null {
+  if (!token) return isAuthEnabled(ctx) ? null : "anonymous";
+  if (looksLikeApiToken(token)) {
+    const apiToken = resolveApiToken(ctx.db, token);
+    if (apiToken) return `apitoken:${apiToken.id}`;
+  }
   if (!isAuthEnabled(ctx)) return "anonymous";
-  if (!token) return null;
   const durableToken = getDurableApiToken(ctx);
   if (token === durableToken) return "api-token";
   if (ctx.config.authToken && token === ctx.config.authToken) return "root-token";

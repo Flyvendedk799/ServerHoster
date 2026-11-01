@@ -19,7 +19,8 @@ import {
   ChevronRight,
   Play,
   Loader2,
-  Smartphone
+  Smartphone,
+  KeyRound
 } from "lucide-react";
 
 import { API_BASE_URL, api, clearAuthToken } from "../lib/api";
@@ -27,6 +28,7 @@ import { toast } from "../lib/toast";
 import { connectLogs } from "../lib/ws";
 import { StatusBadge } from "../components/StatusBadge";
 import { CompanionPanel } from "../components/CompanionPanel";
+import { ApiTokensPanel } from "../components/ApiTokensPanel";
 import { motion, AnimatePresence } from "framer-motion";
 
 type TunnelStatus = {
@@ -41,7 +43,7 @@ type TunnelStatus = {
 
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<
-    "connectivity" | "companion" | "integrations" | "data" | "system"
+    "connectivity" | "companion" | "api-tokens" | "integrations" | "data" | "system"
   >("connectivity");
   const [githubStatus, setGithubStatus] = useState<{
     configured: boolean;
@@ -247,6 +249,7 @@ export function SettingsPage() {
   const tabs = [
     { id: "connectivity", label: "Edge & SSL", icon: Globe, desc: "DNS & Tunneling" },
     { id: "companion", label: "Companion", icon: Smartphone, desc: "Pair your phone" },
+    { id: "api-tokens", label: "API tokens", icon: KeyRound, desc: "Automation access" },
     { id: "integrations", label: "Dev Tools", icon: GitBranch, desc: "Git & SSH Identity" },
     { id: "data", label: "Persistence", icon: HardDrive, desc: "Backups & Exports" },
     { id: "system", label: "Ops Console", icon: Cpu, desc: "Node Administration" }
@@ -409,6 +412,8 @@ export function SettingsPage() {
                 )}
 
                 {activeTab === "companion" && <CompanionPanel />}
+
+                {activeTab === "api-tokens" && <ApiTokensPanel />}
 
                 {activeTab === "integrations" && (
                   <div className="form-stack">

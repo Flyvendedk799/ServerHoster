@@ -19,6 +19,15 @@ import {
   touchCompanionDevice
 } from "../services/companion.js";
 import { writeAuditLog } from "../services/audit.js";
+import {
+  apiTokenRequestAllowed,
+  createApiToken,
+  isApiTokenManagementPath,
+  listApiTokens,
+  looksLikeApiToken,
+  resolveApiToken,
+  revokeApiToken
+} from "../services/apiTokens.js";
 
 const loginSchema = z.object({
   username: z.string().min(1).optional(),
@@ -28,6 +37,27 @@ const bootstrapSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(8)
 });
+const createApiTokenSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  expiresInDays: z.number().int().min(1).max(3650).nullable().optional()
+});
+
+/**
+ * Managing API tokens is reserved for a human at the dashboard (a login
+ * session) or the host operator (SURVHUB_AUTH_TOKEN). Machine credentials —
+ * an API token, the legacy durable settings token, a paired phone — must not
+ * be able to mint, list or revoke API tokens, otherwise one leaked token could
+ * entrench itself by minting another.
+ */
+function isTokenManagementActor(actor: string | undefined): boolean {
+  if (!actor) return false;
+  return (
+    actor === "anonymous" ||
+    actor === "root-token" ||
+    actor.startsWith("user:") ||
+    actor.startsWith("session:")
+  );
+}
 
 function requestPath(url: string): string {
   return url.split("?")[0] ?? url;
@@ -179,6 +209,25 @@ export function registerAuthRoutes(ctx: AppContext): void {
       touchCompanionDevice(ctx, device.id, req.ip ?? null);
       return;
     }
+    // An automation API token (shk_…). Survives restarts by construction —
+    // it is its own row, not a session — and is bounded by its scopes.
+    if (looksLikeApiToken(token)) {
+      const apiToken = resolveApiToken(ctx.db, token);
+      if (apiToken) {
+        // Stamped before the scope check so a refused write is still audited.
+        (req as { actor?: string }).actor = `apitoken:${apiToken.id}`;
+        if (!apiTokenRequestAllowed(apiToken.scopes, method, path)) {
+          reply.code(403).send({
+            error: isApiTokenManagementPath(path)
+              ? "API tokens can only be managed from a dashboard session or the host CLI"
+              : "This action is not allowed for this API token's scope",
+            code: "API_TOKEN_SCOPE_DENIED"
+          });
+          return;
+        }
+        return;
+      }
+    }
     if (!isAuthorizedToken(ctx, token)) {
       reply.code(401).send({ error: "Unauthorized" });
       return;
@@ -198,14 +247,21 @@ export function registerAuthRoutes(ctx: AppContext): void {
    */
   ctx.app.addHook("onResponse", async (req, reply) => {
     const actor = (req as { actor?: string }).actor;
-    if (!actor?.startsWith("companion:")) return;
+    // Automation API tokens get the same treatment: what an agent changed,
+    // and with which token, is the first thing to check after an incident.
+    const kind = actor?.startsWith("companion:")
+      ? "companion"
+      : actor?.startsWith("apitoken:")
+        ? "apitoken"
+        : null;
+    if (!actor || !kind) return;
     const method = (req.method ?? "GET").toUpperCase();
     if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
     writeAuditLog(ctx, {
       actor,
       action: `${method} ${requestPath(req.url)}`,
-      resourceType: "companion_device",
-      resourceId: actor.slice("companion:".length),
+      resourceType: kind === "companion" ? "companion_device" : "api_token",
+      resourceId: actor.slice(`${kind}:`.length),
       statusCode: reply.statusCode,
       sourceIp: req.ip ?? null,
       userAgent: (req.headers["user-agent"] as string | undefined) ?? null
@@ -243,6 +299,70 @@ export function registerAuthRoutes(ctx: AppContext): void {
       }
     }
   );
+
+  // --- Automation API tokens ----------------------------------------------
+  // Session-only (see isTokenManagementActor); the onRequest hook already
+  // refuses API tokens here, this is the second lock for the other machine
+  // credentials.
+  ctx.app.get("/auth/tokens", async (req, reply) => {
+    if (!isTokenManagementActor((req as { actor?: string }).actor)) {
+      reply.code(403).send({ error: "API tokens can only be managed from a dashboard session" });
+      return;
+    }
+    return { tokens: listApiTokens(ctx.db) };
+  });
+
+  ctx.app.post("/auth/tokens", async (req, reply) => {
+    const actor = (req as { actor?: string }).actor;
+    if (!isTokenManagementActor(actor)) {
+      reply.code(403).send({ error: "API tokens can only be managed from a dashboard session" });
+      return;
+    }
+    const parsed = createApiTokenSchema.parse(req.body ?? {});
+    const { token, info } = createApiToken(ctx.db, {
+      name: parsed.name,
+      expiresInDays: parsed.expiresInDays ?? null
+    });
+    writeAuditLog(ctx, {
+      actor: actor ?? "unknown",
+      action: "api_token.create",
+      resourceType: "api_token",
+      resourceId: info.id,
+      statusCode: 200,
+      details: `name=${info.name} prefix=${info.tokenPrefix}`,
+      sourceIp: req.ip ?? null,
+      userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+    });
+    // The plaintext is returned here and never again.
+    return { token, ...info };
+  });
+
+  ctx.app.delete("/auth/tokens/:id", async (req, reply) => {
+    const actor = (req as { actor?: string }).actor;
+    if (!isTokenManagementActor(actor)) {
+      reply.code(403).send({ error: "API tokens can only be managed from a dashboard session" });
+      return;
+    }
+    const { id } = req.params as { id: string };
+    const result = revokeApiToken(ctx.db, id);
+    if (!result.ok) {
+      reply.code(404).send({ error: "API token not found" });
+      return;
+    }
+    if (!result.alreadyRevoked) {
+      writeAuditLog(ctx, {
+        actor: actor ?? "unknown",
+        action: "api_token.revoke",
+        resourceType: "api_token",
+        resourceId: result.info.id,
+        statusCode: 200,
+        details: `name=${result.info.name} prefix=${result.info.tokenPrefix}`,
+        sourceIp: req.ip ?? null,
+        userAgent: (req.headers["user-agent"] as string | undefined) ?? null
+      });
+    }
+    return { ok: true, token: result.info };
+  });
 
   ctx.app.post("/auth/logout", async (req) => {
     const authHeader = req.headers.authorization;

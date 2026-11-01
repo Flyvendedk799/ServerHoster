@@ -14,8 +14,12 @@ ServerHoster provides an MCP endpoint to allow AI bots (like Grok Bot or Claude)
 
 ## Authentication
 
-- Bearer token in `Authorization: Bearer <token>`, or
-- Cookie session after `POST /auth/login`
+Every request outside the unauthenticated routes carries `Authorization: Bearer <token>`, where the token is one of:
+
+- **Dashboard session** — returned by `POST /auth/login`. Expires after `SURVHUB_SESSION_TTL_MS` (default 12 h) and is gone when the `sessions` table is cleared. Meant for the dashboard, not for automation.
+- **Automation API token** (`shk_…`) — long-lived, revocable machine credential for scripts and agents. Minted in **Settings → API tokens**, via `POST /auth/tokens`, or on the host with `survhub token create` (see [operations.md](./operations.md#automation-api-tokens)). Survives restarts; stops working when revoked or past its optional expiry. Only its SHA-256 hash is stored, so it is shown exactly once. Scope `admin` = the whole API **except** managing API tokens (`/auth/tokens*` answers `403` with `code: "API_TOKEN_SCOPE_DENIED"`). Mutating requests made with a token are written to the audit log as actor `apitoken:<id>`.
+- **Durable API / MCP token** (legacy, single shared value in Settings → Dev Tools) or `SURVHUB_AUTH_TOKEN`.
+
 - Unauthenticated routes: `/health`, `/onboarding`, `/auth/bootstrap`, `/auth/login`, `/.well-known/acme-challenge/*`, `/webhooks/github`
 
 Errors are returned as `{ "error": "message" }` with the appropriate HTTP status code. Validation failures from route schemas return `400` with `{ "error": "Validation failed", "fields": { "fieldName": "reason" } }`.
@@ -40,6 +44,18 @@ Errors are returned as `{ "error": "message" }` with the appropriate HTTP status
 | `POST` | `/auth/bootstrap` | `{ username, password }`  | Creates the first user; 8+ char password |
 | `POST` | `/auth/login`     | `{ username?, password }` | Returns `{ token }`                      |
 | `POST` | `/auth/logout`    | —                         | Invalidates the current session          |
+
+### Automation API tokens
+
+Session-only: callable with a dashboard session (or `SURVHUB_AUTH_TOKEN`), never with an API token, the legacy durable token or a paired companion device — so a leaked token cannot mint itself a successor.
+
+| Method   | Path               | Body                                | Notes                                                                                                                    |
+| -------- | ------------------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/auth/tokens`     | —                                   | `{ tokens: [{ id, name, tokenPrefix, scopes, createdAt, lastUsedAt, expiresAt, revokedAt, status }] }` — never the secret |
+| `POST`   | `/auth/tokens`     | `{ name, expiresInDays? }`          | `expiresInDays` 1–3650 or omitted/`null` for no expiry. Returns the token metadata plus `token` (plaintext, **once**)     |
+| `DELETE` | `/auth/tokens/:id` | —                                   | Revoke; effective immediately. `404` for an unknown id. Revoking twice is a no-op                                         |
+
+`status` is `active`, `expired` or `revoked`. `last_used_at` is updated at most once a minute per token.
 
 ## Projects
 
