@@ -46,7 +46,7 @@ ServerHoster uses a **durable API token** for MCP and REST API authentication. T
 For scripts and agents that drive the REST API, use an **automation API token** (`shk_…`) instead of borrowing a dashboard session. Sessions expire and vanish when the `sessions` table is cleared (which locked an agent out after a `systemctl restart localsurv`); an API token is its own row in `survhub.db` and works until it is revoked or reaches its optional expiry.
 
 - Only the SHA-256 hash is stored. The plaintext is printed **once**, at creation.
-- Scope `admin`: the full API, except creating/listing/revoking API tokens (session-only).
+- Scope `admin`: the full API, except creating/listing/revoking API tokens (session-only) and revealing/rotating/planting other control-plane credentials (durable API token, SaaS machine token, companion pairing, dashboard password) — so revoking a token really ends its access.
 - Mutating requests are audit-logged as actor `apitoken:<id>` (`GET /ops/audit-logs`).
 - `last_used_at` (shown in the list) is updated at most once a minute.
 

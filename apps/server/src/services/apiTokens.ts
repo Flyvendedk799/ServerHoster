@@ -270,11 +270,59 @@ export function isApiTokenManagementPath(path: string): boolean {
 }
 
 /**
- * The authorization decision for an API token. `path` must already have its
- * query string stripped. "admin" is the whole API except token management;
- * future narrower scopes slot in here.
+ * Settings keys that hold a credential the control plane itself accepts (or,
+ * for the dashboard password, whose removal can switch auth off entirely).
+ * Writing or deleting one through the generic settings API would let a token
+ * leave behind a credential that outlives its own revocation.
  */
-export function apiTokenRequestAllowed(scopes: ApiTokenScope[], _method: string, path: string): boolean {
+export const CREDENTIAL_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "api_token",
+  "saas_api_token",
+  "dashboard_password"
+]);
+
+/**
+ * Endpoints that reveal, rotate or mint *another* long-lived credential. An
+ * API token is barred from them for the same reason it cannot mint API
+ * tokens: revoking a leaked token must actually end that access, which it
+ * would not if the token could first copy the shared durable token, rotate
+ * the SaaS machine token or pair a companion device.
+ */
+function isCredentialEscalationPath(method: string, path: string): boolean {
+  const verb = method.toUpperCase();
+  if (path === "/settings/api-token/reveal" || path === "/settings/api-token/rotate") return true;
+  if (path === "/saas/token/rotate") return true;
+  if (verb === "POST" && path === "/companion/pairings") return true;
+  if (verb === "DELETE" && path.startsWith("/settings/")) {
+    let key = path.slice("/settings/".length);
+    try {
+      key = decodeURIComponent(key);
+    } catch {
+      return true; // malformed escape: refuse rather than guess
+    }
+    if (CREDENTIAL_SETTING_KEYS.has(key)) return true;
+  }
+  return false;
+}
+
+/**
+ * The authorization decision for an API token. `path` must already have its
+ * query string stripped. `body` is the parsed request body when known (the
+ * preHandler pass); the onRequest pass runs before parsing and omits it.
+ * "admin" is the whole API except token management and credential
+ * escalation; future narrower scopes slot in here.
+ */
+export function apiTokenRequestAllowed(
+  scopes: ApiTokenScope[],
+  method: string,
+  path: string,
+  body?: unknown
+): boolean {
   if (isApiTokenManagementPath(path)) return false;
+  if (isCredentialEscalationPath(method, path)) return false;
+  if (method.toUpperCase() === "PUT" && path === "/settings" && body && typeof body === "object") {
+    const key = (body as { key?: unknown }).key;
+    if (typeof key === "string" && CREDENTIAL_SETTING_KEYS.has(key)) return false;
+  }
   return scopes.includes("admin");
 }

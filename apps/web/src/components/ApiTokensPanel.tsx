@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Bot, Check, Copy, KeyRound, Loader2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Bot, Check, Copy, KeyRound, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
 import { confirmDialog } from "../lib/confirm";
@@ -51,13 +51,22 @@ export function ApiTokensPanel() {
   const [expiry, setExpiry] = useState("");
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<CreatedToken | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  // A ref, not just state: a second Enter can arrive before the re-render that
+  // disables the button, and every duplicate request mints a real token.
+  const creatingRef = useRef(false);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       const res = await api<{ tokens: ApiToken[] }>("/auth/tokens", { silent: true });
       setTokens(res.tokens);
-    } catch {
-      /* the list stays empty; create/revoke still toast their own errors */
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error && err.message ? err.message : "Could not load API tokens");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -66,11 +75,13 @@ export function ApiTokensPanel() {
   }, [load]);
 
   async function create() {
+    if (creatingRef.current) return;
     const trimmed = name.trim();
     if (!trimmed) {
       toast.error("Give the token a name so you can tell it apart later");
       return;
     }
+    creatingRef.current = true;
     setBusy(true);
     try {
       const result = await api<CreatedToken>("/auth/tokens", {
@@ -83,6 +94,7 @@ export function ApiTokensPanel() {
     } catch {
       /* toasted by api() */
     } finally {
+      creatingRef.current = false;
       setBusy(false);
     }
   }
@@ -107,10 +119,19 @@ export function ApiTokensPanel() {
 
   function copyCreated() {
     if (!created) return;
-    navigator.clipboard
-      .writeText(created.token)
-      .then(() => toast.success("Token copied to clipboard"))
-      .catch(() => toast.error("Copy failed"));
+    const manual = () => toast.error("Copy is unavailable here — select the token and copy it manually");
+    try {
+      if (!navigator.clipboard?.writeText) {
+        manual();
+        return;
+      }
+      navigator.clipboard
+        .writeText(created.token)
+        .then(() => toast.success("Token copied to clipboard"))
+        .catch(manual);
+    } catch {
+      manual();
+    }
   }
 
   return (
@@ -138,7 +159,7 @@ export function ApiTokensPanel() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void create();
+            if (e.key === "Enter" && !busy) void create();
           }}
           style={{ marginTop: "0.4rem" }}
         />
@@ -173,7 +194,7 @@ export function ApiTokensPanel() {
             </p>
             <div className="row" style={{ gap: "0.5rem", alignItems: "center" }}>
               <div className="ssh-box" style={{ flex: 1 }}>
-                <code>{created.token}</code>
+                <code className="api-token-secret">{created.token}</code>
               </div>
               <button className="ghost small font-bold" onClick={copyCreated}>
                 <Copy size={14} /> Copy
@@ -194,10 +215,27 @@ export function ApiTokensPanel() {
           <Bot className="text-muted" size={20} />
           <h3>API tokens</h3>
         </div>
-        {tokens.length === 0 ? (
+        {loadError ? (
+          <div className="api-token-load-error" role="alert">
+            <p className="small api-token-warning">
+              <AlertTriangle size={14} />
+              Could not load API tokens: {loadError}. The list below may be out of date.
+            </p>
+            <button className="ghost small" onClick={() => void load()} disabled={loading}>
+              {loading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Retry
+            </button>
+          </div>
+        ) : null}
+        {loading && tokens.length === 0 && !loadError ? (
           <p className="muted small" style={{ marginTop: "1rem" }}>
-            No API tokens yet.
+            <Loader2 size={14} className="spin" /> Loading…
           </p>
+        ) : tokens.length === 0 ? (
+          loadError ? null : (
+            <p className="muted small" style={{ marginTop: "1rem" }}>
+              No API tokens yet.
+            </p>
+          )
         ) : (
           <ul className="api-token-list">
             {tokens.map((token) => (
@@ -229,6 +267,8 @@ export function ApiTokensPanel() {
         .api-tokens-panel select, .api-tokens-panel input[type="text"] { width: 100%; }
         .api-tokens-panel .api-token-created { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-subtle); }
         .api-tokens-panel .api-token-created code { overflow-wrap: anywhere; }
+        .api-tokens-panel .api-token-secret { user-select: all; }
+        .api-tokens-panel .api-token-load-error { margin-top: 1rem; }
         .api-tokens-panel .api-token-warning { display: flex; gap: 0.45rem; align-items: center; color: var(--warning); margin-bottom: 0.5rem; }
         .api-tokens-panel .api-token-list { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
         .api-tokens-panel .api-token-list li { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem; background: var(--bg-sunken); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }

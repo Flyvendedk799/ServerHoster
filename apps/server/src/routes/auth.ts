@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { FastifyReply } from "fastify";
 import type { AppContext } from "../types.js";
 import {
   createSession,
@@ -49,6 +50,15 @@ const createApiTokenSchema = z.object({
  * be able to mint, list or revoke API tokens, otherwise one leaked token could
  * entrench itself by minting another.
  */
+function denyApiToken(reply: FastifyReply, path: string): void {
+  reply.code(403).send({
+    error: isApiTokenManagementPath(path)
+      ? "API tokens can only be managed from a dashboard session or the host CLI"
+      : "API tokens cannot reveal, rotate or create other credentials",
+    code: "API_TOKEN_SCOPE_DENIED"
+  });
+}
+
 function isTokenManagementActor(actor: string | undefined): boolean {
   if (!actor) return false;
   return (
@@ -157,7 +167,24 @@ export function registerAuthRoutes(ctx: AppContext): void {
     // SaaS domain routes accept the dedicated machine token (for a hosted
     // app's edge functions) in addition to dashboard sessions; both are
     // validated inside routes/saasDomains.ts.
-    if (path === "/saas" || path.startsWith("/saas/")) return;
+    if (path === "/saas" || path.startsWith("/saas/")) {
+      // Those routes take any authorized bearer as "dashboard", which would
+      // include an API token — but rotating the SaaS machine token hands out
+      // a credential that outlives the API token's revocation.
+      const saasToken = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
+      if (looksLikeApiToken(saasToken)) {
+        const apiToken = resolveApiToken(ctx.db, saasToken);
+        if (apiToken) {
+          (req as { actor?: string }).actor = `apitoken:${apiToken.id}`;
+          const method = (req.method ?? "GET").toUpperCase();
+          if (!apiTokenRequestAllowed(apiToken.scopes, method, path)) {
+            denyApiToken(reply, path);
+            return;
+          }
+        }
+      }
+      return;
+    }
     // MCP sessions use short-lived per-agent bearer tokens or global operator
     // tokens, validated inside the MCP route instead of dashboard session tokens.
     if (path === "/mcp" || path.startsWith("/mcp/")) return;
@@ -217,12 +244,7 @@ export function registerAuthRoutes(ctx: AppContext): void {
         // Stamped before the scope check so a refused write is still audited.
         (req as { actor?: string }).actor = `apitoken:${apiToken.id}`;
         if (!apiTokenRequestAllowed(apiToken.scopes, method, path)) {
-          reply.code(403).send({
-            error: isApiTokenManagementPath(path)
-              ? "API tokens can only be managed from a dashboard session or the host CLI"
-              : "This action is not allowed for this API token's scope",
-            code: "API_TOKEN_SCOPE_DENIED"
-          });
+          denyApiToken(reply, path);
           return;
         }
         return;
@@ -233,6 +255,21 @@ export function registerAuthRoutes(ctx: AppContext): void {
       return;
     }
     (req as { actor?: string }).actor = resolveActorFromToken(ctx, token) ?? "unknown";
+  });
+
+  // Second pass for API tokens, once the body is parsed: the generic
+  // `PUT /settings` must not be usable to plant a credential setting.
+  ctx.app.addHook("preHandler", async (req, reply) => {
+    const actor = (req as { actor?: string }).actor;
+    if (!actor?.startsWith("apitoken:")) return;
+    const method = (req.method ?? "GET").toUpperCase();
+    const path = requestPath(req.url);
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
+    const apiToken = resolveApiToken(ctx.db, token);
+    if (!apiToken || !apiTokenRequestAllowed(apiToken.scopes, method, path, req.body)) {
+      denyApiToken(reply, path);
+      return reply;
+    }
   });
 
   /**

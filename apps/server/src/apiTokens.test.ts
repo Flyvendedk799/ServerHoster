@@ -236,6 +236,48 @@ test("api tokens over HTTP: an API token cannot list, mint or revoke tokens", as
     });
     assert.equal(legacy.statusCode, 403);
 
+    // Nor can an API token copy or plant another long-lived credential that
+    // would survive its own revocation.
+    const escalations: Array<{
+      method: "GET" | "POST" | "PUT" | "DELETE";
+      url: string;
+      payload?: Record<string, unknown>;
+    }> = [
+      { method: "GET", url: "/settings/api-token/reveal" },
+      { method: "POST", url: "/settings/api-token/rotate" },
+      { method: "POST", url: "/saas/token/rotate" },
+      { method: "POST", url: "/companion/pairings", payload: {} },
+      { method: "PUT", url: "/settings", payload: { key: "api_token", value: "planted" } },
+      { method: "PUT", url: "/settings", payload: { key: "dashboard_password", value: "planted" } },
+      { method: "DELETE", url: "/settings/dashboard_password" }
+    ];
+    for (const req of escalations) {
+      const resp = await ctx.app.inject({ ...req, headers: bearer(token) });
+      assert.equal(resp.statusCode, 403, `${req.method} ${req.url} ${JSON.stringify(req.payload ?? {})}`);
+      assert.equal(resp.json().code, "API_TOKEN_SCOPE_DENIED");
+    }
+    const pw = ctx.db.prepare("SELECT value FROM settings WHERE key = 'dashboard_password'").get() as {
+      value: string;
+    };
+    assert.equal(pw.value, "test-pass", "the dashboard password must be untouched");
+    // Ordinary settings and the masked token view stay available.
+    assert.equal(
+      (
+        await ctx.app.inject({
+          method: "PUT",
+          url: "/settings",
+          headers: bearer(token),
+          payload: { key: "api_tokens_test_flag", value: "1" }
+        })
+      ).statusCode,
+      200
+    );
+    assert.equal(
+      (await ctx.app.inject({ method: "GET", url: "/settings/api-token", headers: bearer(token) }))
+        .statusCode,
+      200
+    );
+
     // Revoked / expired / unknown tokens are plain 401s.
     revokeApiToken(ctx.db, info.id);
     assert.equal(
@@ -258,6 +300,34 @@ test("api tokens over HTTP: an API token cannot list, mint or revoke tokens", as
       401
     );
   } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("api tokens over HTTP: SURVHUB_AUTH_TOKEN can manage tokens even when it seeded the durable token", async () => {
+  const ctx = await buildApp();
+  const previous = ctx.config.authToken;
+  try {
+    enablePasswordAuth(ctx);
+    ctx.config.authToken = "host-root-token-for-tests";
+    // First-start seeding: the durable token takes the env value.
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
+    const listed = await ctx.app.inject({
+      method: "GET",
+      url: "/auth/tokens",
+      headers: bearer("host-root-token-for-tests")
+    });
+    assert.equal(listed.statusCode, 200);
+    const created = await ctx.app.inject({
+      method: "POST",
+      url: "/auth/tokens",
+      headers: bearer("host-root-token-for-tests"),
+      payload: { name: "from-host" }
+    });
+    assert.equal(created.statusCode, 200);
+  } finally {
+    ctx.config.authToken = previous;
+    ctx.db.prepare("DELETE FROM settings WHERE key = 'api_token'").run();
     await gracefulShutdown(ctx);
   }
 });
@@ -305,6 +375,12 @@ test("survhub token CLI: create, list and revoke against a temp database", () =>
 
     const missingName = runCli(dataDir, ["token", "create"]);
     assert.equal(missingName.status, 2);
+
+    // A dangling --expires-days must not silently mint a permanent token.
+    const danglingExpiry = runCli(dataDir, ["token", "create", "--name", "x", "--expires-days"]);
+    assert.equal(danglingExpiry.status, 2);
+    const emptyExpiry = runCli(dataDir, ["token", "create", "--name", "x", "--expires-days="]);
+    assert.equal(emptyExpiry.status, 2);
 
     const created = runCli(dataDir, ["token", "create", "--name", "claude", "--expires-days", "90"]);
     assert.equal(created.status, 0, created.stderr);

@@ -51,9 +51,12 @@ export function resolveActorFromToken(ctx: AppContext, token: string): string | 
     if (apiToken) return `apitoken:${apiToken.id}`;
   }
   if (!isAuthEnabled(ctx)) return "anonymous";
+  // The host credential wins over the durable token: on first start the
+  // durable token is seeded from SURVHUB_AUTH_TOKEN, so the two are often the
+  // same value, and the operator's env credential must keep its own identity.
+  if (ctx.config.authToken && token === ctx.config.authToken) return "root-token";
   const durableToken = getDurableApiToken(ctx);
   if (token === durableToken) return "api-token";
-  if (ctx.config.authToken && token === ctx.config.authToken) return "root-token";
   cleanupExpiredSessions(ctx);
   const row = ctx.db
     .prepare("SELECT id, user_id FROM sessions WHERE token = ? AND expires_at > ?")

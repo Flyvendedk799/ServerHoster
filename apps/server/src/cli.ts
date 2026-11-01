@@ -288,8 +288,9 @@ function cmdToken(argv: string[]): void {
         process.exit(2);
       }
       const daysRaw = flagValue(argv, "--expires-days");
+      const daysGiven = argv.some((a) => a === "--expires-days" || a.startsWith("--expires-days="));
       let expiresInDays: number | null = null;
-      if (daysRaw !== undefined) {
+      if (daysGiven) {
         expiresInDays = Number(daysRaw);
         if (!Number.isInteger(expiresInDays) || expiresInDays < 1) {
           process.stderr.write("token create: --expires-days must be a positive whole number\n");
