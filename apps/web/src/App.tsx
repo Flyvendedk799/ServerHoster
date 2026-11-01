@@ -24,6 +24,7 @@ import {
   Shield,
   Inbox,
   Wallet,
+  CreditCard,
   Workflow
 } from "lucide-react";
 
@@ -36,6 +37,7 @@ import { EmailPage } from "./pages/Email";
 import { EmailerPage } from "./pages/Emailer";
 import { AiGatewayPage } from "./pages/AiGateway";
 import { AiUsagePage } from "./pages/AiUsage";
+import { StripePage } from "./pages/Stripe";
 import { DeploymentsPage } from "./pages/Deployments";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
@@ -171,6 +173,7 @@ const routeLabels: Record<string, string> = {
   emailer: "Emailer",
   "ai-gateway": "AI Gateway",
   "ai-usage": "AI Usage",
+  stripe: "Stripe",
   databases: "Databases",
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
@@ -402,6 +405,15 @@ export function App() {
             {!collapsed && <span>AI Usage</span>}
           </NavLink>
           <NavLink
+            to="/stripe"
+            aria-label="Stripe"
+            title={collapsed ? "Stripe" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <CreditCard size={16} />
+            {!collapsed && <span>Stripe</span>}
+          </NavLink>
+          <NavLink
             to="/databases"
             aria-label="Databases"
             title={collapsed ? "Databases" : undefined}
@@ -605,6 +617,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <AiUsagePage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/stripe"
+                  element={
+                    <ProtectedRoute>
+                      <StripePage />
                     </ProtectedRoute>
                   }
                 />

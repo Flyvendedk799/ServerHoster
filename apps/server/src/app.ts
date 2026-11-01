@@ -51,6 +51,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAiGatewayRoutes } from "./routes/aiGateway.js";
 import { registerAiUsageRoutes } from "./routes/aiUsage.js";
+import { registerStripeRoutes } from "./routes/stripe.js";
 import { getGatewayConfig, primeCredentialRedaction } from "./services/aiGateway.js";
 import { startInferenceServer, stopInferenceServer } from "./services/aiGatewayServer.js";
 import { isExternalMode, primeExternalRedaction } from "./services/aiGatewayExternal.js";
@@ -315,6 +316,7 @@ export async function buildApp(): Promise<AppContext> {
   registerMcpRoutes(ctx);
   registerAiGatewayRoutes(ctx);
   registerAiUsageRoutes(ctx);
+  registerStripeRoutes(ctx);
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);

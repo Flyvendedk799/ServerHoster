@@ -169,6 +169,25 @@ Host-based routing: any incoming request whose `Host` header matches a `proxy_ro
 | `GET`    | `/github/repos`                |                           | Paginated list of the user's GitHub repos via the stored PAT            |
 | `POST`   | `/github/webhook/ensure`       | `{ repoUrl, webhookUrl }` | Idempotent webhook registration                                         |
 
+## Stripe
+
+Keys for test and live mode are stored separately, encrypted, and are **never returned**: responses carry only a masked preview (`sk_test_…ab12`) and a non-reversible fingerprint. Every route is under `/api` and needs the dashboard session or an operator token. Test mode is the default everywhere; anything that writes to live Stripe, or injects live keys into an app, needs `confirmLive: true` (the dashboard asks you to type `LIVE`). Writes are audit-logged (`stripe.*`) without key material. Stripe errors surface only Stripe's `type` and `code` (in `meta`), never a message or key, and are never returned as `401`.
+
+| Method   | Path                                  | Body / query                                                                                                     | Description                                                                                                  |
+| -------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/stripe/status`                  |                                                                                                                  | Per mode: masked key info, last verified account, recorded setup (price/webhook/portal ids)                  |
+| `PUT`    | `/api/stripe/keys/:mode`              | `{ secretKey?, publishableKey?, webhookSecret? }`                                                                | Store/replace keys (`mode` = `test`\|`live`). Prefix and mode are validated. Connected apps are updated      |
+| `DELETE` | `/api/stripe/keys/:mode?part=`        | `part` = `secret_key`\|`publishable_key`\|`webhook_secret`\|`all` (required)                                  | Remove. Removing the secret key disconnects apps connected in that mode                                      |
+| `POST`   | `/api/stripe/verify/:mode`            |                                                                                                                  | Calls Stripe `GET /v1/account`; returns name, country, currency, `charges_enabled`, `payouts_enabled`, `details_submitted`, `currently_due` |
+| `GET`    | `/api/stripe/apps`                    |                                                                                                                  | Services with connection state, mode, and `restart_needed`                                                   |
+| `POST`   | `/api/stripe/apps/:serviceId/connect` | `{ mode?, takeover?, confirmLive? }`                                                                             | Inject `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (if stored), `STRIPE_MODE` as encrypted system env. `409 env_conflict` if the app defines them itself unless `takeover: true`. Restart the app afterwards |
+| `DELETE` | `/api/stripe/apps/:serviceId`         |                                                                                                                  | Remove the injected env                                                                                      |
+| `POST`   | `/api/stripe/setup/product-price`     | `{ mode?, name, unitAmount, currency, interval, taxBehavior, lookupKey, serviceId?, priceEnvName?, confirmLive? }` | Idempotent product + recurring price (`unitAmount` in minor units, 900 = 9.00). `409 price_conflict` if the lookup key exists with other terms. Optionally writes the price id into a connected app |
+| `POST`   | `/api/stripe/setup/webhook`           | `{ mode?, url, events?, confirmLive? }`                                                                          | Idempotent webhook endpoint (https only). The signing secret Stripe returns at creation is stored encrypted, never returned, and pushed to connected apps |
+| `POST`   | `/api/stripe/setup/portal`            | `{ mode?, returnUrl?, confirmLive? }`                                                                            | Idempotent Customer Portal configuration: cancel at period end, payment-method update, invoice history       |
+
+Merchant verification, payout details and tax registration cannot be done with an API key; `verify` reports what is still missing. The same actions exist as MCP tools (see [MCP](./mcp.md)); there is deliberately no tool that accepts a key.
+
 ## Cloudflare
 
 | Method   | Path                        | Body                                                         | Description                                             |
