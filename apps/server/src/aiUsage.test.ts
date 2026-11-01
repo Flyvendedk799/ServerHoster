@@ -4,7 +4,6 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import test, { beforeEach, describe } from "node:test";
 import type { AppContext } from "./types.js";
 import {
@@ -24,6 +23,16 @@ import {
 } from "./services/aiUsage.js";
 import { getServiceEnv } from "./lib/core.js";
 import { isApiPath } from "./routes/auth.js";
+
+// node:sqlite needs Node 22.5+. CI still runs Node 20, where these tests skip instead of failing to load.
+type SqliteModule = typeof import("node:sqlite");
+let sqlite: SqliteModule | null = null;
+try {
+  sqlite = await import("node:sqlite");
+} catch {
+  /* not available on this Node version */
+}
+const skip = sqlite ? false : "node:sqlite is not available on this Node version (needs 22.5+)";
 
 const SCHEMA = `
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -54,7 +63,7 @@ CREATE UNIQUE INDEX idx_ai_usage_events_ref ON ai_usage_events(service_id, reque
 let ctx: AppContext;
 
 function makeContext(): AppContext {
-  const db = new DatabaseSync(":memory:");
+  const db = new sqlite!.DatabaseSync(":memory:");
   db.exec(SCHEMA);
   db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run("svc-coach", "p1", "Coach", "docker");
   db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run("svc-web", "p1", "Web", "process");
@@ -67,7 +76,7 @@ function makeContext(): AppContext {
 }
 
 beforeEach(() => {
-  ctx = makeContext();
+  if (sqlite) ctx = makeContext();
 });
 
 const sonnet = (extra: Record<string, unknown> = {}) => ({
@@ -80,7 +89,7 @@ const sonnet = (extra: Record<string, unknown> = {}) => ({
   ...extra
 });
 
-describe("pricing", () => {
+describe("pricing", { skip }, () => {
   test("cost is tokens x USD-per-million, including cache tokens", () => {
     // 1000 in * $2 + 100 out * $10 = 2000 + 1000 micro-USD
     assert.equal(computeCostMicro(DEFAULT_PRICES["claude-sonnet-5-5"], { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 }), 3000);
@@ -107,7 +116,7 @@ describe("pricing", () => {
   });
 });
 
-describe("connecting an app", () => {
+describe("connecting an app", { skip }, () => {
   test("mints a token, stores only its hash, and injects encrypted env", () => {
     const r = connectService(ctx, "svc-coach");
     assert.match(r.token_prefix, /^sau_/);
@@ -164,7 +173,7 @@ describe("connecting an app", () => {
   });
 });
 
-describe("recording", () => {
+describe("recording", { skip }, () => {
   test("computes cost, stores metadata, and is idempotent per request_ref", () => {
     const a = recordUsage(ctx, "svc-coach", sonnet({ request_ref: "req-1" }));
     assert.deepEqual(a, { recorded: true, cost_micro_usd: 3000 });
@@ -194,7 +203,7 @@ describe("recording", () => {
   });
 });
 
-describe("summary", () => {
+describe("summary", { skip }, () => {
   test("aggregates totals, per app, per model, latency, errors and cache hits", () => {
     recordUsage(ctx, "svc-coach", sonnet({ duration_ms: 1000 }));
     recordUsage(ctx, "svc-coach", sonnet({ duration_ms: 3000, cache_read_tokens: 3000 }));
@@ -219,7 +228,7 @@ describe("summary", () => {
   });
 });
 
-describe("budgets and alerts", () => {
+describe("budgets and alerts", { skip }, () => {
   const notifications = () => ctx.db.prepare("SELECT severity, title FROM notifications ORDER BY created_at").all() as Array<{ severity: string; title: string }>;
 
   test("alerts once at 80% and once at 100%, not on every call", () => {
@@ -251,7 +260,7 @@ describe("budgets and alerts", () => {
   });
 });
 
-describe("routing", () => {
+describe("routing", { skip }, () => {
   test("/api/ai-usage is an API path (gated) so only the explicit exemption is public", () => {
     assert.equal(isApiPath("/api/ai-usage/summary"), true);
     assert.equal(isApiPath("/api/ai-usage/connect/x"), true);
