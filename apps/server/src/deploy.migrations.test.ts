@@ -15,6 +15,7 @@ import {
   isLocalDbUrl,
   listRepoMigrations,
   migrationLogLine,
+  migrationSkipNeedsAttention,
   migrationVersion,
   resolveMigrationTarget,
   setMigrationCliRunner,
@@ -376,6 +377,84 @@ test("one started stack among failed duplicates is resolved, not guessed at", as
   const result = await applyPendingSupabaseMigrations(ctx, serviceId, workdir);
   assert.equal(result.resourceId, target!.resourceId);
   assert.deepEqual(result.applied, ["20260906201000"]);
+});
+
+test("two records of the SAME stack are one stack: migrated, with a duplicate warning", async () => {
+  // Awaire: two "Awaire-supabase" rows, same workdir and ports, both running.
+  // Every deploy skipped migrations as "ambiguous" until the schema was a month behind.
+  const shared = { workdir: "/root/.survhub/projects/awaire", port_offset: 200 };
+  const { ctx, serviceId, workdir, resourceIds } = await makeHarness({
+    repoVersions: ["20260906201000"],
+    stacks: [
+      { status: "running", config: shared },
+      { status: "running", config: { ...shared, workdir: "/root/.survhub/projects/awaire/" } }
+    ]
+  });
+  const { target, candidates, duplicateRecords } = resolveMigrationTarget(ctx, serviceId);
+  assert.ok(target, "collapsed to one target");
+  assert.equal(candidates.length, 1);
+  assert.equal(duplicateRecords.length, 1);
+
+  const stack = fakeStack([]);
+  setMigrationCliRunner(async () => {
+    stack.cliCalls.push({});
+    stack.applied.push("20260906201000");
+    return "";
+  });
+  const result = await applyPendingSupabaseMigrations(ctx, serviceId, workdir);
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(result.applied, ["20260906201000"]);
+  assert.ok(resourceIds.includes(result.resourceId!));
+  assert.equal(result.duplicateRecords?.length, 1);
+  const line = migrationLogLine(result);
+  assert.match(line, /WARNING — the same stack is recorded more than once/);
+  assert.match(line, /applied 1 migration/);
+  assert.equal(migrationSkipNeedsAttention(result), false);
+});
+
+test("two started stacks that differ (same workdir, other database) are still refused", async () => {
+  const { ctx, serviceId, workdir } = await makeHarness({
+    repoVersions: ["20260906201000"],
+    stacks: [
+      { status: "running", config: { workdir: "/srv/app" } },
+      {
+        status: "running",
+        config: { workdir: "/srv/app", db_url: "postgresql://postgres:postgres@127.0.0.1:54622/postgres" }
+      }
+    ]
+  });
+  const stack = fakeStack([]);
+  const result = await applyPendingSupabaseMigrations(ctx, serviceId, workdir);
+  assert.equal(result.skipped, "ambiguous-resources");
+  assert.equal(result.duplicateRecords, undefined);
+  assert.deepEqual(stack.cliCalls, []);
+  assert.equal(migrationSkipNeedsAttention(result), true, "a skip the owner must be told about");
+});
+
+test("a stack whose config.toml could not be reapplied is skipped, never migrated on default ports", async () => {
+  const { ctx, serviceId, workdir, resourceIds } = await makeHarness({ repoVersions: ["20260906201000"] });
+  const stack = fakeStack([]);
+  setMigrationCliRunner(async () => {
+    stack.cliCalls.push({});
+    return "";
+  });
+  const result = await applyPendingSupabaseMigrations(ctx, serviceId, workdir, {
+    unreconciledResourceIds: new Set([resourceIds[0]!])
+  });
+  assert.equal(result.skipped, "config-not-reconciled");
+  assert.deepEqual(stack.cliCalls, []);
+  assert.equal(migrationSkipNeedsAttention(result), true);
+  assert.match(migrationLogLine(result), /SKIPPED — supabase\/config\.toml could not be reapplied/);
+});
+
+test("deliberate or empty outcomes do not raise an owner notification", () => {
+  const base = { resourceId: "r", name: "s", pending: [], applied: [], outOfOrder: false };
+  for (const skipped of ["disabled", "non-local-db", "up-to-date", "no-migrations-dir", "no-supabase-resource"] as const) {
+    assert.equal(migrationSkipNeedsAttention({ ...base, skipped }), false, skipped);
+  }
+  for (const skipped of ["ambiguous-resources", "stack-not-running", "no-history-table", "config-not-reconciled"] as const) {
+    assert.equal(migrationSkipNeedsAttention({ ...base, skipped }), true, skipped);
+  }
 });
 
 test("two started stacks on one service skip and warn instead of migrating either", async () => {

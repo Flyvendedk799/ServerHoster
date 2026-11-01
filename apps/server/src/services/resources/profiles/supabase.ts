@@ -47,6 +47,9 @@ import {
 import { restartOrRedeployService } from "../restart.js";
 import { publicOriginForLinkedResource } from "../publicExposure.js";
 import { allocatePortOffset, applyPortOffsetToToml } from "../supabasePorts.js";
+import { assertValidToml } from "../tomlEdit.js";
+import { mergeDuplicateResources } from "../duplicates.js";
+import { createNotification } from "../../notifications.js";
 import { supabaseStartEnv } from "../supabaseAuthMail.js";
 
 /**
@@ -575,7 +578,10 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
     try {
       const tomlBefore = fs.readFileSync(configToml, "utf8");
       const tomlAfter = applyPortOffsetToToml(tomlBefore, portOffset);
-      if (tomlAfter !== tomlBefore) fs.writeFileSync(configToml, tomlAfter, "utf8");
+      if (tomlAfter !== tomlBefore) {
+        assertValidToml(tomlAfter, "supabase/config.toml");
+        fs.writeFileSync(configToml, tomlAfter, "utf8");
+      }
     } catch (error) {
       throw new Error(`Could not assign Supabase host ports in config.toml: ${serializeError(error)}`);
     }
@@ -723,6 +729,28 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
  * until someone presses Start. Failures log per-resource and never block boot.
  */
 export async function reconcileSupabaseResourcesOnBoot(ctx: AppContext): Promise<void> {
+  // Fold duplicate records of one stack together first, or the loop below would
+  // `supabase start` the same checkout once per record. Bookkeeping only — no
+  // container or volume is touched — and nothing is serving functions yet.
+  try {
+    const report = mergeDuplicateResources(ctx);
+    for (const group of report.groups) {
+      if (group.skipped) continue;
+      const merged = group.merged.map((dup) => `${dup.name} (${dup.id}, created ${dup.created_at})`);
+      ctx.app.log?.warn?.({ kept: group.kept, merged: group.merged }, "merged duplicate resource records");
+      createNotification(ctx, {
+        kind: "system",
+        severity: "warning",
+        title: `Merged duplicate stack record: ${group.kept.name}`,
+        body:
+          `${merged.join("; ")} described the same stack (same workdir, ports and database) as ` +
+          `${group.kept.id}; its links and settings were merged into that record and the extra row removed. ` +
+          "No container or volume was touched."
+      });
+    }
+  } catch (error) {
+    ctx.app.log?.error?.({ err: error }, "merging duplicate resource records failed");
+  }
   const rows = ctx.db
     .prepare(
       "SELECT id, name FROM managed_resources WHERE profile = 'supabase' AND status IN ('ready', 'running', 'degraded')"

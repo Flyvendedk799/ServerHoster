@@ -3,7 +3,15 @@ import path from "node:path";
 import type { AppContext } from "../../types.js";
 import { getSecretSetting } from "../settings.js";
 import { publicOriginForLinkedResource } from "./publicExposure.js";
-import { setTomlValues, type TomlValue } from "./supabasePorts.js";
+import {
+  assertValidToml,
+  removeTomlKey,
+  setTomlValues,
+  tomlDefinesTable,
+  tomlGet,
+  tryParseToml,
+  type TomlValue
+} from "./tomlEdit.js";
 
 /**
  * Point a local Supabase stack's GoTrue at the shared SMTP relay — the missing
@@ -90,9 +98,12 @@ export function authMailTemplateBody(t: AuthMailTemplate): string {
   ].join("\n");
 }
 
-/** True when `[section]` already appears in the TOML (so we don't clobber it). */
+/**
+ * True when `[section]` is already defined in the TOML (so we don't clobber it) —
+ * as a header, or through dotted keys in a parent table.
+ */
 function tomlHasSection(toml: string, section: string): boolean {
-  return new RegExp(`(^|\\n)\\s*\\[${section.replace(/\./g, "\\.")}\\]`).test(toml);
+  return tomlDefinesTable(toml, section);
 }
 
 /**
@@ -106,15 +117,22 @@ function tomlHasSection(toml: string, section: string): boolean {
  * which is exactly what we want — the SiteURL templates carry the public link.
  */
 export function stripApiExternalUrl(toml: string): string {
-  const out: string[] = [];
-  let inApi = false;
-  for (const line of toml.split("\n")) {
-    const header = line.match(/^\s*\[([^\]]+)\]/);
-    if (header) inApi = header[1] === "api";
-    if (inApi && /^\s*external_url\s*=/.test(line)) continue;
-    out.push(line);
-  }
-  return out.join("\n");
+  return removeTomlKey(toml, "api", "external_url");
+}
+
+/**
+ * The redirect allow-list to write: whatever the app's config already allows,
+ * plus the public origin and its `/**` form. The app's own entries (e.g.
+ * `https://app.example.com/reset-password`) are kept — overwriting the list
+ * would silently break those flows.
+ */
+export function mergedRedirectUrls(toml: string, origin: string): string[] {
+  const existing = tomlGet(tryParseToml(toml), "auth.additional_redirect_urls");
+  const urls = Array.isArray(existing)
+    ? existing.filter((url): url is string => typeof url === "string")
+    : [];
+  for (const url of [origin, `${origin}/**`]) if (!urls.includes(url)) urls.push(url);
+  return urls;
 }
 
 /**
@@ -136,7 +154,8 @@ export function applyAuthMailToToml(toml: string, publicOrigin: string, smtp: Au
     { section: "auth", key: "site_url", value: origin },
     // The `/**` form is what the app's own redirects (e.g. /reset-password,
     // /app) match against; the bare origin covers a redirect to the root.
-    { section: "auth", key: "additional_redirect_urls", value: { raw: `["${origin}", "${origin}/**"]` } },
+    // Merged with the app's own allow-list rather than replacing it.
+    { section: "auth", key: "additional_redirect_urls", value: mergedRedirectUrls(toml, origin) },
     { section: "auth.email.smtp", key: "enabled", value: true },
     { section: "auth.email.smtp", key: "host", value: smtp.host },
     { section: "auth.email.smtp", key: "port", value: smtp.port },
@@ -184,7 +203,15 @@ export type AuthMailAudit = {
 
 /** Read-only report on what a stack's config.toml will actually do with mail. */
 export function auditAuthMailToml(toml: string): AuthMailAudit {
+  const doc = tryParseToml(toml);
   const enabled = (section: string, key: string): string | null => {
+    // A parseable document is read structurally (multi-line values, dotted keys,
+    // comments); the text scan below is only the fallback for a broken file.
+    if (doc) {
+      const value = tomlGet(doc, `${section}.${key}`);
+      if (value === undefined || value === null) return null;
+      return typeof value === "string" ? JSON.stringify(value) : String(value);
+    }
     const header = `[${section}]`;
     const start = toml.indexOf(header);
     if (start === -1) return null;
@@ -208,6 +235,9 @@ export function auditAuthMailToml(toml: string): AuthMailAudit {
   const links = isPublic(externalUrl) || (isPublic(siteUrl) && hasConfirmTemplate);
 
   const warnings: string[] = [];
+  if (!doc) {
+    warnings.push("config.toml is not valid TOML — the Supabase CLI will refuse to start this stack.");
+  }
   if (!confirmations) {
     warnings.push(
       "Signup confirmation email is off (auth.email.enable_confirmations). GoTrue auto-confirms new " +
@@ -272,6 +302,7 @@ export function setStackEmailConfirmations(workdir: string, enabled: boolean): A
       { section: "auth.email", key: "enable_confirmations", value: enabled }
     ]);
     if (after !== before) {
+      assertValidToml(after, "supabase/config.toml");
       fs.writeFileSync(`${configPath}.bak-email`, before, "utf8");
       fs.writeFileSync(configPath, after, "utf8");
     }
@@ -360,6 +391,8 @@ export function patchStackAuthMail(
   try {
     const before = fs.readFileSync(configPath, "utf8");
     const after = applyAuthMailToToml(before, publicOrigin, smtp);
+    // Never write a file the Supabase CLI would refuse (it then won't start).
+    if (after !== before) assertValidToml(after, "supabase/config.toml");
     // The config references SiteURL templates; write the files it points at (a
     // no-op for any the operator already has), so GoTrue can actually fetch them.
     writeDefaultAuthMailTemplates(workdir);
