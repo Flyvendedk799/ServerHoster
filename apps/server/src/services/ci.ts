@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
@@ -22,6 +23,7 @@ import {
   buildCiEnv,
   capLog,
   commitsMatch,
+  createLogRedactor,
   parseCiConfig,
   planForPipeline,
   redactSecrets,
@@ -136,18 +138,22 @@ export type CheckoutInput = {
   commit: string | null;
   gitEnv: NodeJS.ProcessEnv;
   redactions: string[];
+  signal?: AbortSignal;
+};
+
+export type CiDeployInput = {
+  serviceId: string;
+  repoUrl: string;
+  branch: string;
+  trigger: CiTrigger;
+  commit: string | null;
 };
 
 export type CiRunDeps = {
   sandbox?: DockerSandbox;
   checkout?: (input: CheckoutInput) => Promise<void>;
   remoteHead?: (repoUrl: string, branch: string) => Promise<string | null>;
-  deploy?: (input: {
-    serviceId: string;
-    repoUrl: string;
-    branch: string;
-    trigger: CiTrigger;
-  }) => Promise<void>;
+  deploy?: (input: CiDeployInput) => Promise<{ status: string } | void>;
 };
 
 function httpError(statusCode: number, message: string): Error {
@@ -534,32 +540,93 @@ async function remoteHead(ctx: AppContext, repoUrl: string, branch: string): Pro
   return remotes.split("\t")[0]?.trim() || null;
 }
 
-export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
-  await fs.promises.rm(input.dir, { recursive: true, force: true });
-  ensureDir(path.dirname(input.dir));
-  const git = simpleGit().env(input.gitEnv);
-  try {
-    await git.clone(input.repoUrl, input.dir, ["--branch", input.branch, "--single-branch", "--depth", "1"]);
-  } catch (error) {
-    throw new Error(redactSecrets(serializeError(error), input.redactions));
+class CiAbortError extends Error {
+  constructor() {
+    super("CI stopped");
+    this.name = "CiAbortError";
   }
-  const local = simpleGit(input.dir).env(input.gitEnv);
+}
+
+function runGit(
+  args: string[],
+  options: { cwd?: string; env: NodeJS.ProcessEnv; signal?: AbortSignal }
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new CiAbortError());
+      return;
+    }
+    const child = spawn("git", args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (buf: Buffer) => {
+      stdout += buf.toString("utf8");
+    });
+    child.stderr?.on("data", (buf: Buffer) => {
+      stderr += buf.toString("utf8");
+    });
+    const kill = () => {
+      child.kill();
+    };
+    options.signal?.addEventListener("abort", kill, { once: true });
+    child.on("error", (error) => {
+      options.signal?.removeEventListener("abort", kill);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      options.signal?.removeEventListener("abort", kill);
+      if (options.signal?.aborted) {
+        reject(new CiAbortError());
+        return;
+      }
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr.trim() || `git ${args[0] ?? "command"} exited ${code}`));
+    });
+  });
+}
+
+export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
+  if (input.signal?.aborted) throw new CiAbortError();
+  await fs.promises.rm(input.dir, { recursive: true, force: true });
+  if (input.signal?.aborted) throw new CiAbortError();
+  ensureDir(path.dirname(input.dir));
+  const env = input.gitEnv;
+  const gitError = (error: unknown): Error => {
+    if (error instanceof CiAbortError) return error;
+    return new Error(redactSecrets(serializeError(error), input.redactions));
+  };
+  try {
+    await runGit(
+      ["clone", "--branch", input.branch, "--single-branch", "--depth", "1", input.repoUrl, input.dir],
+      { env, signal: input.signal }
+    );
+  } catch (error) {
+    throw gitError(error);
+  }
   if (input.commit) {
-    const head = (await local.revparse(["HEAD"])).trim();
+    const head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
     if (!commitsMatch(head, input.commit)) {
       try {
-        await local.fetch(["--depth", "1", "origin", input.commit]);
-        await local.checkout(["--detach", input.commit]);
+        await runGit(["fetch", "--depth", "1", "origin", input.commit], {
+          cwd: input.dir,
+          env,
+          signal: input.signal
+        });
+        await runGit(["checkout", "--detach", input.commit], { cwd: input.dir, env, signal: input.signal });
       } catch (error) {
-        throw new Error(redactSecrets(serializeError(error), input.redactions));
+        throw gitError(error);
       }
     }
   }
   const publicUrl = stripGitCredentials(input.repoUrl);
   try {
-    await local.remote(["set-url", "origin", publicUrl]);
+    await runGit(["remote", "set-url", "origin", publicUrl], { cwd: input.dir, env, signal: input.signal });
   } catch (error) {
-    throw new Error(redactSecrets(serializeError(error), input.redactions));
+    throw gitError(error);
   }
 }
 
@@ -593,14 +660,19 @@ async function defaultSandbox(ctx: AppContext): Promise<DockerSandbox> {
   return dockerCiSandbox(ctx.docker);
 }
 
-async function defaultDeploy(
-  ctx: AppContext,
-  input: { serviceId: string; repoUrl: string; branch: string; trigger: CiTrigger }
-): Promise<void> {
+async function defaultDeploy(ctx: AppContext, input: CiDeployInput): Promise<{ status: string }> {
   const { deployFromGit, applyPostDeployServiceState } = await import("./deploy.js");
   const trigger = input.trigger === "manual" ? "gitops-poller" : input.trigger;
-  const deployment = await deployFromGit(ctx, input.serviceId, input.repoUrl, input.branch, trigger);
+  const deployment = await deployFromGit(ctx, input.serviceId, input.repoUrl, input.branch, trigger, {
+    commit: input.commit
+  });
   await applyPostDeployServiceState(ctx, input.serviceId, deployment, { startAfterDeploy: true });
+  if (deployment.status !== "success") {
+    const log = deployment.build_log?.trim() ?? "";
+    const tail = log ? log.split("\n").slice(-5).join("\n") : "Deploy failed";
+    throw new Error(tail.slice(0, 1500));
+  }
+  return deployment;
 }
 
 function serviceLog(
@@ -668,6 +740,12 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     });
   };
 
+  const started = Date.now();
+  const abort = new AbortController();
+  let timeoutMinutes = pipeline?.timeout_minutes || DEFAULT_CI_TIMEOUT_MINUTES;
+  let stopWatch: ReturnType<typeof setInterval> | undefined;
+  let finishLogs = (): void => undefined;
+
   try {
     if (!pipeline || !service?.github_repo_url) {
       fail("The pipeline or its repository is gone.");
@@ -677,6 +755,13 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       markCancelled(ctx, run);
       return;
     }
+
+    stopWatch = setInterval(() => {
+      if (abort.signal.aborted) return;
+      if (isCancelled(ctx, runId)) abort.abort();
+      else if (Date.now() - started >= timeoutMinutes * 60_000) abort.abort();
+    }, 250);
+    stopWatch.unref();
 
     const branch = run.branch || service.github_branch || "main";
     const pat = githubPat(ctx);
@@ -695,7 +780,8 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       branch,
       commit: run.commit_hash,
       gitEnv: buildGitEnv(ctx),
-      redactions
+      redactions,
+      signal: abort.signal
     });
 
     let source = pipeline.inline_config ?? "";
@@ -708,6 +794,15 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       source = fs.readFileSync(filePath, "utf8");
     }
     const config = parseCiConfig(source, defaultsOf(pipeline));
+    timeoutMinutes = config.timeoutMinutes;
+    if (isCancelled(ctx, runId)) {
+      markCancelled(ctx, run);
+      return;
+    }
+    if (abort.signal.aborted || Date.now() - started >= timeoutMinutes * 60_000) {
+      fail(`Timed out after ${timeoutMinutes} minutes.`, "timeout");
+      return;
+    }
     ctx.db.prepare("UPDATE ci_runs SET config_snapshot = ? WHERE id = ?").run(
       JSON.stringify({
         image: config.image,
@@ -758,8 +853,9 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
           .run(text, runId, position);
       }
     };
-    const write = (position: number, chunk: string) => {
-      const clean = redactSecrets(sanitizeLogChunk(chunk), hide);
+    const redactors = new Map<number, ReturnType<typeof createLogRedactor>>();
+    const publish = (position: number, clean: string) => {
+      if (!clean) return;
       logs.set(position, capLog(logs.get(position) ?? "", clean));
       broadcast(ctx, {
         type: "ci_log",
@@ -771,14 +867,28 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       });
       flush(false);
     };
+    const write = (position: number, chunk: string) => {
+      let redactor = redactors.get(position);
+      if (!redactor) {
+        redactor = createLogRedactor(hide);
+        redactors.set(position, redactor);
+      }
+      publish(position, redactor.push(sanitizeLogChunk(chunk)));
+    };
+    finishLogs = () => {
+      for (const [position, redactor] of redactors) publish(position, redactor.flush());
+      flush(true);
+    };
 
     const sandbox = deps.sandbox ?? (await defaultSandbox(ctx));
+    const remaining = Math.max(1_000, timeoutMinutes * 60_000 - (Date.now() - started));
     const result = await sandbox.run({
       runId,
       image: config.image,
       workspace,
       env: built.env,
-      timeoutMs: config.timeoutMinutes * 60_000,
+      timeoutMs: remaining,
+      signal: abort.signal,
       memoryMb: config.memoryMb,
       cpus: config.cpus,
       steps: config.steps,
@@ -797,7 +907,7 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       },
       isCancelled: () => isCancelled(ctx, runId)
     });
-    flush(true);
+    finishLogs();
 
     if (result.cancelled || isCancelled(ctx, runId)) {
       markCancelled(ctx, run);
@@ -830,15 +940,28 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       serviceId: service.id
     });
 
-    if (run.deploy_after) {
+    const fresh = ctx.db.prepare("SELECT deploy_after FROM ci_runs WHERE id = ?").get(runId) as
+      | { deploy_after: number }
+      | undefined;
+    if (fresh?.deploy_after) {
       ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'pending' WHERE id = ?").run(runId);
-      await deployIfCurrent(ctx, { ...run, branch }, service.github_repo_url, deps);
+      await deployIfCurrent(
+        ctx,
+        { ...run, branch, deploy_after: fresh.deploy_after },
+        service.github_repo_url,
+        deps
+      );
     }
   } catch (error) {
-    const message = redactSecrets(serializeError(error), [githubPat(ctx)]);
     if (isCancelled(ctx, runId)) markCancelled(ctx, run);
-    else fail(message);
+    else if (abort.signal.aborted || error instanceof CiAbortError) {
+      fail(`Timed out after ${timeoutMinutes} minutes.`, "timeout");
+    } else {
+      fail(redactSecrets(serializeError(error), [githubPat(ctx)]));
+    }
   } finally {
+    if (stopWatch) clearInterval(stopWatch);
+    finishLogs();
     safeRemoveWorkspace(ctx, workspace);
   }
 }
@@ -861,6 +984,11 @@ async function deployIfCurrent(
   deps: CiRunDeps
 ): Promise<void> {
   const branch = run.branch || "main";
+  if (draining) {
+    ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
+    serviceLog(ctx, run.service_id, "warn", "CI passed while ServerHoster is shutting down — not deploying.");
+    return;
+  }
   if (hasNewerActiveRun(ctx, run)) {
     ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
     serviceLog(
@@ -886,12 +1014,16 @@ async function deployIfCurrent(
       return;
     }
     const deploy = deps.deploy ?? ((input) => defaultDeploy(ctx, input));
-    await deploy({
+    const deployed = await deploy({
       serviceId: run.service_id,
       repoUrl,
       branch,
-      trigger: (run.trigger_source as CiTrigger) || "gitops-poller"
+      trigger: (run.trigger_source as CiTrigger) || "gitops-poller",
+      commit: run.commit_hash
     });
+    if (deployed && deployed.status !== "success") {
+      throw new Error("Deploy failed");
+    }
     ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'success' WHERE id = ?").run(run.id);
     serviceLog(ctx, run.service_id, "info", "CI passed — deploying this commit.");
   } catch (error) {
@@ -910,12 +1042,15 @@ async function deployIfCurrent(
 }
 
 const inflight = new Set<string>();
+const inflightJobs = new Map<string, Promise<void>>();
 let filling = false;
 let autostart = true;
+let draining = false;
 
 /** Tests disable this so queueing a run does not clone a repository. */
 export function setCiAutostart(enabled: boolean): void {
   autostart = enabled;
+  draining = false;
 }
 
 function claimNext(ctx: AppContext): string | null {
@@ -945,14 +1080,14 @@ function claimNext(ctx: AppContext): string | null {
 }
 
 function kickCi(ctx: AppContext): void {
-  if (!autostart || filling) return;
+  if (!autostart || draining || filling) return;
   filling = true;
   try {
-    while (inflight.size < CI_MAX_CONCURRENT) {
+    while (!draining && autostart && inflight.size < CI_MAX_CONCURRENT) {
       const id = claimNext(ctx);
       if (!id) return;
       inflight.add(id);
-      void executeCiRun(ctx, id)
+      const job = executeCiRun(ctx, id)
         .catch((error) => {
           try {
             ctx.app.log.error({ err: error }, "CI run failed");
@@ -962,8 +1097,10 @@ function kickCi(ctx: AppContext): void {
         })
         .finally(() => {
           inflight.delete(id);
+          inflightJobs.delete(id);
           kickCi(ctx);
         });
+      inflightJobs.set(id, job);
     }
   } finally {
     filling = false;
@@ -981,7 +1118,8 @@ export function recoverCi(ctx: AppContext): void {
     .run();
 }
 
-export function startCiLoop(ctx: AppContext): () => void {
+export function startCiLoop(ctx: AppContext): () => Promise<void> {
+  draining = false;
   autostart = true;
   ensureCiSchema(ctx.db);
   recoverCi(ctx);
@@ -1006,10 +1144,23 @@ export function startCiLoop(ctx: AppContext): () => void {
   }
   const timer = setInterval(() => kickCi(ctx), 2000);
   kickCi(ctx);
-  return () => {
+  return async () => {
+    draining = true;
+    autostart = false;
     clearInterval(timer);
-    void import("./ciDocker.js")
-      .then(({ removeCiContainers }) => removeCiContainers(ctx.docker))
-      .catch(() => undefined);
+    for (const id of inflight) {
+      try {
+        requestCancelCiRun(ctx, id);
+      } catch {
+        /* the run already finished */
+      }
+    }
+    await Promise.allSettled([...inflightJobs.values()]);
+    try {
+      const { removeCiContainers } = await import("./ciDocker.js");
+      await removeCiContainers(ctx.docker);
+    } catch {
+      /* Docker may already be down */
+    }
   };
 }

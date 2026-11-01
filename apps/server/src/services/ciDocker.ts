@@ -25,8 +25,25 @@ export type CiSandbox = {
       exitCode: number | null
     ) => void;
     isCancelled: () => boolean;
+    signal?: AbortSignal;
   }): Promise<{ failedStep: number | null; cancelled: boolean; timedOut: boolean }>;
 };
+
+/**
+ * Run the job as the host user that owns the checkout.
+ * CapDrop ALL removes CAP_DAC_OVERRIDE, so container root cannot write a
+ * directory owned by a non-root host user (npm ci cannot create node_modules).
+ * Matching uid:gid can write the workspace without giving the job capabilities.
+ * Root on the host already owns the files, and Windows has no uid to map.
+ */
+export function ciContainerUser(
+  platform: NodeJS.Platform = process.platform,
+  uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined,
+  gid: number | undefined = typeof process.getgid === "function" ? process.getgid() : undefined
+): string | undefined {
+  if (platform === "win32" || uid === undefined || uid === 0) return undefined;
+  return `${uid}:${gid ?? uid}`;
+}
 
 function dockerBindPath(hostPath: string): string {
   const resolved = path.resolve(hostPath);
@@ -36,12 +53,32 @@ function dockerBindPath(hostPath: string): string {
   return drive ? `/${drive[1].toLowerCase()}${posix.slice(2)}` : posix;
 }
 
-async function pullImage(docker: Docker, image: string, onLog: (chunk: string) => void): Promise<void> {
-  const stream = await docker.pull(image);
+async function pullImage(
+  docker: Docker,
+  image: string,
+  onLog: (chunk: string) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  if (signal?.aborted) throw new Error("aborted");
+  const stream = (await docker.pull(image)) as NodeJS.ReadableStream & { destroy?: (error?: Error) => void };
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error | null) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) reject(new Error("aborted"));
+      else if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => {
+      stream.destroy?.(new Error("aborted"));
+      finish(new Error("aborted"));
+    };
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
     docker.modem.followProgress(
       stream,
-      (error: Error | null) => (error ? reject(error) : resolve()),
+      (error: Error | null) => finish(error),
       (event: { status?: string; id?: string }) => {
         if (event?.status) onLog(`${event.id ? `${event.id} ` : ""}${event.status}\n`);
       }
@@ -73,16 +110,31 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
       let timedOut = false;
       let cancelled = false;
       const noteSetup = (chunk: string) => input.onSetupLog(chunk);
+      const halted = (): { failedStep: null; cancelled: boolean; timedOut: boolean } | null => {
+        if (input.isCancelled()) return { failedStep: null, cancelled: true, timedOut: false };
+        if (input.signal?.aborted || Date.now() > deadline) {
+          return { failedStep: null, cancelled: false, timedOut: true };
+        }
+        return null;
+      };
+      const before = halted();
+      if (before) return before;
 
       try {
         await docker.getImage(input.image).inspect();
         noteSetup(`Using local image ${input.image}.\n`);
       } catch {
         noteSetup(`Pulling ${input.image}…\n`);
-        await pullImage(docker, input.image, noteSetup);
+        try {
+          await pullImage(docker, input.image, noteSetup, input.signal);
+        } catch (error) {
+          const stop = halted();
+          if (stop) return stop;
+          throw error;
+        }
       }
-      if (Date.now() > deadline) return { failedStep: null, cancelled: false, timedOut: true };
-      if (input.isCancelled()) return { failedStep: null, cancelled: true, timedOut: false };
+      const afterPull = halted();
+      if (afterPull) return afterPull;
 
       const name = `survhub-ci-${input.runId.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40)}`;
       try {
@@ -92,13 +144,17 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
       }
 
       const memory = Math.max(128, input.memoryMb) * 1024 * 1024;
+      const user = ciContainerUser();
+      const env = Object.entries(input.env).map(([key, value]) => `${key}=${value}`);
+      if (user && !Object.prototype.hasOwnProperty.call(input.env, "HOME")) env.push("HOME=/tmp");
       const container = await docker.createContainer({
         name,
         Image: input.image,
         // Replace the image entrypoint so `sleep` is actually pid 1.
         Entrypoint: ["sleep", "86400"],
         WorkingDir: "/workspace",
-        Env: Object.entries(input.env).map(([key, value]) => `${key}=${value}`),
+        ...(user ? { User: user } : {}),
+        Env: env,
         Labels: { "survhub.ci": "1", "survhub.ci.run": input.runId },
         HostConfig: {
           Memory: memory,
@@ -127,11 +183,18 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
         if (Date.now() > deadline) {
           timedOut = true;
           void stop();
-        } else if (input.isCancelled()) {
-          cancelled = true;
+        } else if (input.isCancelled() || input.signal?.aborted) {
+          if (input.isCancelled()) cancelled = true;
+          else timedOut = true;
           void stop();
         }
       }, 1000);
+      const onAbort = () => {
+        if (input.isCancelled()) cancelled = true;
+        else timedOut = true;
+        void stop();
+      };
+      input.signal?.addEventListener("abort", onAbort);
 
       try {
         await container.start();
@@ -194,6 +257,7 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
         return { failedStep: null, cancelled: false, timedOut: false };
       } finally {
         clearInterval(watch);
+        input.signal?.removeEventListener("abort", onAbort);
         try {
           await container.remove({ force: true });
         } catch {

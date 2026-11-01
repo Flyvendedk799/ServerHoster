@@ -21,6 +21,7 @@ import { getServiceEnvWithLinks, startService, stopService, withLock } from "./r
 import { resolveComposeConfig, writeComposeEnvFile } from "./compose.js";
 import { composeBuild } from "./composeRuntime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
+import { commitsMatch } from "./ciConfig.js";
 import { createNotification } from "./notifications.js";
 import { runHostPreflight, type HostRequirementResult } from "./hostRequirements.js";
 import { transition, markFailed } from "./deployStateMachine.js";
@@ -35,6 +36,7 @@ import {
 
 export type DeployPhase = "queued" | "cloning" | "installing" | "building" | "starting" | "done" | "failed";
 export type DeployTrigger = "manual" | "webhook" | "gitops-poller" | "rollback";
+export type DeployFromGitOptions = { commit?: string | null };
 
 type NodePackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type NodeLaunchKind = "electron" | "web" | "node";
@@ -277,9 +279,7 @@ export function readNitroBuildOutput(dir: string): NitroBuildOutput | null {
     const preset = typeof parsed.preset === "string" ? parsed.preset : "";
     if (!preset) return null;
     const serverEntry =
-      typeof parsed.serverEntry === "string" && parsed.serverEntry
-        ? parsed.serverEntry
-        : "server/index.mjs";
+      typeof parsed.serverEntry === "string" && parsed.serverEntry ? parsed.serverEntry : "server/index.mjs";
     return { preset, serverEntry };
   } catch {
     return null;
@@ -917,9 +917,7 @@ export async function createCompanionDockerServices(
   const siblings = ctx.db
     .prepare("SELECT name, dockerfile FROM services WHERE project_id = ?")
     .all(parent.project_id) as Array<{ name?: string; dockerfile?: string }>;
-  const claimed = new Set(
-    siblings.map((row) => String(row.dockerfile ?? "").trim()).filter(Boolean)
-  );
+  const claimed = new Set(siblings.map((row) => String(row.dockerfile ?? "").trim()).filter(Boolean));
   claimed.add(claimedDockerfile);
   const usedNames = new Set(siblings.map((row) => String(row.name ?? "")));
 
@@ -1166,7 +1164,10 @@ export async function runBuildPipeline(
       severity: "warning",
       title: `Missing host requirements: ${preflight.missingRequired.map((entry) => entry.label).join(", ")}`,
       body: preflight.missingRequired
-        .map((entry) => `${entry.label}${entry.reason ? ` (${entry.reason})` : ""}${entry.install ? `\n$ ${entry.install}` : ""}`)
+        .map(
+          (entry) =>
+            `${entry.label}${entry.reason ? ` (${entry.reason})` : ""}${entry.install ? `\n$ ${entry.install}` : ""}`
+        )
         .join("\n\n"),
       serviceId
     });
@@ -1485,7 +1486,8 @@ export function deployFromGit(
   serviceId: string,
   repoUrl: string,
   branch: string = "main",
-  trigger: DeployTrigger = "manual"
+  trigger: DeployTrigger = "manual",
+  options?: DeployFromGitOptions
 ) {
   // Serialize per service against other deploys AND start/stop/restart, so a
   // poller tick, a webhook, and a manual redeploy can't run concurrent git
@@ -1493,9 +1495,66 @@ export function deployFromGit(
   // "Service action already in progress" if something else holds the lock.
   if (ctx.activeDeploys.has(serviceId)) throw new Error("Deployment is already in progress");
   ctx.activeDeploys.add(serviceId);
-  return withLock(ctx, serviceId, () => deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger)).finally(
-    () => ctx.activeDeploys.delete(serviceId)
-  );
+  return withLock(ctx, serviceId, () =>
+    deployFromGitLocked(ctx, serviceId, repoUrl, branch, trigger, options)
+  ).finally(() => ctx.activeDeploys.delete(serviceId));
+}
+
+/**
+ * A CI gate passes one commit, then deploy fetches the branch again. A push in
+ * that gap used to ship the newer, untested tip. Fetch the tested commit and
+ * refuse to stop the running service until that object is actually local.
+ */
+async function ensurePinnedCommit(
+  git: SimpleGit,
+  targetPath: string,
+  authedUrl: string,
+  branch: string,
+  commit: string
+): Promise<void> {
+  if (!fs.existsSync(path.join(targetPath, ".git"))) return;
+  const local = git.cwd(targetPath);
+  try {
+    await local.remote(["set-url", "origin", authedUrl]);
+  } catch {
+    /* origin is set again after the service stops */
+  }
+  try {
+    await local.fetch(["origin", commit]);
+  } catch {
+    await local.fetch(["origin", branch]);
+    await local.fetch(["origin", commit]);
+  }
+  let type = "";
+  try {
+    type = (await local.raw(["cat-file", "-t", commit])).trim();
+  } catch {
+    type = "";
+  }
+  if (type !== "commit") {
+    throw new Error(
+      `Refusing to stop the service: CI passed ${commit.slice(0, 7)}, and that commit is not in the checkout.`
+    );
+  }
+}
+
+async function checkoutPinnedCommit(git: SimpleGit, targetPath: string, commit: string): Promise<void> {
+  try {
+    await git.cwd(targetPath).fetch(["origin", commit]);
+  } catch {
+    const type = (
+      await git
+        .cwd(targetPath)
+        .raw(["cat-file", "-t", commit])
+        .catch(() => "")
+    ).trim();
+    if (type !== "commit") throw new Error(`CI commit ${commit.slice(0, 7)} is not available to deploy.`);
+  }
+  await git.cwd(targetPath).raw(["checkout", "-f", "--detach", commit]);
+  const head = (await git.cwd(targetPath).revparse(["HEAD"])).trim();
+  if (!commitsMatch(head, commit)) {
+    throw new Error(`Refusing to build ${head.slice(0, 7)}: CI passed ${commit.slice(0, 7)}.`);
+  }
 }
 
 export type ServiceBuildClaim = {
@@ -1546,7 +1605,12 @@ export function reconcileBuildType(
   return detected;
 }
 
-function redeployBuildType(ctx: AppContext, serviceId: string, detected: BuildType, projectPath: string): BuildType {
+function redeployBuildType(
+  ctx: AppContext,
+  serviceId: string,
+  detected: BuildType,
+  projectPath: string
+): BuildType {
   const service = ctx.db
     .prepare("SELECT type, command, dockerfile, compose_file FROM services WHERE id = ?")
     .get(serviceId) as ServiceBuildClaim | undefined;
@@ -1558,7 +1622,8 @@ async function deployFromGitLocked(
   serviceId: string,
   repoUrl: string,
   branch: string = "main",
-  trigger: DeployTrigger = "manual"
+  trigger: DeployTrigger = "manual",
+  options?: DeployFromGitOptions
 ) {
   const targetPath = path.join(ctx.config.projectsDir, serviceId);
   const gitEnv = buildGitEnv(ctx);
@@ -1604,6 +1669,10 @@ async function deployFromGitLocked(
         .run(effectiveBranch, nowIso(), serviceId);
       ctx.db.prepare("UPDATE deployments SET branch = ? WHERE id = ?").run(effectiveBranch, deploymentId);
     }
+    const pinnedCommit = options?.commit?.trim() || "";
+    if (pinnedCommit) {
+      await ensurePinnedCommit(git, targetPath, authedUrl, effectiveBranch, pinnedCommit);
+    }
     await stopServiceIfRunning(ctx, serviceId);
 
     // Remove any persisted-upload symlinks from the previous deploy so the git
@@ -1617,22 +1686,37 @@ async function deployFromGitLocked(
       } catch {
         /* first-time */
       }
-      await git.cwd(targetPath).fetch(["origin", effectiveBranch]);
-      // Force the working tree to EXACTLY match the remote branch instead of
-      // merging. A plain `pull` aborts on a dirty tree — and our own native-dep
-      // remediation (remediateNativeDeps) leaves backend/package.json + the lock
-      // modified after every build — so the next deploy died with "Your local
-      // changes would be overwritten by merge". `checkout -f` + `reset --hard` is
-      // the correct deploy semantic (deploy = exact remote state) and is
-      // idempotent with remediation, which re-applies during the build.
-      await git.cwd(targetPath).raw(["checkout", "-f", effectiveBranch]);
-      await git.cwd(targetPath).reset(["--hard", `origin/${effectiveBranch}`]);
-      buildLog += `Reset working tree to origin/${effectiveBranch} (deploy = exact remote state).\n`;
-      emitBuildLog(ctx, serviceId, deploymentId, `Reset working tree to origin/${effectiveBranch}.\n`);
+      if (pinnedCommit) {
+        // Detach at the commit CI passed. Fetching the branch tip here would
+        // build a push that landed after the head check.
+        await checkoutPinnedCommit(git, targetPath, pinnedCommit);
+        const msg = `Pinned deploy to the tested commit ${pinnedCommit.slice(0, 7)}.\n`;
+        buildLog += msg;
+        emitBuildLog(ctx, serviceId, deploymentId, msg);
+      } else {
+        await git.cwd(targetPath).fetch(["origin", effectiveBranch]);
+        // Force the working tree to EXACTLY match the remote branch instead of
+        // merging. A plain `pull` aborts on a dirty tree — and our own native-dep
+        // remediation (remediateNativeDeps) leaves backend/package.json + the lock
+        // modified after every build — so the next deploy died with "Your local
+        // changes would be overwritten by merge". `checkout -f` + `reset --hard` is
+        // the correct deploy semantic (deploy = exact remote state) and is
+        // idempotent with remediation, which re-applies during the build.
+        await git.cwd(targetPath).raw(["checkout", "-f", effectiveBranch]);
+        await git.cwd(targetPath).reset(["--hard", `origin/${effectiveBranch}`]);
+        buildLog += `Reset working tree to origin/${effectiveBranch} (deploy = exact remote state).\n`;
+        emitBuildLog(ctx, serviceId, deploymentId, `Reset working tree to origin/${effectiveBranch}.\n`);
+      }
     } else {
       await git.clone(authedUrl, targetPath, ["--branch", effectiveBranch]);
       buildLog += `Cloned repository branch: ${effectiveBranch}.\n`;
       emitBuildLog(ctx, serviceId, deploymentId, `Cloned repository branch: ${effectiveBranch}.\n`);
+      if (pinnedCommit) {
+        await checkoutPinnedCommit(git, targetPath, pinnedCommit);
+        const msg = `Pinned deploy to the tested commit ${pinnedCommit.slice(0, 7)}.\n`;
+        buildLog += msg;
+        emitBuildLog(ctx, serviceId, deploymentId, msg);
+      }
     }
     // Back conventional/configured upload dirs with the persistent volume: seed
     // committed files (copy-if-absent — runtime/admin uploads always win) then
@@ -1866,9 +1950,9 @@ async function deployFromGitLocked(
         // `create_app()` exposed via gunicorn), so clobbering it on every git
         // auto-pull would break the service. Only fall back to the detected
         // command when none has been set yet (fresh service).
-        const existing = ctx.db.prepare("SELECT command, working_dir FROM services WHERE id = ?").get(serviceId) as
-          | { command?: string; working_dir?: string }
-          | undefined;
+        const existing = ctx.db
+          .prepare("SELECT command, working_dir FROM services WHERE id = ?")
+          .get(serviceId) as { command?: string; working_dir?: string } | undefined;
         const preservedCommand =
           existing?.command && existing.command.trim() ? existing.command : runtimeCommand;
         // Preserve an explicitly-set working directory too (e.g. a monorepo's
@@ -1984,7 +2068,12 @@ export async function applyPostDeployServiceState(
         await startService(ctx, serviceId);
         return;
       } catch (error) {
-        insertLog(ctx, serviceId, "error", `Could not restart service after failed deploy: ${serializeError(error)}`);
+        insertLog(
+          ctx,
+          serviceId,
+          "error",
+          `Could not restart service after failed deploy: ${serializeError(error)}`
+        );
       }
     }
     updateServiceStatus(ctx, serviceId, "stopped");

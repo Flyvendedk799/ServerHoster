@@ -7,6 +7,7 @@ import type { AppContext } from "./types.js";
 import {
   EXAMPLE_CI_YAML,
   buildCiEnv,
+  createLogRedactor,
   parseCiConfig,
   planForPipeline,
   redactSecrets,
@@ -19,9 +20,10 @@ import {
   handleIncomingCommit,
   requestCancelCiRun,
   setCiAutostart,
+  startCiLoop,
   type CiRunDeps
 } from "./services/ci.js";
-import type { CiSandbox } from "./services/ciDocker.js";
+import { ciContainerUser, type CiSandbox } from "./services/ciDocker.js";
 
 // node:sqlite needs Node 22.5+. CI still runs Node 20, where the db tests skip
 // instead of failing to load. The config tests below do not need it.
@@ -169,6 +171,12 @@ describe("CI config", () => {
       "npm_secret_value"
     ]);
     assert.equal(leaked.includes("npm_secret_value"), false);
+    assert.equal(redactSecrets("short ab stays out", ["ab"]), "short *** stays out");
+    const redactor = createLogRedactor(["s3cret", "ab"]);
+    const combined = redactor.push("token=s3") + redactor.push("cret ab") + redactor.flush();
+    assert.equal(combined.includes("s3cret"), false);
+    assert.equal(combined.includes("ab"), false);
+    assert.match(combined, /token=\*\*\*/);
     assert.equal(
       stripGitCredentials("https://x-access-token:abc@github.com/a/b.git"),
       "https://github.com/a/b.git"
@@ -180,6 +188,13 @@ describe("CI config", () => {
     assert.equal(planForPipeline({ enabled: 0, gate_deploy: 1 }), "deploy-only");
     assert.equal(planForPipeline({ enabled: 1, gate_deploy: 0 }), "deploy-and-ci");
     assert.equal(planForPipeline({ enabled: 1, gate_deploy: 1 }), "ci-then-deploy");
+  });
+
+  test("the job user can write a checkout owned by a non-root host user", () => {
+    assert.equal(ciContainerUser("linux", 1000, 1000), "1000:1000");
+    assert.equal(ciContainerUser("linux", 0, 0), undefined);
+    assert.equal(ciContainerUser("win32", 1000, 1000), undefined);
+    assert.equal(ciContainerUser("linux", undefined, undefined), undefined);
   });
 });
 
@@ -356,10 +371,11 @@ describe("CI runner", { skip }, () => {
     await runQueued(queued.id, {
       remoteHead: async () => commit,
       deploy: async (input) => {
-        deployed.push(input.serviceId);
+        deployed.push(input.commit ?? "");
+        return { status: "success" };
       }
     });
-    assert.deepEqual(deployed, ["svc"]);
+    assert.deepEqual(deployed, [commit]);
     const run = ctx.db.prepare("SELECT status, deploy_status FROM ci_runs WHERE id = ?").get(queued.id) as {
       status: string;
       deploy_status: string;
@@ -446,5 +462,84 @@ describe("CI runner", { skip }, () => {
       status: string;
     };
     assert.equal(run.status, "cancelled");
+  });
+
+  test("a deploy request that arrives while the job is running is honored", async () => {
+    seedService();
+    seedPipeline({ gate: true });
+    const commit = "b".repeat(40);
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit,
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    let seen: string | null = null;
+    await runQueued(queued.id, {
+      remoteHead: async () => commit,
+      sandbox: {
+        async run() {
+          ctx.db.prepare("UPDATE ci_runs SET deploy_after = 1 WHERE id = ?").run(queued.id);
+          return { failedStep: null, cancelled: false, timedOut: false };
+        }
+      },
+      deploy: async (input) => {
+        seen = input.commit;
+        return { status: "success" };
+      }
+    });
+    assert.equal(seen, commit);
+    const run = ctx.db.prepare("SELECT status, deploy_status FROM ci_runs WHERE id = ?").get(queued.id) as {
+      status: string;
+      deploy_status: string;
+    };
+    assert.equal(run.status, "passed");
+    assert.equal(run.deploy_status, "success");
+  });
+
+  test("a failed deploy is not recorded as a success", async () => {
+    seedService();
+    seedPipeline({ gate: true });
+    const commit = "c".repeat(40);
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit,
+      branch: "main",
+      trigger: "webhook",
+      deployAfter: true
+    });
+    await runQueued(queued.id, {
+      remoteHead: async () => commit,
+      deploy: async () => ({ status: "failed" })
+    });
+    const run = ctx.db
+      .prepare("SELECT status, deploy_status, error FROM ci_runs WHERE id = ?")
+      .get(queued.id) as {
+      status: string;
+      deploy_status: string;
+      error: string;
+    };
+    assert.equal(run.status, "passed");
+    assert.equal(run.deploy_status, "failed");
+    assert.match(run.error, /Deploy failed/);
+  });
+
+  test("shutdown does not start a queued job", async () => {
+    seedService();
+    seedPipeline();
+    const stop = startCiLoop(ctx);
+    await stop();
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "d".repeat(40),
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    const run = ctx.db.prepare("SELECT status FROM ci_runs WHERE id = ?").get(queued.id) as {
+      status: string;
+    };
+    assert.equal(run.status, "queued");
   });
 });

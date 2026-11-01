@@ -183,17 +183,49 @@ export function stripGitCredentials(repoUrl: string): string {
   }
 }
 
+function secretValues(secrets: Array<string | null | undefined>): string[] {
+  return [
+    ...new Set(secrets.filter((value): value is string => typeof value === "string" && value.length > 0))
+  ].sort((a, b) => b.length - a.length);
+}
+
 export function redactSecrets(text: string, secrets: Array<string | null | undefined>): string {
   let out = text;
-  const values = [
-    ...new Set(secrets.filter((value): value is string => Boolean(value && value.length >= 6)))
-  ].sort((a, b) => b.length - a.length);
-  for (const secret of values) out = out.split(secret).join("***");
+  for (const secret of secretValues(secrets)) out = out.split(secret).join("***");
   out = out.replace(/x-access-token:[^@\s]+/gi, "x-access-token:***");
   out = out.replace(/https?:\/\/[^:\s@/]+:[^@\s/]+@/gi, (match) =>
     match.toLowerCase().startsWith("http://") ? "http://***@" : "https://***@"
   );
   return out;
+}
+
+/**
+ * Mask secrets that are split across Docker's stdout chunks.
+ * A chunk is only emitted once it cannot still be the start of a secret;
+ * call flush when the stream ends.
+ */
+export function createLogRedactor(secrets: Array<string | null | undefined>): {
+  push(chunk: string): string;
+  flush(): string;
+} {
+  const values = secretValues(secrets);
+  const hold = values.reduce((max, secret) => Math.max(max, secret.length - 1), 0);
+  let pending = "";
+  return {
+    push(chunk: string): string {
+      if (!chunk) return "";
+      pending = redactSecrets(pending + chunk, values);
+      if (pending.length <= hold) return "";
+      const ready = pending.slice(0, pending.length - hold);
+      pending = pending.slice(pending.length - hold);
+      return ready;
+    },
+    flush(): string {
+      const ready = pending;
+      pending = "";
+      return ready;
+    }
+  };
 }
 
 export function buildCiEnv(
