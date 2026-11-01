@@ -3,8 +3,10 @@
  *
  * Everything is under /api/stripe and therefore gated by the dashboard session
  * like the rest of /api; nothing here is public. No route accepts a key except
- * PUT /api/stripe/keys/:mode, and no route ever returns one. Writes to live
- * Stripe need `confirmLive: true` in the body.
+ * PUT /api/stripe/keys/:mode (account keys and the organization master key),
+ * and no route ever returns one. Writes to live Stripe need `confirmLive: true`
+ * in the body. The organization key is used server-side only: it is never
+ * injected into an app.
  *
  * Key fields are validated by hand (not through Zod) so that no validation
  * error, which the global handler echoes back, can ever contain a key.
@@ -21,7 +23,9 @@ import {
   listApps,
   removeKeys,
   saveKeys,
+  setAppAccount,
   verifyKeys,
+  verifyOrgKey,
   type StripeDeps
 } from "../services/stripe.js";
 
@@ -39,7 +43,12 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
   ctx.app.put("/api/stripe/keys/:mode", limited, async (req) => {
     const { mode } = req.params as { mode: string };
     const b = body(req);
-    return saveKeys(ctx, actorOf(req), mode, { secretKey: b.secretKey, publishableKey: b.publishableKey, webhookSecret: b.webhookSecret });
+    return saveKeys(ctx, actorOf(req), mode, {
+      secretKey: b.secretKey,
+      publishableKey: b.publishableKey,
+      webhookSecret: b.webhookSecret,
+      orgKey: b.orgKey
+    });
   });
 
   ctx.app.delete("/api/stripe/keys/:mode", limited, async (req) => {
@@ -50,7 +59,14 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
 
   ctx.app.post("/api/stripe/verify/:mode", limited, async (req) => {
     const { mode } = req.params as { mode: string };
-    return { ok: true, account: await verifyKeys(ctx, actorOf(req), mode, deps) };
+    return { ok: true, credential_path: "account-key" as const, account: await verifyKeys(ctx, actorOf(req), mode, deps) };
+  });
+
+  // Verify the organization master key against one member account (an app's account, or an explicit acct_…).
+  ctx.app.post("/api/stripe/org/verify/:mode", limited, async (req) => {
+    const { mode } = req.params as { mode: string };
+    const b = body(req);
+    return verifyOrgKey(ctx, actorOf(req), mode, { serviceId: b.serviceId, accountId: b.accountId }, deps);
   });
 
   ctx.app.get("/api/stripe/apps", async () => ({ apps: listApps(ctx) }));
@@ -59,6 +75,12 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
     const { serviceId } = req.params as { serviceId: string };
     const b = body(req);
     return connectApp(ctx, actorOf(req), { serviceId, mode: b.mode, confirmLive: b.confirmLive, takeover: b.takeover });
+  });
+
+  // Which Stripe member account (acct_…) an app belongs to; null or "" clears it.
+  ctx.app.put("/api/stripe/apps/:serviceId/account", limited, async (req) => {
+    const { serviceId } = req.params as { serviceId: string };
+    return setAppAccount(ctx, actorOf(req), serviceId, body(req).accountId);
   });
 
   ctx.app.delete("/api/stripe/apps/:serviceId", limited, async (req) => {

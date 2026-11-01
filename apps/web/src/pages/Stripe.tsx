@@ -12,10 +12,14 @@ import {
   ensureWebhook,
   getApps,
   getStatus,
+  isAccountId,
   removeKeys,
   saveKeys,
+  setAppAccount,
   toMinorUnits,
   verifyKeys,
+  verifyOrg,
+  type CredentialPath,
   type KeyPart,
   type ModeStatus,
   type PortalResult,
@@ -27,7 +31,24 @@ import {
 } from "../lib/stripe";
 
 const MODE_LABEL: Record<StripeMode, string> = { test: "Test mode", live: "Live mode" };
-const PART_LABEL: Record<KeyPart, string> = { secret_key: "Secret key", publishable_key: "Publishable key", webhook_secret: "Webhook signing secret" };
+const PART_LABEL: Record<KeyPart, string> = {
+  secret_key: "Secret key",
+  publishable_key: "Publishable key",
+  webhook_secret: "Webhook signing secret",
+  org_key: "Organization key"
+};
+
+/** Where setup ran or will run: the organization key inside one account, or the account-level key. */
+function PathChip({ path, account }: { path: CredentialPath | null; account?: string | null }) {
+  if (!path) return null;
+  return path === "org-key" ? (
+    <span className="chip xsmall text-accent" title="Stripe-Context: this account">
+      org key{account ? ` · ${account}` : ""}
+    </span>
+  ) : (
+    <span className="chip xsmall">account key</span>
+  );
+}
 
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "never";
@@ -56,7 +77,7 @@ type KeyCardProps = {
   mode: StripeMode;
   status: ModeStatus;
   busy: string | null;
-  onSave: (mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string }) => Promise<boolean>;
+  onSave: (mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string; orgKey?: string }) => Promise<boolean>;
   onRemove: (mode: StripeMode, part: KeyPart) => void;
   onVerify: (mode: StripeMode) => void;
 };
@@ -178,6 +199,148 @@ function KeyCard({ mode, status, busy, onSave, onRemove, onVerify }: KeyCardProp
   );
 }
 
+type OrgCardProps = {
+  status: StripeStatus;
+  apps: StripeApp[];
+  busy: string | null;
+  onSave: (mode: StripeMode, keys: { orgKey: string }) => Promise<boolean>;
+  onRemove: (mode: StripeMode, part: KeyPart) => void;
+  onVerify: (mode: StripeMode, accountId: string) => void;
+};
+
+/**
+ * The organization master key: stored here, used by ServerHoster (dashboard, REST, MCP) to do setup
+ * inside ONE member account at a time, and never given to an app.
+ */
+function OrgKeyCard({ status, apps, busy, onSave, onRemove, onVerify }: OrgCardProps) {
+  const [keys, setKeys] = useState<Record<StripeMode, string>>({ test: "", live: "" });
+  const [accounts, setAccounts] = useState<Record<StripeMode, string>>({ test: "", live: "" });
+  const suggestion = (mode: StripeMode) => apps.find((a) => a.mode === mode && a.account_id)?.account_id ?? "";
+
+  async function submit(e: FormEvent, mode: StripeMode) {
+    e.preventDefault();
+    if (await onSave(mode, { orgKey: keys[mode] })) setKeys((k) => ({ ...k, [mode]: "" })); // never keep a key in the page
+  }
+
+  return (
+    <section className="card stripe-org-card" aria-labelledby="stripe-org-title">
+      <div className="card-head">
+        <span className="card-title" id="stripe-org-title">
+          <KeyRound size={14} /> Organization master key
+        </span>
+        <span className="chip xsmall">optional · setup only</span>
+      </div>
+      <p className="small muted">
+        If your Stripe accounts are grouped in an organization, one <code>sk_org_…</code> key can do setup inside any of them. ServerHoster uses it
+        only to create products, prices, webhooks and the customer portal in the account you assign to each app, and to check that account. It
+        is <strong>never given to an app</strong>: apps keep using their own account-level keys. Creating the organization, its accounts and
+        every API key happens in the Stripe Dashboard; there is no API for that.
+      </p>
+      <div className="stripe-perms" role="group" aria-label="Permissions the organization key needs">
+        <div className="small">
+          <strong>Restrict the key to exactly these permissions</strong> <span className="muted">(Stripe Dashboard → Organization → API keys)</span>
+        </div>
+        <ul className="stripe-perm-list">
+          {status.org.permissions.map((p) => (
+            <li key={p.resource}>
+              <span className={`chip xsmall ${p.access === "write" ? "warn-chip" : ""}`}>{p.access}</span> {p.resource}{" "}
+              <span className="muted xsmall">· {p.used_by}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="xsmall muted">
+          Calls are sent with API version <code>{status.org.api_version}</code> and the target account in <code>Stripe-Context</code>. Stripe
+          does not say in the key whether it is test or live, so the key is only trusted for a mode after <strong>Verify</strong> has seen Stripe
+          agree with the slot you put it in.
+        </p>
+      </div>
+      <div className="stripe-two">
+        {(["test", "live"] as StripeMode[]).map((mode) => {
+          const info = status.modes[mode].org_key;
+          const account = accounts[mode] || suggestion(mode);
+          const accountOk = isAccountId(account);
+          const idKey = `stripe-org-key-${mode}`;
+          const idAcct = `stripe-org-account-${mode}`;
+          return (
+            <form key={mode} className={`stripe-form stripe-org-slot ${mode === "live" ? "stripe-live" : ""}`} onSubmit={(e) => void submit(e, mode)} autoComplete="off" aria-label={`Organization key, ${mode} slot`}>
+              <div className="row">
+                <strong>{MODE_LABEL[mode]}</strong>
+                {mode === "live" && <span className="chip xsmall tag-red">real money</span>}
+              </div>
+              <div className="stripe-field">
+                <label htmlFor={idKey}>Organization key ({mode})</label>
+                <div className="stripe-field-state small">
+                  {info.configured ? (
+                    <>
+                      <span className="chip xsmall tag-green">stored</span>
+                      <code>{info.preview}</code>
+                      <span className="muted xsmall" title="Non-reversible fingerprint">
+                        id {info.fingerprint}
+                      </span>
+                      {info.verified ? (
+                        <span className="chip xsmall tag-green">
+                          <Check size={11} /> verified {mode} · {info.check?.account.id}
+                        </span>
+                      ) : (
+                        <span className="chip xsmall warn-chip">
+                          <AlertTriangle size={11} /> not verified: writes are blocked
+                        </span>
+                      )}
+                      <button type="button" className="ghost xsmall danger" onClick={() => onRemove(mode, "org_key")} disabled={busy !== null} aria-label={`Remove organization key (${mode})`}>
+                        <Trash2 size={12} /> Remove
+                      </button>
+                    </>
+                  ) : (
+                    <span className="chip xsmall">not set</span>
+                  )}
+                </div>
+                <input
+                  id={idKey}
+                  name={`${mode}-org_key`}
+                  type="password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={keys[mode]}
+                  placeholder={info.configured ? "Paste a new value to replace it" : "sk_org_…"}
+                  onChange={(e) => setKeys({ ...keys, [mode]: e.target.value })}
+                />
+              </div>
+              <div className="stripe-field">
+                <label htmlFor={idAcct}>Account to check it against</label>
+                <input
+                  id={idAcct}
+                  name={`${mode}-org-account`}
+                  value={account}
+                  placeholder="acct_…"
+                  aria-invalid={account !== "" && !accountOk}
+                  onChange={(e) => setAccounts({ ...accounts, [mode]: e.target.value })}
+                />
+                {account !== "" && !accountOk && <span className="xsmall stripe-error">Use a plain member account id: acct_ followed by letters and digits.</span>}
+              </div>
+              <div className="row stripe-actions">
+                <button className="primary" type="submit" disabled={busy !== null || !keys[mode]}>
+                  {busy === `save:${mode}:org` ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save organization key
+                </button>
+                <button className="ghost" type="button" onClick={() => onVerify(mode, account.trim())} disabled={busy !== null || !info.configured || !accountOk}>
+                  {busy === `verify:${mode}:org` ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />} Verify with Stripe
+                </button>
+              </div>
+              {info.check && info.verified && (
+                <p className="small muted" aria-live="polite">
+                  {info.check.account.name ?? info.check.account.id} · checked {relativeTime(info.check.at)}
+                </p>
+              )}
+            </form>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function StripePage() {
   const [status, setStatus] = useState<StripeStatus | null>(null);
   const [apps, setApps] = useState<StripeApp[]>([]);
@@ -187,6 +350,8 @@ export function StripePage() {
   const [live, setLive] = useState<LiveRequest | null>(null);
   const [liveText, setLiveText] = useState("");
   const [appMode, setAppMode] = useState<Record<string, StripeMode>>({});
+  const [acctDraft, setAcctDraft] = useState<Record<string, string>>({});
+  const [setupApp, setSetupApp] = useState("");
 
   // setup form
   const [setupMode, setSetupMode] = useState<StripeMode>("test");
@@ -235,19 +400,63 @@ export function StripePage() {
     }
   }
 
-  async function onSaveKeys(mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string }): Promise<boolean> {
+  async function onSaveKeys(mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string; orgKey?: string }): Promise<boolean> {
     let ok = false;
-    await withBusy(`save:${mode}`, async () => {
+    await withBusy(keys.orgKey ? `save:${mode}:org` : `save:${mode}`, async () => {
       const r = await saveKeys(mode, keys);
-      toast.success(r.restart_needed ? `${MODE_LABEL[mode]} keys saved. Connected apps were updated: restart them.` : `${MODE_LABEL[mode]} keys saved and encrypted.`);
+      toast.success(
+        keys.orgKey
+          ? `${MODE_LABEL[mode]} organization key saved and encrypted. Verify it before using it.`
+          : r.restart_needed
+            ? `${MODE_LABEL[mode]} keys saved. Connected apps were updated: restart them.`
+            : `${MODE_LABEL[mode]} keys saved and encrypted.`
+      );
       ok = true;
       await load(true);
     });
     return ok;
   }
 
+  async function onVerifyOrg(mode: StripeMode, accountId: string) {
+    await withBusy(`verify:${mode}:org`, async () => {
+      const r = await verifyOrg(mode, { accountId });
+      toast.success(`Organization key verified for ${r.account.name ?? r.account.id}`);
+      await load(true);
+    });
+  }
+
+  async function onSetAccount(app: StripeApp) {
+    const value = (acctDraft[app.service_id] ?? app.account_id ?? "").trim();
+    await withBusy(`acct:${app.service_id}`, async () => {
+      const r = await setAppAccount(app.service_id, value || null);
+      toast.success(
+        r.changed ? (r.account_id ? `${app.name} now belongs to ${r.account_id}.` : `${app.name} uses the account-level key again.`) + (r.restart_needed ? " Restart it: its webhook secret changed." : "") : "No change"
+      );
+      setAcctDraft((d) => {
+        const { [app.service_id]: _gone, ...rest } = d;
+        return rest;
+      });
+      await load(true);
+    });
+  }
+
+  async function onVerifyApp(app: StripeApp) {
+    if (!app.mode) return;
+    const mode = app.mode;
+    await withBusy(`acct-verify:${app.service_id}`, async () => {
+      const r = await verifyOrg(mode, { serviceId: app.service_id });
+      toast.success(`Checked ${r.account.name ?? r.account.id} through the organization key`);
+      await load(true);
+    });
+  }
+
   async function onRemoveKey(mode: StripeMode, part: KeyPart) {
-    const extra = part === "secret_key" ? " Apps connected in this mode are disconnected and their Stripe variables removed." : "";
+    const extra =
+      part === "secret_key"
+        ? " Apps connected in this mode are disconnected and their Stripe variables removed."
+        : part === "org_key"
+          ? " Apps keep their own account-level keys; setup falls back to those."
+          : "";
     const yes = await confirmDialog({
       title: `Remove the ${PART_LABEL[part].toLowerCase()} (${mode})?`,
       message: `It is deleted from ServerHoster. Stripe keeps working with it until you roll it in Stripe.${extra}`,
@@ -312,6 +521,15 @@ export function StripePage() {
   }
 
   const connectedApps = apps.filter((a) => a.connected && a.mode === setupMode);
+  const setupTarget = connectedApps.find((a) => a.service_id === setupApp) ?? null;
+  const setupServiceId = setupTarget?.service_id;
+  const setupNote = !setupTarget
+    ? `Runs with the ${setupMode} account key.`
+    : setupTarget.credential_path === "org-key"
+      ? setupTarget.org_key_verified
+        ? `Runs through the organization key inside ${setupTarget.account_id}.`
+        : `Verify the ${setupMode} organization key first: setup would be refused until then.`
+      : `${setupTarget.name} has no account id or there is no ${setupMode} organization key, so the ${setupMode} account key is used.`;
 
   function submitPrice(e: FormEvent) {
     e.preventDefault();
@@ -330,7 +548,7 @@ export function StripePage() {
           interval: price.interval,
           taxBehavior: price.tax,
           lookupKey: price.lookup.trim(),
-          serviceId: price.service || undefined,
+          serviceId: price.service || setupServiceId,
           priceEnvName: price.service ? price.envName.trim() : undefined,
           confirmLive: setupMode === "live"
         });
@@ -346,7 +564,7 @@ export function StripePage() {
     const events = hook.events.split(/[\s,]+/).filter(Boolean);
     guard(setupMode, "Create a webhook endpoint in LIVE Stripe", async () => {
       await withBusy("hook", async () => {
-        const r = await ensureWebhook({ mode: setupMode, url: hook.url.trim(), events: events.length ? events : undefined, confirmLive: setupMode === "live" });
+        const r = await ensureWebhook({ mode: setupMode, url: hook.url.trim(), events: events.length ? events : undefined, serviceId: setupServiceId, confirmLive: setupMode === "live" });
         setHookResult(r);
         toast.success(r.created ? "Webhook created. Its signing secret was stored encrypted." : r.updated ? "Webhook events updated" : "Webhook already set up");
         await load(true);
@@ -358,7 +576,7 @@ export function StripePage() {
     e.preventDefault();
     guard(setupMode, "Configure the customer portal in LIVE Stripe", async () => {
       await withBusy("portal", async () => {
-        const r = await ensurePortal({ mode: setupMode, returnUrl: portalUrl.trim() || undefined, confirmLive: setupMode === "live" });
+        const r = await ensurePortal({ mode: setupMode, returnUrl: portalUrl.trim() || undefined, serviceId: setupServiceId, confirmLive: setupMode === "live" });
         setPortalResult(r);
         toast.success(r.created ? "Customer portal configured" : "Customer portal updated");
         await load(true);
@@ -380,7 +598,8 @@ export function StripePage() {
           <div className="page-title">Stripe</div>
           <p className="muted">
             Store your Stripe keys once, then connect any app to them and set up its product, webhook and customer portal. Keys are encrypted,
-            never shown again, and never leave this server except into the apps you connect.
+            never shown again, and never leave this server except into the apps you connect. The optional organization master key never leaves
+            ServerHoster at all.
           </p>
         </div>
         <div className="row">
@@ -451,6 +670,8 @@ export function StripePage() {
           : status && modes.map((m) => <KeyCard key={m} mode={m} status={status.modes[m]} busy={busy} onSave={onSaveKeys} onRemove={onRemoveKey} onVerify={onVerify} />)}
       </div>
 
+      {status && <OrgKeyCard status={status} apps={apps} busy={busy} onSave={onSaveKeys} onRemove={onRemoveKey} onVerify={onVerifyOrg} />}
+
       <section className="card">
         <div className="card-head">
           <span className="card-title">
@@ -460,7 +681,8 @@ export function StripePage() {
         <p className="small muted">
           Connecting adds <code>STRIPE_SECRET_KEY</code>, <code>STRIPE_PUBLISHABLE_KEY</code>, <code>STRIPE_WEBHOOK_SECRET</code> (when stored) and{" "}
           <code>STRIPE_MODE</code> to the app as encrypted variables. Restart the app afterwards. Nothing else about the app is changed: its own
-          feature switches, such as billing flags, stay as you set them.
+          feature switches, such as billing flags, stay as you set them. If the app lives in its own Stripe account, enter that account (
+          <code>acct_…</code>) so setup can run there through the organization key; its webhook signing secret is then kept for that app alone.
         </p>
         <div className="stripe-table-wrap">
           <table className="stripe-table">
@@ -469,6 +691,7 @@ export function StripePage() {
                 <th>App</th>
                 <th>Status</th>
                 <th>Stripe</th>
+                <th>Account</th>
                 <th />
               </tr>
             </thead>
@@ -489,6 +712,55 @@ export function StripePage() {
                         </>
                       ) : (
                         <span className="chip xsmall">not connected</span>
+                      )}
+                    </td>
+                    <td className="stripe-account-cell">
+                      {a.connected ? (
+                        <div className="stripe-account-stack">
+                          <div className="row stripe-account-edit">
+                            <label className="sr-only" htmlFor={`stripe-account-${a.service_id}`}>
+                              Stripe account for {a.name}
+                            </label>
+                            <input
+                              id={`stripe-account-${a.service_id}`}
+                              value={acctDraft[a.service_id] ?? a.account_id ?? ""}
+                              placeholder="acct_… (optional)"
+                              aria-invalid={(acctDraft[a.service_id] ?? "") !== "" && !isAccountId(acctDraft[a.service_id])}
+                              onChange={(e) => setAcctDraft({ ...acctDraft, [a.service_id]: e.target.value })}
+                            />
+                            <button
+                              className="ghost xsmall"
+                              disabled={
+                                busy !== null ||
+                                acctDraft[a.service_id] === undefined ||
+                                (acctDraft[a.service_id].trim() !== "" && !isAccountId(acctDraft[a.service_id]))
+                              }
+                              onClick={() => void onSetAccount(a)}
+                            >
+                              {busy === `acct:${a.service_id}` ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Set
+                            </button>
+                          </div>
+                          <div className="row stripe-flags">
+                            <PathChip path={a.credential_path} account={a.account_id} />
+                            {a.credential_path === "org-key" && !a.org_key_verified && <span className="chip xsmall warn-chip">verify the key first</span>}
+                            <span className={`chip xsmall ${a.webhook_secret.configured ? "tag-green" : ""}`} title="The signing secret itself is never shown">
+                              webhook secret: {a.webhook_secret.source === "app" ? "own" : a.webhook_secret.source === "mode" ? "shared" : "none"}
+                            </span>
+                          </div>
+                          {a.verify && (
+                            <p className="xsmall muted stripe-verify-line">
+                              {a.verify.account.name ?? a.verify.account.id}: {a.verify.account.charges_enabled ? "charges on" : "charges off"} ·{" "}
+                              {a.verify.account.payouts_enabled ? "payouts on" : "payouts off"} · checked {relativeTime(a.verify.at)}
+                            </p>
+                          )}
+                          {a.credential_path === "org-key" && (
+                            <button className="ghost xsmall" disabled={busy !== null} onClick={() => void onVerifyApp(a)}>
+                              {busy === `acct-verify:${a.service_id}` ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />} Verify this account
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="muted xsmall">connect first</span>
                       )}
                     </td>
                     <td className="stripe-row-actions">
@@ -517,7 +789,7 @@ export function StripePage() {
               })}
               {apps.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="muted small">
+                  <td colSpan={5} className="muted small">
                     No services yet.
                   </td>
                 </tr>
@@ -545,6 +817,23 @@ export function StripePage() {
         <p className="small muted">
           Each step looks before it creates, so running it again never makes duplicates. Amounts are in the currency you choose (9 means 9.00).
         </p>
+        <div className="stripe-grid stripe-target">
+          <label>
+            Act in the account of
+            <select value={setupTarget ? setupApp : ""} onChange={(e) => setSetupApp(e.target.value)}>
+              <option value="">no app: use the {setupMode} account key</option>
+              {connectedApps.map((a) => (
+                <option key={a.service_id} value={a.service_id}>
+                  {a.name}
+                  {a.account_id ? ` (${a.account_id})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="small muted stripe-target-note" aria-live="polite">
+            <PathChip path={setupTarget ? setupTarget.credential_path : "account-key"} account={setupTarget?.account_id} /> {setupNote}
+          </p>
+        </div>
 
         <div className="stripe-steps">
           <form className="stripe-step" onSubmit={submitPrice} aria-label="Product and price">
@@ -609,7 +898,8 @@ export function StripePage() {
             {priceResult && (
               <p className="small stripe-result" role="status">
                 <span className={`chip xsmall ${priceResult.created ? "tag-green" : ""}`}>{priceResult.created ? "created" : "already existed"}</span>{" "}
-                price <code>{priceResult.price.id}</code> · product <code>{priceResult.product.id}</code>
+                <PathChip path={priceResult.credential_path} account={priceResult.account} /> price <code>{priceResult.price.id}</code> · product{" "}
+                <code>{priceResult.product.id}</code>
                 {priceResult.injected && <> · written to the app as <code>{priceResult.injected.env}</code>; restart it</>}
               </p>
             )}
@@ -636,7 +926,8 @@ export function StripePage() {
             {hookResult && (
               <p className="small stripe-result" role="status">
                 <span className={`chip xsmall ${hookResult.created ? "tag-green" : ""}`}>{hookResult.created ? "created" : hookResult.updated ? "updated" : "already existed"}</span>{" "}
-                <code>{hookResult.endpoint.id}</code> · signing secret {hookResult.secret_stored ? "stored" : "not available"}
+                <PathChip path={hookResult.credential_path} account={hookResult.account} /> <code>{hookResult.endpoint.id}</code> · signing secret{" "}
+                {hookResult.secret_stored ? `stored (${hookResult.secret_source === "app" ? "this app's own" : "shared per mode"})` : "not available"}
                 {hookResult.note && <> · {hookResult.note}</>}
                 {hookResult.restart_needed && <> · restart the connected app</>}
               </p>
@@ -659,7 +950,8 @@ export function StripePage() {
             </div>
             {portalResult && (
               <p className="small stripe-result" role="status">
-                <span className={`chip xsmall ${portalResult.created ? "tag-green" : ""}`}>{portalResult.created ? "created" : "updated"}</span> <code>{portalResult.portal.id}</code>
+                <span className={`chip xsmall ${portalResult.created ? "tag-green" : ""}`}>{portalResult.created ? "created" : "updated"}</span>{" "}
+                <PathChip path={portalResult.credential_path} account={portalResult.account} /> <code>{portalResult.portal.id}</code>
               </p>
             )}
           </form>
@@ -672,10 +964,11 @@ export function StripePage() {
         </div>
         <p className="small muted">
           The same actions are available over REST under <code>/api/stripe/…</code> and as MCP tools on the operator endpoint:{" "}
-          <code>stripe_status</code>, <code>stripe_verify</code>, <code>stripe_list_apps</code>, <code>stripe_connect_app</code>,{" "}
-          <code>stripe_disconnect_app</code>, <code>stripe_ensure_product_price</code>, <code>stripe_ensure_webhook</code>,{" "}
-          <code>stripe_ensure_portal</code>. Keys can only be entered here; no tool accepts or returns one, and live changes need{" "}
-          <code>confirmLive: true</code>.
+          <code>stripe_status</code>, <code>stripe_verify</code>, <code>stripe_verify_org</code>, <code>stripe_list_apps</code>,{" "}
+          <code>stripe_connect_app</code>, <code>stripe_set_app_account</code>, <code>stripe_disconnect_app</code>,{" "}
+          <code>stripe_ensure_product_price</code>, <code>stripe_ensure_webhook</code>, <code>stripe_ensure_portal</code>. Every result says
+          which credential it used (<code>credential_path</code>). Keys can only be entered here; no tool accepts or returns one, and live
+          changes need <code>confirmLive: true</code>.
         </p>
       </section>
     </div>

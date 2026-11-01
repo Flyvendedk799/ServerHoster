@@ -3,10 +3,13 @@ import { api, type ApiOptions } from "./api";
 /**
  * Stripe client. Note what is absent: no call ever returns a key. `saveKeys` is
  * the only call that sends one, and the server answers with masked previews.
+ * The organization master key is used by ServerHoster only and is never given to an app.
  */
 
 export type StripeMode = "test" | "live";
-export type KeyPart = "secret_key" | "publishable_key" | "webhook_secret";
+export type KeyPart = "secret_key" | "publishable_key" | "webhook_secret" | "org_key";
+/** Which credential a setup call used: the organization key in one account's context, or the account-level key. */
+export type CredentialPath = "org-key" | "account-key";
 
 export type KeyInfo = { configured: boolean; preview: string | null; fingerprint: string | null };
 
@@ -29,10 +32,17 @@ export type SetupRecord = {
   portal?: { id: string; at: string };
 };
 
+export type OrgCheck = { ok: true; livemode: boolean; account: AccountSummary; key_fingerprint: string; at: string };
+
+export type OrgKeyInfo = KeyInfo & { verified: boolean; check: OrgCheck | null };
+
+export type OrgPermission = { resource: string; access: "read" | "write"; paths: string[]; used_by: string };
+
 export type ModeStatus = {
   secret_key: KeyInfo;
   publishable_key: KeyInfo;
   webhook_secret: KeyInfo;
+  org_key: OrgKeyInfo;
   account: AccountSummary | null;
   setup: SetupRecord;
 };
@@ -41,6 +51,7 @@ export type StripeStatus = {
   modes: Record<StripeMode, ModeStatus>;
   default_mode: "test";
   default_webhook_events: string[];
+  org: { api_version: string; permissions: OrgPermission[] };
 };
 
 export type StripeApp = {
@@ -53,11 +64,22 @@ export type StripeApp = {
   connected_at: string | null;
   synced_at: string | null;
   restart_needed: boolean;
+  /** The member account (acct_…) the app belongs to, when the organization key is used for it. */
+  account_id: string | null;
+  credential_path: CredentialPath | null;
+  /** For the org path: whether the key in this app's mode was verified (writes wait for it). */
+  org_key_verified: boolean | null;
+  /** Whether a webhook signing secret is injected, and where it comes from. Never its value. */
+  webhook_secret: { configured: boolean; source: "app" | "mode" | null };
+  verify: { account: AccountSummary; path: CredentialPath; at: string } | null;
+  setup: SetupRecord | null;
 };
 
 export type PriceResult = {
   ok: boolean;
   mode: StripeMode;
+  credential_path: CredentialPath;
+  account: string | null;
   created: boolean;
   product: { id: string; name: string };
   price: { id: string; lookup_key: string; unit_amount: number; currency: string; interval: string; tax_behavior: string };
@@ -68,10 +90,13 @@ export type PriceResult = {
 export type WebhookResult = {
   ok: boolean;
   mode: StripeMode;
+  credential_path: CredentialPath;
+  account: string | null;
   created: boolean;
   updated: boolean;
   endpoint: { id: string; url: string; events: string[]; status: string | null };
   secret_stored: boolean;
+  secret_source: "app" | "mode" | null;
   secret_unavailable: boolean;
   note?: string;
   apps_updated: string[];
@@ -81,13 +106,15 @@ export type WebhookResult = {
 export type PortalResult = {
   ok: boolean;
   mode: StripeMode;
+  credential_path: CredentialPath;
+  account: string | null;
   created: boolean;
   portal: { id: string; cancel: string; payment_method_update: boolean; return_url: string | null };
 };
 
 export const getStatus = (opts?: ApiOptions) => api<StripeStatus>("/api/stripe/status", opts);
 
-export const saveKeys = (mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string }) =>
+export const saveKeys = (mode: StripeMode, keys: { secretKey?: string; publishableKey?: string; webhookSecret?: string; orgKey?: string }) =>
   api<{ ok: boolean; apps_updated: string[]; restart_needed: boolean }>(`/api/stripe/keys/${mode}`, { method: "PUT", body: JSON.stringify(keys) });
 
 export const removeKeys = (mode: StripeMode, part: KeyPart | "all") =>
@@ -98,6 +125,23 @@ export const removeKeys = (mode: StripeMode, part: KeyPart | "all") =>
 
 export const verifyKeys = (mode: StripeMode) =>
   api<{ ok: boolean; account: AccountSummary }>(`/api/stripe/verify/${mode}`, { method: "POST" });
+
+/** Check the organization key against ONE member account (an app's, or an explicit acct_…). */
+export const verifyOrg = (mode: StripeMode, target: { serviceId?: string; accountId?: string }) =>
+  api<{ ok: boolean; credential_path: CredentialPath; mode: StripeMode; account: AccountSummary; service_id: string | null }>(
+    `/api/stripe/org/verify/${mode}`,
+    { method: "POST", body: JSON.stringify(target) }
+  );
+
+/** Choose which Stripe member account an already-connected app belongs to; null clears it. */
+export const setAppAccount = (serviceId: string, accountId: string | null) =>
+  api<{ ok: boolean; service_id: string; account_id: string | null; changed: boolean; restart_needed: boolean }>(
+    `/api/stripe/apps/${encodeURIComponent(serviceId)}/account`,
+    { method: "PUT", body: JSON.stringify({ accountId }) }
+  );
+
+/** Same rule the server applies: one plain member account, letters and digits only. */
+export const isAccountId = (value: string) => /^acct_[A-Za-z0-9]+$/.test(value.trim());
 
 export const getApps = (opts?: ApiOptions) => api<{ apps: StripeApp[] }>("/api/stripe/apps", opts);
 
@@ -124,10 +168,10 @@ export const ensurePrice = (body: {
   confirmLive?: boolean;
 }) => api<PriceResult>("/api/stripe/setup/product-price", { method: "POST", body: JSON.stringify(body) });
 
-export const ensureWebhook = (body: { mode: StripeMode; url: string; events?: string[]; confirmLive?: boolean }) =>
+export const ensureWebhook = (body: { mode: StripeMode; url: string; events?: string[]; serviceId?: string; confirmLive?: boolean }) =>
   api<WebhookResult>("/api/stripe/setup/webhook", { method: "POST", body: JSON.stringify(body) });
 
-export const ensurePortal = (body: { mode: StripeMode; returnUrl?: string; confirmLive?: boolean }) =>
+export const ensurePortal = (body: { mode: StripeMode; returnUrl?: string; serviceId?: string; confirmLive?: boolean }) =>
   api<PortalResult>("/api/stripe/setup/portal", { method: "POST", body: JSON.stringify(body) });
 
 /** Currencies Stripe counts in whole units (no cents). Everything else is x100. */
