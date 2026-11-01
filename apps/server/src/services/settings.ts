@@ -76,6 +76,10 @@ export function listMaskedSettings(ctx: AppContext): Array<{ key: string; value:
     value: string;
   }>;
   return rows.map((r) => {
+    // The legacy dashboard password is stored in the clear (it is compared
+    // directly at login) but must never be listed: anyone who can read it can
+    // log in, which would let a revocable API token mint itself a session.
+    if (r.key === "dashboard_password") return { key: r.key, value: maskSecret(r.value), secret: true };
     const secret = ENCRYPTED_SETTINGS.has(r.key);
     if (!secret) return { key: r.key, value: r.value, secret: false };
     try {

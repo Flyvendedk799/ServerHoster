@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import Database from "better-sqlite3";
 import { config } from "./config.js";
+import { API_TOKENS_INDEX_SQL, API_TOKENS_TABLE_SQL } from "./services/apiTokens.js";
 
 fs.mkdirSync(config.dataRoot, { recursive: true });
 fs.mkdirSync(config.logsDir, { recursive: true });
@@ -766,7 +767,14 @@ const migrations = [
     created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS idx_emailer_messages_thread ON emailer_messages(thread_id, created_at)",
-  "CREATE INDEX IF NOT EXISTS idx_emailer_messages_msgid ON emailer_messages(message_id)"
+  "CREATE INDEX IF NOT EXISTS idx_emailer_messages_msgid ON emailer_messages(message_id)",
+  // --- Automation API tokens ----------------------------------------------
+  // Long-lived, revocable machine credentials (shk_…) for scripts and agents,
+  // so automation no longer borrows a dashboard session that expires or is
+  // cleared. SHA-256 hash only, plaintext shown once. The statements live in
+  // services/apiTokens.ts so `survhub token …` can create the table too.
+  API_TOKENS_TABLE_SQL,
+  API_TOKENS_INDEX_SQL
 ];
 
 for (const statement of migrations) {
