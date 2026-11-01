@@ -6197,6 +6197,67 @@ a.list-row:hover .row-chevron,
   overflow-wrap: anywhere;
 }
 
+/* Organization master key + per-app account */
+.stripe-perms {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--b1);
+  border-radius: var(--r2, 8px);
+}
+.stripe-perm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 13px;
+}
+.stripe-perm-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.stripe-error {
+  color: var(--red);
+}
+.stripe-target {
+  align-items: start;
+  margin-bottom: 4px;
+}
+.stripe-target-note {
+  margin: 0;
+  align-self: end;
+  overflow-wrap: anywhere;
+}
+.stripe-account-cell {
+  min-width: 15rem;
+}
+.stripe-account-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+.stripe-account-edit {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.stripe-account-edit input {
+  width: 13rem;
+}
+.stripe-verify-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.stripe-page input[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
 @media (max-width: 640px) {
   .stripe-table thead {
     display: none;
@@ -6218,5 +6279,11 @@ a.list-row:hover .row-chevron,
   }
   .stripe-row-actions {
     justify-content: flex-start;
+  }
+  .stripe-account-cell {
+    min-width: 0;
+  }
+  .stripe-account-edit input {
+    width: min(100%, 13rem);
   }
 }

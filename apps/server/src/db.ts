@@ -589,6 +589,16 @@ const migrations = [
     synced_at TEXT NOT NULL,
     extra_env_json TEXT NOT NULL DEFAULT '[]'
   )`,
+  // Organization master key layer (all nullable, so existing links keep working
+  // unchanged). Each statement is applied on its own and a repeat is a no-op.
+  //   stripe_account_id: the member account (acct_…) this app belongs to
+  //   webhook_secret:    this app's own endpoint signing secret, encrypted
+  //   verify_json:       last org-key verification for this app (no key material)
+  //   setup_json:        product/price, webhook and portal results for this app's account
+  "ALTER TABLE stripe_app_links ADD COLUMN stripe_account_id TEXT",
+  "ALTER TABLE stripe_app_links ADD COLUMN webhook_secret TEXT",
+  "ALTER TABLE stripe_app_links ADD COLUMN verify_json TEXT",
+  "ALTER TABLE stripe_app_links ADD COLUMN setup_json TEXT",
   // A companion service (auto-created from an extra root Dockerfile — e.g. a
   // worker) inherits its env from a primary tier at deploy time via this link,
   // rather than getting a one-time snapshot copy. NULL for normal services.
