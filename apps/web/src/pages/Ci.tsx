@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Cpu, Loader2, Play, XCircle } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { AlertTriangle, CheckCircle2, Cpu, Loader2, Play, XCircle } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";
@@ -21,6 +22,8 @@ type Pipeline = {
   timeout_minutes: number;
   memory_mb: number;
   cpus: number;
+  trigger_branches?: string | null;
+  trigger_pull_requests?: number | null;
   last_status?: string | null;
   last_run_at?: string | null;
   last_commit?: string | null;
@@ -37,6 +40,9 @@ type Run = {
   branch?: string | null;
   status: string;
   trigger_source: string;
+  event?: string | null;
+  pr_number?: number | null;
+  status_warning?: string | null;
   deploy_after: number;
   deploy_status?: string | null;
   failure_step?: string | null;
@@ -71,6 +77,30 @@ type Draft = {
   timeoutMinutes: number;
   memoryMb: number;
   cpus: number;
+  triggerBranches: string;
+  triggerPullRequests: boolean;
+};
+
+type CiSettings = {
+  maxConcurrent: number | null;
+  budgetPercent: number;
+  readonlyRootfs: boolean;
+  cacheMaxMb: number;
+  workspaceMaxMb: number;
+};
+
+type CiSettingsView = {
+  host: { cpus: number; totalMemMb: number; freeMemMb: number };
+  settings: CiSettings;
+  effectiveMaxConcurrent: number;
+  running: number;
+  reservedMemoryMb: number;
+  reservedCpus: number;
+  waiting: string | null;
+  firewall: { applied: boolean; note: string };
+  webhookInsecure: boolean;
+  webhookSecretConfigured: boolean;
+  publicUrlConfigured: boolean;
 };
 
 const EMPTY: Draft = {
@@ -84,7 +114,9 @@ const EMPTY: Draft = {
   image: "node:22-bookworm",
   timeoutMinutes: 20,
   memoryMb: 2048,
-  cpus: 1
+  cpus: 1,
+  triggerBranches: "",
+  triggerPullRequests: true
 };
 
 function badge(status: string): string {
@@ -118,6 +150,55 @@ export function CiPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [detail, setDetail] = useState<Run | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ciSettings, setCiSettings] = useState<CiSettingsView | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<CiSettings | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [searchParams] = useSearchParams();
+  const runParam = searchParams.get("run");
+
+  useEffect(() => {
+    // Commit statuses on GitHub link here with ?run=<id>.
+    if (runParam) setExpanded(runParam);
+  }, [runParam]);
+
+  async function loadSettings(): Promise<void> {
+    const view = await api<CiSettingsView>("/api/ci/settings", { silent: true });
+    setCiSettings(view);
+    setSettingsDraft((prev) => prev ?? view.settings);
+  }
+
+  async function saveSettings(): Promise<void> {
+    if (!settingsDraft) return;
+    setSavingSettings(true);
+    try {
+      const view = await api<CiSettingsView>("/api/ci/settings", {
+        method: "PUT",
+        body: JSON.stringify(settingsDraft)
+      });
+      setCiSettings(view);
+      setSettingsDraft(view.settings);
+      toast.success("CI host settings saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not save CI settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  async function clearCache(pipeline: Pipeline): Promise<void> {
+    const ok = await confirmDialog({
+      title: `Clear the dependency cache for ${pipeline.service_name}?`,
+      message: "The next run downloads dependencies again. Runs in progress keep their files.",
+      confirmLabel: "Clear cache"
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/ci/pipelines/${pipeline.id}/cache`, { method: "DELETE" });
+      toast.success("Cache cleared");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not clear the cache");
+    }
+  }
 
   async function load(): Promise<void> {
     const [pipes, history] = await Promise.all([
@@ -148,6 +229,7 @@ export function CiPage() {
     void load()
       .catch(() => undefined)
       .finally(() => setLoading(false));
+    void loadSettings().catch(() => undefined);
     let socket: { close: () => void } | null = null;
     try {
       socket = connectLogs((payload) => {
@@ -196,7 +278,9 @@ export function CiPage() {
       image: pipeline.image,
       timeoutMinutes: pipeline.timeout_minutes,
       memoryMb: pipeline.memory_mb,
-      cpus: pipeline.cpus
+      cpus: pipeline.cpus,
+      triggerBranches: pipeline.trigger_branches ?? "",
+      triggerPullRequests: pipeline.trigger_pull_requests !== 0
     });
     setOpen(true);
   }
@@ -213,7 +297,9 @@ export function CiPage() {
       image: draft.image,
       timeoutMinutes: Number(draft.timeoutMinutes),
       memoryMb: Number(draft.memoryMb),
-      cpus: Number(draft.cpus)
+      cpus: Number(draft.cpus),
+      triggerBranches: draft.triggerBranches.trim() || null,
+      triggerPullRequests: draft.triggerPullRequests
     };
     try {
       if (draft.id)
@@ -358,6 +444,15 @@ export function CiPage() {
                 onChange={(e) => setDraft((d) => ({ ...d, memoryMb: Number(e.target.value) }))}
               />
             </div>
+            <div className="field-group" style={{ minWidth: 260, flex: 1 }}>
+              <label className="tiny font-bold uppercase muted">Other branches</label>
+              <input
+                aria-label="Branches to test"
+                placeholder="Empty = deploy branch only. e.g. feature/*, release-*"
+                value={draft.triggerBranches}
+                onChange={(e) => setDraft((d) => ({ ...d, triggerBranches: e.target.value }))}
+              />
+            </div>
           </div>
           <div className="row" style={{ flexWrap: "wrap", gap: "1rem", marginTop: "0.75rem" }}>
             <label className="row tiny">
@@ -375,6 +470,14 @@ export function CiPage() {
                 onChange={(e) => setDraft((d) => ({ ...d, gateDeploy: e.target.checked }))}
               />
               Hold deploy until CI passes
+            </label>
+            <label className="row tiny">
+              <input
+                type="checkbox"
+                checked={draft.triggerPullRequests}
+                onChange={(e) => setDraft((d) => ({ ...d, triggerPullRequests: e.target.checked }))}
+              />
+              Test pull requests into the deploy branch
             </label>
             <label className="row tiny">
               <input
@@ -400,6 +503,7 @@ export function CiPage() {
           <p className="muted tiny" style={{ marginTop: "0.75rem" }}>
             Production env vars are not injected. List the ones a job needs under <code>secrets:</code>. The
             container has no Docker socket and a memory cap ({draft.memoryMb} MB, {draft.timeoutMinutes} min).
+            Branch and pull request runs never deploy; pull requests from forks are skipped.
           </p>
           {draft.configSource === "inline" ? (
             <textarea
@@ -461,6 +565,8 @@ export function CiPage() {
                     {pipeline.image}
                     {pipeline.gate_deploy ? " · holds deploy" : ""}
                     {pipeline.github_branch ? ` · ${pipeline.github_branch}` : ""}
+                    {pipeline.trigger_branches ? ` · also ${pipeline.trigger_branches}` : ""}
+                    {pipeline.trigger_pull_requests !== 0 ? " · PRs" : ""}
                   </div>
                 </div>
                 <div className="row" style={{ gap: "0.5rem" }}>
@@ -473,6 +579,9 @@ export function CiPage() {
                   <button type="button" className="ghost xsmall" onClick={() => edit(pipeline)}>
                     Edit
                   </button>
+                  <button type="button" className="ghost xsmall" onClick={() => void clearCache(pipeline)}>
+                    Clear cache
+                  </button>
                   <button type="button" className="ghost xsmall" onClick={() => void remove(pipeline)}>
                     Delete
                   </button>
@@ -482,6 +591,112 @@ export function CiPage() {
           </div>
         )}
       </section>
+
+      {ciSettings && settingsDraft && (
+        <section className="card" style={{ marginBottom: "1.5rem" }}>
+          <div className="section-title">
+            <h3>Host limits</h3>
+            <span className="tiny muted">
+              {ciSettings.host.cpus} CPUs · {Math.round(ciSettings.host.totalMemMb / 1024)} GB RAM (
+              {Math.round(ciSettings.host.freeMemMb / 1024)} GB free) · {ciSettings.running} running
+            </span>
+          </div>
+          {(ciSettings.webhookInsecure || !ciSettings.webhookSecretConfigured) && (
+            <p className="tiny text-danger" style={{ marginTop: "0.75rem" }}>
+              <AlertTriangle size={12} /> No webhook secret is set
+              {ciSettings.webhookInsecure ? " (SURVHUB_WEBHOOK_INSECURE is on)" : ""}. Pull request and branch
+              CI stay off until you set SURVHUB_WEBHOOK_SECRET, because anyone could send an unsigned event.
+            </p>
+          )}
+          {!ciSettings.publicUrlConfigured && (
+            <p className="tiny muted" style={{ marginTop: "0.5rem" }}>
+              Set SURVHUB_PUBLIC_URL to link GitHub commit statuses to this page.
+            </p>
+          )}
+          <div className="row" style={{ flexWrap: "wrap", gap: "1rem", marginTop: "1rem" }}>
+            <div className="field-group" style={{ width: 150 }}>
+              <label className="tiny font-bold uppercase muted">Parallel jobs</label>
+              <input
+                aria-label="Parallel jobs"
+                type="number"
+                min={1}
+                max={16}
+                placeholder={`Auto (${ciSettings.effectiveMaxConcurrent})`}
+                value={settingsDraft.maxConcurrent ?? ""}
+                onChange={(e) =>
+                  setSettingsDraft((d) =>
+                    d ? { ...d, maxConcurrent: e.target.value === "" ? null : Number(e.target.value) } : d
+                  )
+                }
+              />
+            </div>
+            <div className="field-group" style={{ width: 150 }}>
+              <label className="tiny font-bold uppercase muted">Host budget %</label>
+              <input
+                aria-label="Host budget percent"
+                type="number"
+                min={10}
+                max={90}
+                value={settingsDraft.budgetPercent}
+                onChange={(e) =>
+                  setSettingsDraft((d) => (d ? { ...d, budgetPercent: Number(e.target.value) } : d))
+                }
+              />
+            </div>
+            <div className="field-group" style={{ width: 150 }}>
+              <label className="tiny font-bold uppercase muted">Cache MB / repo</label>
+              <input
+                aria-label="Cache MB per repo"
+                type="number"
+                min={0}
+                value={settingsDraft.cacheMaxMb}
+                onChange={(e) =>
+                  setSettingsDraft((d) => (d ? { ...d, cacheMaxMb: Number(e.target.value) } : d))
+                }
+              />
+            </div>
+            <div className="field-group" style={{ width: 150 }}>
+              <label className="tiny font-bold uppercase muted">Workspace MB</label>
+              <input
+                aria-label="Workspace MB"
+                type="number"
+                min={512}
+                value={settingsDraft.workspaceMaxMb}
+                onChange={(e) =>
+                  setSettingsDraft((d) => (d ? { ...d, workspaceMaxMb: Number(e.target.value) } : d))
+                }
+              />
+            </div>
+          </div>
+          <div className="row" style={{ flexWrap: "wrap", gap: "1rem", marginTop: "0.75rem" }}>
+            <label className="row tiny">
+              <input
+                type="checkbox"
+                checked={settingsDraft.readonlyRootfs}
+                onChange={(e) =>
+                  setSettingsDraft((d) => (d ? { ...d, readonlyRootfs: e.target.checked } : d))
+                }
+              />
+              Read-only container filesystem (only /workspace, /cache and /tmp are writable)
+            </label>
+          </div>
+          <p className="muted tiny" style={{ marginTop: "0.75rem" }}>
+            A second job starts only while all jobs fit in the budget and RAM stays free; otherwise it waits
+            in line. Cache 0 turns caching off. {ciSettings.waiting ? `Waiting: ${ciSettings.waiting}. ` : ""}
+            Network: {ciSettings.firewall.note}
+          </p>
+          <div className="row" style={{ marginTop: "0.75rem" }}>
+            <button
+              type="button"
+              className="primary"
+              disabled={savingSettings}
+              onClick={() => void saveSettings()}
+            >
+              {savingSettings ? "Saving…" : "Save host limits"}
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div className="section-title">
@@ -517,7 +732,8 @@ export function CiPage() {
                     )}
                     <strong>{run.service_name ?? "Service"}</strong>
                     <span className="tiny muted">
-                      {shortSha(run.commit_hash)} · {run.branch || "—"} · {run.trigger_source} ·{" "}
+                      {shortSha(run.commit_hash)} ·{" "}
+                      {run.pr_number ? `PR #${run.pr_number}` : run.branch || "—"} · {run.trigger_source} ·{" "}
                       {duration(run.started_at, run.finished_at)}
                     </span>
                   </span>
@@ -529,6 +745,11 @@ export function CiPage() {
                 {expanded === run.id && detail?.id === run.id && (
                   <div style={{ marginTop: "0.5rem" }}>
                     {run.error && <p className="tiny text-danger">{detail.error || run.error}</p>}
+                    {run.status_warning && (
+                      <p className="tiny muted">
+                        <AlertTriangle size={12} /> GitHub status: {run.status_warning}
+                      </p>
+                    )}
                     {detail.setup_log && (
                       <pre className="logs-viewer" style={{ height: 140, marginBottom: "0.5rem" }}>
                         {detail.setup_log}
