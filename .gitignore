@@ -5,3 +5,6 @@ dist/
 .env
 .env.*
 apps/web/src/**/*.js
+
+# Test fixtures need their example env files.
+!apps/server/src/services/resources/__fixtures__/**/.env.example
