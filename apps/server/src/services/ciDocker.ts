@@ -1,6 +1,7 @@
 import type Docker from "dockerode";
 import { PassThrough } from "node:stream";
 import path from "node:path";
+import { ensureCiNetwork } from "./ciNetwork.js";
 
 /**
  * One-shot Docker sandbox for a CI run.
@@ -16,6 +17,10 @@ export type CiSandbox = {
     timeoutMs: number;
     memoryMb: number;
     cpus: number;
+    /** Per-repository dependency cache on the host, mounted at /cache. */
+    cacheDir?: string | null;
+    readonlyRootfs?: boolean;
+    hostCpus?: number;
     steps: Array<{ name: string; run: string }>;
     onSetupLog: (chunk: string) => void;
     onLog: (stepIndex: number, chunk: string) => void;
@@ -29,12 +34,17 @@ export type CiSandbox = {
   }): Promise<{ failedStep: number | null; cancelled: boolean; timedOut: boolean }>;
 };
 
+/** uid:gid the job uses when ServerHoster itself runs as root. */
+export const CI_ROOT_FALLBACK_UID = 10001;
+
 /**
- * Run the job as the host user that owns the checkout.
+ * Run the job as a non-root user that owns the checkout.
  * CapDrop ALL removes CAP_DAC_OVERRIDE, so container root cannot write a
  * directory owned by a non-root host user (npm ci cannot create node_modules).
  * Matching uid:gid can write the workspace without giving the job capabilities.
- * Root on the host already owns the files, and Windows has no uid to map.
+ * When ServerHoster runs as root the job still runs unprivileged, as
+ * CI_ROOT_FALLBACK_UID, and the runner chowns the checkout and cache to it.
+ * Windows has no uid to map.
  */
 export function ciContainerUser(
   platform: NodeJS.Platform = process.platform,
@@ -43,8 +53,116 @@ export function ciContainerUser(
 ): string | undefined {
   // null is an explicit "no id" so tests can cover a missing uid without
   // passing undefined, which would fire these defaults and read the real user.
-  if (platform === "win32" || uid == null || uid === 0) return undefined;
+  if (platform === "win32" || uid == null) return undefined;
+  if (uid === 0) return `${CI_ROOT_FALLBACK_UID}:${CI_ROOT_FALLBACK_UID}`;
   return `${uid}:${gid ?? uid}`;
+}
+
+export const CI_CACHE_MOUNT = "/cache";
+
+/**
+ * Point the common package managers at the mounted cache. Values the job sets
+ * itself in `env:` win.
+ */
+export function ciCacheEnv(): Record<string, string> {
+  return {
+    npm_config_cache: `${CI_CACHE_MOUNT}/npm`,
+    // pnpm reads its store location from npm_config_store_dir.
+    npm_config_store_dir: `${CI_CACHE_MOUNT}/pnpm-store`,
+    YARN_CACHE_FOLDER: `${CI_CACHE_MOUNT}/yarn`,
+    COREPACK_HOME: `${CI_CACHE_MOUNT}/corepack`,
+    PIP_CACHE_DIR: `${CI_CACHE_MOUNT}/pip`,
+    XDG_CACHE_HOME: `${CI_CACHE_MOUNT}/xdg`,
+    GOMODCACHE: `${CI_CACHE_MOUNT}/go/mod`,
+    GOCACHE: `${CI_CACHE_MOUNT}/go/build`
+  };
+}
+
+/**
+ * Hard CPU ceiling for one job. The job may burst to twice what it asked for
+ * (never past 4 cores or the host) because CpuShares keeps it behind the
+ * hosted services whenever the CPU is contended.
+ */
+export function ciCpuCap(cpus: number, hostCpus: number): number {
+  const asked = Math.min(4, Math.max(0.25, cpus));
+  const host = Math.max(0.25, hostCpus);
+  return Math.min(host, Math.max(asked, Math.min(4, asked * 2)));
+}
+
+/** cgroup weight of a CI job; Docker's default for every other container is 1024. */
+export const CI_CPU_SHARES = 256;
+/** Block I/O weight (10–1000, Docker's default is 500). Dropped if the kernel lacks it. */
+export const CI_BLKIO_WEIGHT = 100;
+export const CI_PIDS_LIMIT = 512;
+export const CI_NOFILE = { soft: 16_384, hard: 32_768 };
+
+export type CiContainerSpecInput = {
+  name: string;
+  runId: string;
+  image: string;
+  workspace: string;
+  env: Record<string, string>;
+  memoryMb: number;
+  cpus: number;
+  hostCpus: number;
+  user: string | undefined;
+  cacheDir?: string | null;
+  network: string;
+  readonlyRootfs: boolean;
+  blkioWeight: boolean;
+};
+
+/** The exact create options for a CI container. Pure, so tests can assert them. */
+export function buildCiContainerSpec(input: CiContainerSpecInput): Docker.ContainerCreateOptions {
+  const memoryMb = Math.max(128, input.memoryMb);
+  const memory = memoryMb * 1024 * 1024;
+  const merged: Record<string, string> = { ...(input.cacheDir ? ciCacheEnv() : {}), ...input.env };
+  if (!Object.prototype.hasOwnProperty.call(input.env, "HOME")) merged.HOME = "/tmp";
+  const env = Object.entries(merged).map(([key, value]) => `${key}=${value}`);
+  // tmpfs pages count against the memory limit, so /tmp gets half of it at most.
+  const tmpMb = Math.max(64, Math.floor(memoryMb / 2));
+  const binds = [`${dockerBindPath(input.workspace)}:/workspace:rw`];
+  if (input.cacheDir) binds.push(`${dockerBindPath(input.cacheDir)}:${CI_CACHE_MOUNT}:rw`);
+  return {
+    name: input.name,
+    Image: input.image,
+    // Replace the image entrypoint so `sleep` is actually pid 1.
+    Entrypoint: ["sleep", "86400"],
+    WorkingDir: "/workspace",
+    ...(input.user ? { User: input.user } : {}),
+    Env: env,
+    Labels: { "survhub.ci": "1", "survhub.ci.run": input.runId },
+    HostConfig: {
+      Memory: memory,
+      // Equal to Memory: no swap, so a runaway job is OOM-killed instead of
+      // pushing the host into swap.
+      MemorySwap: memory,
+      NanoCpus: Math.round(ciCpuCap(input.cpus, input.hostCpus) * 1e9),
+      CpuShares: CI_CPU_SHARES,
+      ...(input.blkioWeight ? { BlkioWeight: CI_BLKIO_WEIGHT } : {}),
+      PidsLimit: CI_PIDS_LIMIT,
+      Ulimits: [{ Name: "nofile", Soft: CI_NOFILE.soft, Hard: CI_NOFILE.hard }],
+      Privileged: false,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges:true"],
+      ReadonlyRootfs: input.readonlyRootfs,
+      Tmpfs: {
+        "/tmp": `rw,exec,nosuid,nodev,size=${tmpMb}m,mode=1777`,
+        "/var/tmp": `rw,nosuid,nodev,size=${Math.min(256, tmpMb)}m,mode=1777`
+      },
+      NetworkMode: input.network,
+      Binds: binds,
+      // Step output is streamed through exec, so the daemon keeps no log file.
+      LogConfig: { Type: "none", Config: {} },
+      AutoRemove: false,
+      Init: true
+    }
+  };
+}
+
+function isBlkioUnsupported(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /blkio|block i\/o|io\.weight|io\.bfq/i.test(text);
 }
 
 function dockerBindPath(hostPath: string): string {
@@ -183,33 +301,30 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
         /* no previous container with this name */
       }
 
-      const memory = Math.max(128, input.memoryMb) * 1024 * 1024;
-      const user = ciContainerUser();
-      const env = Object.entries(input.env).map(([key, value]) => `${key}=${value}`);
-      if (user && !Object.prototype.hasOwnProperty.call(input.env, "HOME")) env.push("HOME=/tmp");
-      const creating = docker.createContainer({
-        name,
-        Image: input.image,
-        // Replace the image entrypoint so `sleep` is actually pid 1.
-        Entrypoint: ["sleep", "86400"],
-        WorkingDir: "/workspace",
-        ...(user ? { User: user } : {}),
-        Env: env,
-        Labels: { "survhub.ci": "1", "survhub.ci.run": input.runId },
-        HostConfig: {
-          Memory: memory,
-          MemorySwap: memory,
-          NanoCpus: Math.round(Math.min(4, Math.max(0.25, input.cpus)) * 1e9),
-          PidsLimit: 512,
-          Privileged: false,
-          CapDrop: ["ALL"],
-          SecurityOpt: ["no-new-privileges:true"],
-          NetworkMode: "bridge",
-          Binds: [`${dockerBindPath(input.workspace)}:/workspace:rw`],
-          ExtraHosts: ["host.docker.internal:host-gateway"],
-          AutoRemove: false,
-          Init: true
-        }
+      const network = await guard(ensureCiNetwork(docker));
+      if (network.note) noteSetup(`${network.note}\n`);
+      const spec = (blkioWeight: boolean) =>
+        buildCiContainerSpec({
+          name,
+          runId: input.runId,
+          image: input.image,
+          workspace: input.workspace,
+          env: input.env,
+          memoryMb: input.memoryMb,
+          cpus: input.cpus,
+          hostCpus: input.hostCpus ?? 4,
+          user: ciContainerUser(),
+          cacheDir: input.cacheDir,
+          network: network.name,
+          readonlyRootfs: input.readonlyRootfs ?? false,
+          blkioWeight
+        });
+      let creating = docker.createContainer(spec(true));
+      // Some kernels (cgroup v2 without the io controller) reject BlkioWeight.
+      creating = creating.catch(async (error: unknown) => {
+        if (!isBlkioUnsupported(error)) throw error;
+        noteSetup("Block I/O weight is not supported on this host; continuing without it.\n");
+        return docker.createContainer(spec(false));
       });
       let container: Docker.Container;
       try {

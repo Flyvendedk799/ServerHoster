@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
+import { writeCiCapacitySettings } from "../services/ciCapacity.js";
+import { ciFirewallStatus } from "../services/ciNetwork.js";
+import { clearRepoCache } from "../services/ciCache.js";
 import {
   CiConfigError,
+  ciSchedulerState,
   createCiPipeline,
   deleteCiPipeline,
   getCiRun,
@@ -22,7 +26,17 @@ const pipelineSchema = z.object({
   image: z.string().trim().min(1).max(200).optional(),
   timeoutMinutes: z.number().int().min(1).max(120).optional(),
   memoryMb: z.number().int().min(128).max(8192).optional(),
-  cpus: z.number().min(0.25).max(4).optional()
+  cpus: z.number().min(0.25).max(4).optional(),
+  triggerBranches: z.string().max(2000).nullable().optional(),
+  triggerPullRequests: z.boolean().optional()
+});
+
+const settingsSchema = z.object({
+  maxConcurrent: z.number().int().min(1).max(16).nullable().optional(),
+  budgetPercent: z.number().int().min(10).max(90).optional(),
+  readonlyRootfs: z.boolean().optional(),
+  cacheMaxMb: z.number().int().min(0).max(512_000).optional(),
+  workspaceMaxMb: z.number().int().min(512).max(512_000).optional()
 });
 
 function asConfigError(error: unknown): Error {
@@ -80,6 +94,33 @@ export function registerCiRoutes(ctx: AppContext): void {
   ctx.app.post("/api/ci/runs/:id/cancel", async (req) => {
     const { id } = req.params as { id: string };
     requestCancelCiRun(ctx, id);
+    return { ok: true };
+  });
+
+  const settingsView = () => ({
+    ...ciSchedulerState(ctx),
+    firewall: ciFirewallStatus(),
+    webhookInsecure: ctx.config.webhookInsecure,
+    webhookSecretConfigured: Boolean(ctx.config.webhookSecret),
+    publicUrlConfigured: Boolean(ctx.config.publicUrl)
+  });
+
+  ctx.app.get("/api/ci/settings", async () => settingsView());
+
+  ctx.app.put("/api/ci/settings", async (req) => {
+    writeCiCapacitySettings(ctx, settingsSchema.parse(req.body ?? {}));
+    return settingsView();
+  });
+
+  ctx.app.delete("/api/ci/pipelines/:id/cache", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const row = ctx.db
+      .prepare(
+        `SELECT s.github_repo_url AS repoUrl FROM ci_pipelines p JOIN services s ON s.id = p.service_id WHERE p.id = ?`
+      )
+      .get(id) as { repoUrl: string | null } | undefined;
+    if (!row) return reply.code(404).send({ error: "Pipeline not found" });
+    if (row.repoUrl) await clearRepoCache(ctx, row.repoUrl);
     return { ok: true };
   });
 }

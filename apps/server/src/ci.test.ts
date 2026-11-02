@@ -19,14 +19,20 @@ import {
   enqueueCiRun,
   ensureCiSchema,
   executeCiRun,
+  handleBranchPush,
   handleIncomingCommit,
+  handlePullRequest,
+  kickCi,
   requestCancelCiRun,
   setCiAutostart,
+  setCiExecutorForTests,
   startCiLoop,
   type CiRunDeps
 } from "./services/ci.js";
 import { ciContainerUser, dockerCiSandbox, type CiSandbox } from "./services/ciDocker.js";
 import type Docker from "dockerode";
+import { flushCommitStatuses, setStatusFetchForTests } from "./services/ciStatus.js";
+import { encryptSecret } from "./security.js";
 
 // The db tests use an in-memory better-sqlite3 database (the app's driver).
 // If its native module is missing they skip; the config tests do not need it.
@@ -196,7 +202,8 @@ describe("CI config", () => {
 
   test("the job user can write a checkout owned by a non-root host user", () => {
     assert.equal(ciContainerUser("linux", 1000, 1000), "1000:1000");
-    assert.equal(ciContainerUser("linux", 0, 0), undefined);
+    // Root on the host still runs the job as an unprivileged user.
+    assert.equal(ciContainerUser("linux", 0, 0), "10001:10001");
     assert.equal(ciContainerUser("win32", 1000, 1000), undefined);
     assert.equal(ciContainerUser("linux", null, null), undefined);
   });
@@ -884,5 +891,293 @@ describe("CI setup stops", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(removed, true);
+  });
+});
+
+type LaneRow = {
+  id: string;
+  status: string;
+  lane: string;
+  event: string;
+  deploy_after: number;
+  pr_number: number | null;
+};
+
+function lanes(): LaneRow[] {
+  return ctx.db
+    .prepare(
+      "SELECT id, status, lane, event, deploy_after, pr_number FROM ci_runs ORDER BY created_at ASC, rowid ASC"
+    )
+    .all() as LaneRow[];
+}
+
+const PR = {
+  serviceId: "svc",
+  action: "opened",
+  number: 7,
+  headSha: "7".repeat(40),
+  headBranch: "feature/login",
+  baseBranch: "main",
+  isFork: false
+};
+
+describe("CI branches and pull requests", { skip }, () => {
+  test("old databases gain the new columns and every run gets a lane", () => {
+    seedService();
+    seedPipeline();
+    enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "a".repeat(40),
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    ctx.db.exec("DROP INDEX idx_ci_runs_lane");
+    for (const column of ["lane", "event", "pr_number", "git_ref", "status_warning"]) {
+      ctx.db.exec(`ALTER TABLE ci_runs DROP COLUMN ${column}`);
+    }
+    ctx.db.exec("ALTER TABLE ci_pipelines DROP COLUMN trigger_branches");
+    ctx.db.exec("ALTER TABLE ci_pipelines DROP COLUMN trigger_pull_requests");
+    ensureCiSchema(ctx.db as unknown as Parameters<typeof ensureCiSchema>[0]);
+    const run = ctx.db.prepare("SELECT lane, event FROM ci_runs").get() as { lane: string; event: string };
+    assert.deepEqual({ ...run }, { lane: "push:main", event: "push" });
+    const pipe = ctx.db.prepare("SELECT trigger_pull_requests FROM ci_pipelines").get() as {
+      trigger_pull_requests: number;
+    };
+    assert.equal(pipe.trigger_pull_requests, 1);
+  });
+
+  test("other branches run only when the filter lists them, and never deploy", () => {
+    seedService();
+    seedPipeline({ gate: true });
+    const off = handleBranchPush(ctx, { serviceId: "svc", branch: "feature/x", commit: "1".repeat(40) });
+    assert.equal(off.queued, false);
+    ctx.db.prepare("UPDATE ci_pipelines SET trigger_branches = 'feature/*'").run();
+    const on = handleBranchPush(ctx, { serviceId: "svc", branch: "feature/x", commit: "1".repeat(40) });
+    assert.equal(on.queued, true);
+    // Even an explicit deploy request outside the deploy lane is dropped.
+    enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "2".repeat(40),
+      branch: "feature/y",
+      trigger: "webhook",
+      deployAfter: true
+    });
+    for (const row of lanes()) assert.equal(row.deploy_after, 0);
+    assert.deepEqual(
+      lanes().map((row) => row.lane),
+      ["push:feature/x", "push:feature/y"]
+    );
+  });
+
+  test("supersede is per lane: a PR push does not cancel the deploy branch run", () => {
+    seedService();
+    seedPipeline({ gate: true });
+    handleIncomingCommit(ctx, {
+      serviceId: "svc",
+      repoUrl: "https://github.com/flyvende/awaire.git",
+      branch: "main",
+      commit: "a".repeat(40),
+      trigger: "webhook"
+    });
+    handlePullRequest(ctx, PR);
+    handlePullRequest(ctx, { ...PR, action: "synchronize", headSha: "8".repeat(40) });
+    handlePullRequest(ctx, { ...PR, number: 9, headSha: "9".repeat(40) });
+    const rows = lanes();
+    assert.deepEqual(
+      rows.map((row) => [row.lane, row.status]),
+      [
+        ["push:main", "queued"],
+        ["pr:7", "cancelled"],
+        ["pr:7", "queued"],
+        ["pr:9", "queued"]
+      ]
+    );
+    assert.equal(rows[0].deploy_after, 1);
+    assert.equal(rows[2].deploy_after, 0);
+    assert.equal(rows[2].event, "pull_request");
+    const ref = ctx.db.prepare("SELECT git_ref FROM ci_runs WHERE id = ?").get(rows[2].id) as {
+      git_ref: string;
+    };
+    assert.equal(ref.git_ref, "refs/pull/7/head");
+  });
+
+  test("a newer push cancels the running job of the same PR, and closing the PR stops it", () => {
+    seedService();
+    seedPipeline();
+    const first = handlePullRequest(ctx, PR);
+    assert.ok(first.queued);
+    const firstId = first.queued ? first.runId : "";
+    ctx.db.prepare("UPDATE ci_runs SET status = 'running' WHERE id = ?").run(firstId);
+    handlePullRequest(ctx, { ...PR, action: "synchronize", headSha: "8".repeat(40) });
+    const cancel = ctx.db.prepare("SELECT cancel_requested FROM ci_runs WHERE id = ?").get(firstId) as {
+      cancel_requested: number;
+    };
+    assert.equal(cancel.cancel_requested, 1);
+    const closed = handlePullRequest(ctx, { ...PR, action: "closed" });
+    assert.equal(closed.queued, false);
+    assert.ok(lanes().every((row) => row.status !== "queued"));
+  });
+
+  test("fork PRs, PRs into other branches and disabled PR runs are skipped", () => {
+    seedService();
+    seedPipeline();
+    assert.deepEqual(handlePullRequest(ctx, { ...PR, isFork: true }), {
+      queued: false,
+      reason: "pull requests from forks are not run on this host"
+    });
+    assert.equal(handlePullRequest(ctx, { ...PR, baseBranch: "dev" }).queued, false);
+    ctx.db.prepare("UPDATE ci_pipelines SET trigger_pull_requests = 0").run();
+    assert.equal(handlePullRequest(ctx, PR).queued, false);
+    assert.equal(lanes().length, 0);
+  });
+
+  test("a passing PR run never deploys, even if the row says it should", async () => {
+    seedService();
+    seedPipeline({ gate: true });
+    const queued = handlePullRequest(ctx, PR);
+    assert.ok(queued.queued);
+    const id = queued.queued ? queued.runId : "";
+    ctx.db.prepare("UPDATE ci_runs SET deploy_after = 1 WHERE id = ?").run(id);
+    let deployed = false;
+    await runQueued(id, {
+      remoteHead: async () => PR.headSha,
+      deploy: async () => {
+        deployed = true;
+      }
+    });
+    assert.equal(deployed, false);
+    const run = ctx.db.prepare("SELECT status, deploy_status FROM ci_runs WHERE id = ?").get(id) as {
+      status: string;
+      deploy_status: string;
+    };
+    assert.equal(run.status, "passed");
+    assert.equal(run.deploy_status, "skipped");
+  });
+
+  test("a PR checkout fetches the pull ref, not a branch clone", async () => {
+    seedService();
+    seedPipeline();
+    const queued = handlePullRequest(ctx, PR);
+    const id = queued.queued ? queued.runId : "";
+    let seen: { ref?: string | null; branch: string; commit: string | null } | null = null;
+    await runQueued(id, {
+      checkout: async (input) => {
+        seen = { ref: input.ref, branch: input.branch, commit: input.commit };
+      }
+    });
+    assert.deepEqual(seen, { ref: "refs/pull/7/head", branch: "feature/login", commit: PR.headSha });
+  });
+});
+
+describe("CI commit statuses from runs", { skip }, () => {
+  test("queued, running and the final state are posted; a refusal warns but the run passes", async () => {
+    seedService();
+    seedPipeline();
+    ctx.db
+      .prepare("INSERT INTO settings (key, value) VALUES ('github_pat', ?)")
+      .run(encryptSecret("ghp_token", "test-secret-key-32-bytes-not-for-prod"));
+    const states: string[] = [];
+    setStatusFetchForTests(async (_url, init) => {
+      states.push(JSON.parse(String(init?.body)).state);
+      return new Response("{}", { status: 201 });
+    });
+    try {
+      const passed = enqueueCiRun(ctx, {
+        serviceId: "svc",
+        commit: "a".repeat(40),
+        branch: "main",
+        trigger: "manual",
+        deployAfter: false
+      });
+      await runQueued(passed.id);
+      await flushCommitStatuses();
+      assert.equal(states[0], "pending");
+      assert.equal(states.at(-1), "success");
+
+      states.length = 0;
+      const failed = enqueueCiRun(ctx, {
+        serviceId: "svc",
+        commit: "b".repeat(40),
+        branch: "main",
+        trigger: "manual",
+        deployAfter: false
+      });
+      await runQueued(failed.id, {
+        sandbox: {
+          async run(input) {
+            input.onStep(0, "failed", 1);
+            return { failedStep: 0, cancelled: false, timedOut: false };
+          }
+        }
+      });
+      await flushCommitStatuses();
+      assert.equal(states.at(-1), "failure");
+
+      setStatusFetchForTests(
+        async () => new Response('{"message":"Resource not accessible"}', { status: 403 })
+      );
+      const refused = enqueueCiRun(ctx, {
+        serviceId: "svc",
+        commit: "c".repeat(40),
+        branch: "main",
+        trigger: "manual",
+        deployAfter: false
+      });
+      await runQueued(refused.id);
+      await flushCommitStatuses();
+      await new Promise((resolve) => setImmediate(resolve));
+      const row = ctx.db
+        .prepare("SELECT status, status_warning FROM ci_runs WHERE id = ?")
+        .get(refused.id) as {
+        status: string;
+        status_warning: string | null;
+      };
+      assert.equal(row.status, "passed");
+      assert.match(row.status_warning ?? "", /403/);
+      assert.doesNotMatch(row.status_warning ?? "", /ghp_token/);
+    } finally {
+      setStatusFetchForTests(null);
+    }
+  });
+});
+
+describe("CI scheduler", { skip }, () => {
+  test("runs up to the concurrency limit in FIFO order and starts the next when one ends", async () => {
+    seedService();
+    seedPipeline();
+    ctx.db.prepare("UPDATE ci_pipelines SET trigger_branches = '*', memory_mb = 128, cpus = 0.25").run();
+    ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ci_max_concurrent', '2')").run();
+    ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ci_host_budget_percent', '90')").run();
+    const started: string[] = [];
+    const release = new Map<string, () => void>();
+    setCiExecutorForTests(async (_ctx, runId) => {
+      started.push(runId);
+      await new Promise<void>((resolve) => release.set(runId, resolve));
+      ctx.db.prepare("UPDATE ci_runs SET status = 'passed' WHERE id = ?").run(runId);
+    });
+    try {
+      const ids = ["a", "b", "c"].map((branch, index) => {
+        const outcome = handleBranchPush(ctx, {
+          serviceId: "svc",
+          branch,
+          commit: String(index + 1).repeat(40)
+        });
+        assert.ok(outcome.queued);
+        return outcome.queued ? outcome.runId : "";
+      });
+      setCiAutostart(true);
+      kickCi(ctx);
+      assert.deepEqual(started, ids.slice(0, 2));
+      release.get(ids[0])?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.deepEqual(started, ids);
+      release.get(ids[1])?.();
+      release.get(ids[2])?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      setCiAutostart(false);
+      setCiExecutorForTests(null);
+    }
   });
 });
