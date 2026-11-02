@@ -93,9 +93,9 @@ const RESTART_STABILITY_MS = 30_000;
 export function getInheritedServiceEnv(ctx: AppContext, serviceId: string): Record<string, string> {
   let sourceId: string | undefined;
   try {
-    const row = ctx.db
-      .prepare("SELECT env_from_service_id FROM services WHERE id = ?")
-      .get(serviceId) as { env_from_service_id?: string | null } | undefined;
+    const row = ctx.db.prepare("SELECT env_from_service_id FROM services WHERE id = ?").get(serviceId) as
+      | { env_from_service_id?: string | null }
+      | undefined;
     sourceId = row?.env_from_service_id ?? undefined;
   } catch {
     // Column absent (pre-migration) — no inheritance.
@@ -732,9 +732,11 @@ async function startProcessService(
    */
   if (service.port) {
     const priorPgid =
-      (ctx.db.prepare("SELECT runtime_pgid FROM services WHERE id = ?").get(serviceId) as
-        | { runtime_pgid?: number | null }
-        | undefined)?.runtime_pgid ?? null;
+      (
+        ctx.db.prepare("SELECT runtime_pgid FROM services WHERE id = ?").get(serviceId) as
+          | { runtime_pgid?: number | null }
+          | undefined
+      )?.runtime_pgid ?? null;
     await freeServicePort(ctx, serviceId, Number(service.port), priorPgid);
   }
   const child = spawn(command, {
@@ -1107,7 +1109,12 @@ export async function ensureLinkedDatabaseRunning(ctx: AppContext, serviceId: st
   try {
     state = (await getContainerStatus(ctx, db)).state;
   } catch (error) {
-    insertLog(ctx, serviceId, "warn", `Could not inspect linked database "${db.name}": ${serializeError(error)}`);
+    insertLog(
+      ctx,
+      serviceId,
+      "warn",
+      `Could not inspect linked database "${db.name}": ${serializeError(error)}`
+    );
     return;
   }
 
@@ -1128,7 +1135,12 @@ export async function ensureLinkedDatabaseRunning(ctx: AppContext, serviceId: st
   }
 
   // exited / created / dead / paused — bring it up, then make it durable.
-  insertLog(ctx, serviceId, "info", `Linked database "${db.name}" is ${state} — starting it before the service...`);
+  insertLog(
+    ctx,
+    serviceId,
+    "info",
+    `Linked database "${db.name}" is ${state} — starting it before the service...`
+  );
   try {
     await containerAction(ctx, db, "start");
     await ensureDockerRestartPolicy(ctx, serviceId, container, "unless-stopped").catch(() => {});
@@ -1196,8 +1208,7 @@ async function startDependencies(ctx: AppContext, serviceId: string, visiting: S
     await startDependencies(ctx, depId, visiting);
     const svc = getService(ctx, depId);
     await withLock(ctx, depId, async () => {
-      if (svc.type === "compose")
-        await startComposeService(ctx, depId, getServiceEnvWithLinks(ctx, depId));
+      if (svc.type === "compose") await startComposeService(ctx, depId, getServiceEnvWithLinks(ctx, depId));
       else if (svc.type === "docker") await startDockerService(ctx, depId);
       else await startProcessService(ctx, depId);
     });
@@ -1380,7 +1391,10 @@ async function reconcileManagedDatabasesOnBoot(ctx: AppContext): Promise<Set<str
       const policy = info.HostConfig?.RestartPolicy?.Name ?? "no";
       if (policy !== "unless-stopped") {
         await container.update({ RestartPolicy: { Name: "unless-stopped" } } as any);
-        ctx.app.log.info({ databaseId: id }, `Reset restart policy to unless-stopped for managed database "${db.name}".`);
+        ctx.app.log.info(
+          { databaseId: id },
+          `Reset restart policy to unless-stopped for managed database "${db.name}".`
+        );
       }
     } catch {
       // Container missing or Docker unavailable — surfaced via the database health UI.
@@ -1428,7 +1442,10 @@ async function selfHealDatabaseContainersOnBoot(ctx: AppContext, managedKeys: Se
       const running = info.State?.Status === "running";
       if (notDurable) {
         await container.update({ RestartPolicy: { Name: "unless-stopped" } } as any);
-        ctx.app.log.info({ container: name }, `Self-heal: set restart policy unless-stopped on database container "${name}".`);
+        ctx.app.log.info(
+          { container: name },
+          `Self-heal: set restart policy unless-stopped on database container "${name}".`
+        );
       }
       if (!running && notDurable) {
         await container.start();
@@ -1596,7 +1613,12 @@ export function startContainerDriftLoop(ctx: AppContext): () => void {
         const observed = await observeComposeStatus(ctx, row.id, getServiceEnvWithLinks(ctx, row.id));
         if (observed === null || observed === row.status) continue;
         updateServiceStatus(ctx, row.id, observed);
-        insertLog(ctx, row.id, observed === "running" ? "info" : "warn", `Drift check: compose stack is ${observed}.`);
+        insertLog(
+          ctx,
+          row.id,
+          observed === "running" ? "info" : "warn",
+          `Drift check: compose stack is ${observed}.`
+        );
       }
     } finally {
       inFlight = false;

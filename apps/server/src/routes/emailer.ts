@@ -36,16 +36,16 @@ import { getSecretSetting } from "../services/settings.js";
 /** Raw messages with attachments are large; text is all we keep. */
 const INBOUND_BODY_LIMIT = 25 * 1024 * 1024;
 
-const addressList = z.union([z.string(), z.array(z.string())]).optional().nullable();
+const addressList = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .nullable();
 
 const inboundSchema = z
   .object({
     raw: z.string().optional().nullable(),
     rawBase64: z.string().optional().nullable(),
-    envelope: z
-      .object({ from: z.string().optional().nullable(), to: addressList })
-      .optional()
-      .nullable(),
+    envelope: z.object({ from: z.string().optional().nullable(), to: addressList }).optional().nullable(),
     from: z
       .union([z.string(), z.object({ address: z.string(), name: z.string().optional().nullable() })])
       .optional()
@@ -79,13 +79,27 @@ const sendSchema = z.object({
   to: recipients,
   cc: recipients.optional(),
   subject: z.string().max(998).default(""),
-  text: z.string().max(512 * 1024).default(""),
-  html: z.string().max(1024 * 1024).optional().nullable()
+  text: z
+    .string()
+    .max(512 * 1024)
+    .default(""),
+  html: z
+    .string()
+    .max(1024 * 1024)
+    .optional()
+    .nullable()
 });
 
 const replySchema = z.object({
-  text: z.string().min(1).max(512 * 1024),
-  html: z.string().max(1024 * 1024).optional().nullable(),
+  text: z
+    .string()
+    .min(1)
+    .max(512 * 1024),
+  html: z
+    .string()
+    .max(1024 * 1024)
+    .optional()
+    .nullable(),
   cc: recipients.optional()
 });
 
@@ -109,7 +123,8 @@ function actorOf(req: unknown): string {
 function requestOrigin(req: FastifyRequest): string | null {
   const host = req.headers["x-forwarded-host"] ?? req.headers.host;
   if (!host) return null;
-  const proto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0] ?? req.protocol ?? "http";
+  const proto =
+    (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0] ?? req.protocol ?? "http";
   return `${proto}://${Array.isArray(host) ? host[0] : host}`;
 }
 
@@ -151,7 +166,12 @@ export function registerEmailerRoutes(ctx: AppContext): void {
       const input = typeof body === "string" ? { raw: body } : inboundSchema.parse(body ?? {});
       const result = await ingestInbound(ctx, input);
       reply.code(result.duplicate ? 200 : 201);
-      return { ok: true, duplicate: result.duplicate, thread_id: result.thread.id, message_id: result.message.id };
+      return {
+        ok: true,
+        duplicate: result.duplicate,
+        thread_id: result.thread.id,
+        message_id: result.message.id
+      };
     }
   );
 
@@ -165,7 +185,10 @@ export function registerEmailerRoutes(ctx: AppContext): void {
         reply.code(401);
         return { error: "Invalid mailbox token" };
       }
-      const body = sendSchema.omit({ mailboxId: true, from: true }).extend({ threadId: z.string().optional() }).parse(req.body ?? {});
+      const body = sendSchema
+        .omit({ mailboxId: true, from: true })
+        .extend({ threadId: z.string().optional() })
+        .parse(req.body ?? {});
       if (body.threadId) {
         const { thread } = getThread(ctx, body.threadId);
         if (thread.mailbox_id !== mailbox.id) {
@@ -200,7 +223,7 @@ export function registerEmailerRoutes(ctx: AppContext): void {
       cloudflare: {
         connected: Boolean(
           (getSecretSetting(ctx, "email_routing_token") || getSecretSetting(ctx, "cloudflare_api_token")) &&
-            getSecretSetting(ctx, "cloudflare_account_id")
+          getSecretSetting(ctx, "cloudflare_account_id")
         ),
         worker: workerName(ctx)
       },
@@ -255,7 +278,12 @@ export function registerEmailerRoutes(ctx: AppContext): void {
       subject: body.subject,
       text: body.text
     });
-    return { ok: true, thread_id: res.thread.id, service_id: res.thread.service_id, mailbox: res.thread.mailbox_address };
+    return {
+      ok: true,
+      thread_id: res.thread.id,
+      service_id: res.thread.service_id,
+      mailbox: res.thread.mailbox_address
+    };
   });
 
   ctx.app.post("/emailer/ingest/rotate", async (req) => {
@@ -312,7 +340,8 @@ export function registerEmailerRoutes(ctx: AppContext): void {
     return {
       ok: true,
       ...res,
-      message: "EMAILER_API_URL, EMAILER_API_TOKEN and EMAILER_FROM written to the service — restart it to apply."
+      message:
+        "EMAILER_API_URL, EMAILER_API_TOKEN and EMAILER_FROM written to the service — restart it to apply."
     };
   });
 

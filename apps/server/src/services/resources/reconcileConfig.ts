@@ -7,11 +7,7 @@ import { getResource, listLinksForService, resourceConfig } from "./lifecycle.js
 import { applyPortOffsetToToml } from "./supabasePorts.js";
 import { setTomlValues, tomlError } from "./tomlEdit.js";
 import { publicOriginForLinkedResource } from "./publicExposure.js";
-import {
-  applyAuthMailToToml,
-  writeDefaultAuthMailTemplates,
-  type AuthMailSmtp
-} from "./supabaseAuthMail.js";
+import { applyAuthMailToToml, writeDefaultAuthMailTemplates, type AuthMailSmtp } from "./supabaseAuthMail.js";
 
 /**
  * Re-apply ServerHoster-managed Supabase config to a service's freshly-reset

@@ -102,17 +102,11 @@ export function listResourceRecognitions(
   return api<DatabaseRecognition[]>(`/resources/recognition${query}`, { silent: opts?.silent });
 }
 
-export function getResourceRecognition(
-  serviceId: string,
-  opts?: ApiOpts
-): Promise<DatabaseRecognition> {
+export function getResourceRecognition(serviceId: string, opts?: ApiOpts): Promise<DatabaseRecognition> {
   return api<DatabaseRecognition>(`/resources/recognition/${serviceId}`, opts);
 }
 
-export function runResourceRecognition(
-  serviceId: string,
-  opts?: ApiOpts
-): Promise<DatabaseRecognition> {
+export function runResourceRecognition(serviceId: string, opts?: ApiOpts): Promise<DatabaseRecognition> {
   return api<DatabaseRecognition>(`/resources/recognition/${serviceId}/run`, { method: "POST", ...opts });
 }
 

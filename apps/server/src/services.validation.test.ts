@@ -171,9 +171,8 @@ test("POST /services/:id/force-restart: recovers a service wedged at 'stopping'"
     assert.equal(forced.statusCode, 200);
     assert.equal((forced.json() as { ok?: boolean }).ok, true);
     assert.equal(ctx.actionLocks.has(id), false, "force restart should release the action lock");
-    const status = (
-      ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string }
-    ).status;
+    const status = (ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string })
+      .status;
     assert.notEqual(status, "stopping");
   } finally {
     await gracefulShutdown(ctx);
@@ -197,9 +196,8 @@ test("POST /services/:id/force-restart: does not break an active deployment lock
     assert.equal(forced.statusCode, 500);
     assert.match((forced.json() as { error?: string }).error ?? "", /deployment is already in progress/i);
     assert.equal(ctx.actionLocks.has(id), true, "force restart must not clear a real deploy lock");
-    const status = (
-      ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string }
-    ).status;
+    const status = (ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string })
+      .status;
     assert.equal(status, "running");
   } finally {
     await gracefulShutdown(ctx);
@@ -225,9 +223,8 @@ test("POST /services/:id/redeploy: active deploy is rejected before stopping ser
       headers: { authorization: `Bearer ${token}` }
     });
     assert.equal(redeploy.statusCode, 500);
-    const status = (
-      ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string }
-    ).status;
+    const status = (ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(id) as { status: string })
+      .status;
     assert.equal(status, "running", "redeploy must fail without stopping the currently running service");
   } finally {
     await gracefulShutdown(ctx);

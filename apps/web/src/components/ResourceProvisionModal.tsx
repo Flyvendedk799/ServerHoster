@@ -413,13 +413,12 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                     </span>
                     <InfoHint title="How this was detected" side="left">
                       <p>
-                        ServerHoster scanned the app's code for clues — its packages, config files,
-                        database migrations, functions, and settings — to work out what backend it
-                        needs.
+                        ServerHoster scanned the app's code for clues — its packages, config files, database
+                        migrations, functions, and settings — to work out what backend it needs.
                       </p>
                       <p>
-                        <strong>Confidence</strong> is how sure it is: high means several strong clues
-                        lined up, low means just a hint. You can always override the choice.
+                        <strong>Confidence</strong> is how sure it is: high means several strong clues lined
+                        up, low means just a hint. You can always override the choice.
                       </p>
                     </InfoHint>
                   </div>
@@ -452,7 +451,10 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                       .filter((action) => action.id === "link-existing" || action.id === "adopt-legacy")
                       .slice(0, 2)
                       .map((action) => (
-                        <div key={`${action.id}-${action.resource_id ?? action.database_id}`} className="res-no-copy-banner">
+                        <div
+                          key={`${action.id}-${action.resource_id ?? action.database_id}`}
+                          className="res-no-copy-banner"
+                        >
                           <ShieldCheck size={15} />
                           <span>{action.label} before creating a new local resource.</span>
                           <button className="ghost tiny" onClick={() => void runRecognitionAction(action)}>
@@ -478,13 +480,13 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                 How should the local schema be created?
                 <InfoHint title="Schema, migrations & seed" side="right">
                   <p>
-                    Migrations are the app's step-by-step recipe for building its database tables (they
-                    live in the repo). "Schema" just means those tables and their structure.
+                    Migrations are the app's step-by-step recipe for building its database tables (they live
+                    in the repo). "Schema" just means those tables and their structure.
                   </p>
                   <p>
                     <strong>Schema only</strong> builds the tables (recommended).{" "}
-                    <strong>Schema + seed</strong> also loads the example/starter rows the repo
-                    provides. <strong>Empty</strong> skips all of it.
+                    <strong>Schema + seed</strong> also loads the example/starter rows the repo provides.{" "}
+                    <strong>Empty</strong> skips all of it.
                   </p>
                   <p>Either way, none of your real hosted data is copied.</p>
                 </InfoHint>
@@ -549,10 +551,9 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                 <InfoHint title="Local secrets" side="right">
                   <p>Secrets are settings the stack and its functions need — mostly keys and passwords.</p>
                   <p>
-                    <strong>Generated</strong> ones are created for you. <strong>Required</strong> ones
-                    must be filled in or setup can't finish. <strong>Optional</strong> ones power extra
-                    features — skip them and those features just run in a limited mode until you add
-                    them.
+                    <strong>Generated</strong> ones are created for you. <strong>Required</strong> ones must
+                    be filled in or setup can't finish. <strong>Optional</strong> ones power extra features —
+                    skip them and those features just run in a limited mode until you add them.
                   </p>
                 </InfoHint>
               </h4>
@@ -641,12 +642,12 @@ export function ResourceProvisionModal({ serviceId, serviceName, profile, onClos
                 Edge Functions
                 <InfoHint title="Edge Functions" side="right">
                   <p>
-                    Small serverless functions bundled with the app. ServerHoster can run them on your
-                    machine alongside the database.
+                    Small serverless functions bundled with the app. ServerHoster can run them on your machine
+                    alongside the database.
                   </p>
                   <p>
-                    A function marked "missing secrets" still runs, but the parts that need those keys
-                    won't work until you provide them.
+                    A function marked "missing secrets" still runs, but the parts that need those keys won't
+                    work until you provide them.
                   </p>
                 </InfoHint>
               </h4>
@@ -1131,8 +1132,8 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
                   Role
                   <InfoHint side="left">
                     <p>
-                      The user's permission level in the app (for example admin vs member). This list
-                      comes from what this app's own database defines.
+                      The user's permission level in the app (for example admin vs member). This list comes
+                      from what this app's own database defines.
                     </p>
                   </InfoHint>
                 </label>
@@ -1156,8 +1157,8 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
               <span>Make platform admin</span>
               <InfoHint side="right">
                 <p>
-                  Gives this user top-level super-admin access across the whole app. Only offered
-                  because this app has an admin table.
+                  Gives this user top-level super-admin access across the whole app. Only offered because this
+                  app has an admin table.
                 </p>
               </InfoHint>
             </label>
@@ -1169,8 +1170,8 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
                 <span>Create organization</span>
                 <InfoHint side="right">
                   <p>
-                    Also create a workspace/company and make this user its owner. Only offered because
-                    this app uses organizations.
+                    Also create a workspace/company and make this user its owner. Only offered because this
+                    app uses organizations.
                   </p>
                 </InfoHint>
               </label>
@@ -1197,8 +1198,8 @@ export function BootstrapForm({ resourceId, defaults, onDone, onSkip }: Bootstra
               Operations preview
               <InfoHint side="right">
                 <p>
-                  Exactly what will be written to the local database when you click Create — shown up
-                  front so there are no surprises.
+                  Exactly what will be written to the local database when you click Create — shown up front so
+                  there are no surprises.
                 </p>
               </InfoHint>
             </strong>

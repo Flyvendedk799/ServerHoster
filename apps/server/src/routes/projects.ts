@@ -84,7 +84,9 @@ export function registerProjectRoutes(ctx: AppContext): void {
       try {
         await stopService(ctx, svc.id);
       } catch (error) {
-        ctx.app.log.warn(`Failed to stop service ${svc.id} during project ${id} delete: ${serializeError(error)}`);
+        ctx.app.log.warn(
+          `Failed to stop service ${svc.id} during project ${id} delete: ${serializeError(error)}`
+        );
       }
       // Force-remove any lingering docker container (matches per-service delete).
       if (svc.type === "docker") {
@@ -106,7 +108,9 @@ export function registerProjectRoutes(ctx: AppContext): void {
       try {
         await removeDatabase(ctx, db);
       } catch (error) {
-        ctx.app.log.warn(`Failed to remove database ${db.id} during project ${id} delete: ${serializeError(error)}`);
+        ctx.app.log.warn(
+          `Failed to remove database ${db.id} during project ${id} delete: ${serializeError(error)}`
+        );
       }
     }
 

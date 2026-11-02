@@ -49,9 +49,9 @@ const DEFAULT_CONFIG: PersistedConfig = { auto: true, paths: [], exclude: [] };
 
 /** Read + normalize a service's persisted-uploads config (NULL → defaults). */
 export function readPersistedConfig(ctx: AppContext, serviceId: string): PersistedConfig {
-  const row = ctx.db
-    .prepare("SELECT persisted_paths_config FROM services WHERE id = ?")
-    .get(serviceId) as { persisted_paths_config?: string | null } | undefined;
+  const row = ctx.db.prepare("SELECT persisted_paths_config FROM services WHERE id = ?").get(serviceId) as
+    | { persisted_paths_config?: string | null }
+    | undefined;
   const raw = row?.persisted_paths_config;
   if (!raw) return { ...DEFAULT_CONFIG };
   try {

@@ -155,7 +155,10 @@ function pushCandidate(candidates: DevServerCandidate[], candidate: DevServerCan
 }
 
 function workspacePackageManager(root: string): "npm" | "pnpm" | "yarn" | "bun" {
-  if (fs.existsSync(path.join(root, "pnpm-lock.yaml")) || fs.existsSync(path.join(root, "pnpm-workspace.yaml"))) {
+  if (
+    fs.existsSync(path.join(root, "pnpm-lock.yaml")) ||
+    fs.existsSync(path.join(root, "pnpm-workspace.yaml"))
+  ) {
     return "pnpm";
   }
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
@@ -252,14 +255,16 @@ function manifestCandidates(root: string): DevServerCandidate[] {
       env?: unknown;
     };
     if (typeof service.command !== "string") return;
-    const name = typeof service.name === "string" && service.name.trim() ? service.name.trim() : `Service ${index + 1}`;
+    const name =
+      typeof service.name === "string" && service.name.trim() ? service.name.trim() : `Service ${index + 1}`;
     const workingDir =
       typeof service.workingDir === "string" && service.workingDir.trim()
         ? path.resolve(root, service.workingDir)
         : root;
     const rel = path.relative(root, workingDir);
     if (rel.startsWith("..") || path.isAbsolute(rel)) return;
-    const port = typeof service.port === "number" && Number.isInteger(service.port) ? service.port : undefined;
+    const port =
+      typeof service.port === "number" && Number.isInteger(service.port) ? service.port : undefined;
     candidates.push({
       id: `manifest-${index}-${name}`.replace(/[^a-zA-Z0-9_-]+/g, "-"),
       label: name,
@@ -463,19 +468,20 @@ function scanLocalProject(localPath: string): {
     warnings.push("No obvious dev server script was found. Add a command manually before launching.");
   }
 
-  const buildType = declaredCandidates.length > 0
+  const buildType =
+    declaredCandidates.length > 0
       ? "manifest"
-    : hasDockerfile
-      ? "docker"
-      : fs.existsSync(packagePath)
-      ? "node"
-      : hasRequirements || hasPyproject
-        ? "python"
-        : hasGodotProject
-          ? "godot"
-          : staticDir
-            ? "static"
-            : "unknown";
+      : hasDockerfile
+        ? "docker"
+        : fs.existsSync(packagePath)
+          ? "node"
+          : hasRequirements || hasPyproject
+            ? "python"
+            : hasGodotProject
+              ? "godot"
+              : staticDir
+                ? "static"
+                : "unknown";
   return {
     name: normalizeProjectName(resolved),
     buildType,
@@ -906,10 +912,7 @@ export function registerServiceRoutes(ctx: AppContext): void {
     // working_dir, which a user could have pointed elsewhere; a substring check
     // on ".survhub" was how one bad path could once nuke a sibling's data.
     if (purgeDisk) {
-      for (const dir of [
-        path.join(ctx.config.projectsDir, id),
-        path.join(ctx.config.serviceDataDir, id)
-      ]) {
+      for (const dir of [path.join(ctx.config.projectsDir, id), path.join(ctx.config.serviceDataDir, id)]) {
         try {
           fs.rmSync(dir, { recursive: true, force: true });
         } catch {
@@ -1135,7 +1138,9 @@ export function registerServiceRoutes(ctx: AppContext): void {
           .run(nowIso(), id);
       } else {
         ctx.db
-          .prepare("UPDATE services SET start_mode = 'manual', stop_with_hoster = 1, updated_at = ? WHERE id = ?")
+          .prepare(
+            "UPDATE services SET start_mode = 'manual', stop_with_hoster = 1, updated_at = ? WHERE id = ?"
+          )
           .run(nowIso(), id);
       }
       if (service.type === "docker") {

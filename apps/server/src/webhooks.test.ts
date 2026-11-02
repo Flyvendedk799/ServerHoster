@@ -296,3 +296,147 @@ test("tunnel adapters: registered and conform to the contract", () => {
     assert.equal(typeof a.available, "function");
   }
 });
+
+function seedWebhookService(
+  ctx: Awaited<ReturnType<typeof buildApp>>,
+  opts: { repo: string; branch: string; pipeline?: boolean }
+): string {
+  const projectId = nanoid();
+  const serviceId = nanoid();
+  const now = nowIso();
+  ctx.db
+    .prepare("INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .run(projectId, `p-${projectId}`, now, now);
+  ctx.db
+    .prepare(
+      `INSERT INTO services (
+        id, project_id, name, type, command, working_dir, docker_image, dockerfile, port, status,
+        auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at,
+        github_repo_url, github_branch, github_auto_pull
+      ) VALUES (?, ?, ?, 'process', '', '', '', '', 0, 'stopped', 1, 0, 5, 'manual', ?, ?, ?, ?, 0)`
+    )
+    .run(
+      serviceId,
+      projectId,
+      `s-${serviceId}`,
+      now,
+      now,
+      `https://github.com/${opts.repo}.git`,
+      opts.branch
+    );
+  if (opts.pipeline) {
+    ctx.db
+      .prepare(
+        `INSERT INTO ci_pipelines
+         (id, service_id, name, enabled, gate_deploy, config_source, inline_config, image, timeout_minutes, memory_mb, cpus,
+          trigger_branches, created_at, updated_at)
+         VALUES (?, ?, 'CI', 1, 0, 'inline', 'steps:\n  - name: t\n    run: "true"\n', 'node:22', 20, 2048, 1, '*', ?, ?)`
+      )
+      .run(nanoid(), serviceId, now, now);
+  }
+  return serviceId;
+}
+
+async function deliver(
+  ctx: Awaited<ReturnType<typeof buildApp>>,
+  event: string,
+  payload: unknown
+): Promise<{ statusCode: number; json: Record<string, unknown> }> {
+  const body = JSON.stringify(payload);
+  const resp = await ctx.app.inject({
+    method: "POST",
+    url: "/webhooks/github",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": event,
+      "x-hub-signature-256": sign(SECRET, body)
+    },
+    payload: body
+  });
+  return { statusCode: resp.statusCode, json: resp.json() as Record<string, unknown> };
+}
+
+function prPayload(repo: string, headRepo: string, number: number) {
+  return {
+    action: "opened",
+    number,
+    pull_request: {
+      head: { sha: "f".repeat(40), ref: "feature/x", repo: { full_name: headRepo } },
+      base: { ref: "main", repo: { full_name: repo } }
+    },
+    repository: { full_name: repo, clone_url: `https://github.com/${repo}.git` }
+  };
+}
+
+test("webhook: branch matching uses the full ref", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    const repo = `example/fullref-${nanoid(6)}`;
+    seedWebhookService(ctx, { repo, branch: "main" });
+    // The old split("/").pop() read refs/heads/feature/main as "main".
+    const nested = await deliver(ctx, "push", {
+      ref: "refs/heads/feature/main",
+      repository: { full_name: repo }
+    });
+    assert.equal(nested.json.matched, 0);
+    const tag = await deliver(ctx, "push", { ref: "refs/tags/main", repository: { full_name: repo } });
+    assert.equal(tag.json.matched, 0);
+    assert.equal((await deliver(ctx, "ping", { zen: "hi" })).json.message, "pong");
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("webhook: same-repo pull requests queue CI, forks are skipped", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = SECRET;
+    ctx.config.webhookInsecure = false;
+    const repo = `example/prs-${nanoid(6)}`;
+    const serviceId = seedWebhookService(ctx, { repo, branch: "main", pipeline: true });
+    const same = await deliver(ctx, "pull_request", prPayload(repo, repo, 3));
+    assert.equal(same.statusCode, 200);
+    assert.deepEqual(same.json.ci, [{ serviceId, queued: true }]);
+    const fork = await deliver(ctx, "pull_request", prPayload(repo, "stranger/prs", 4));
+    assert.deepEqual(fork.json.ci, [
+      { serviceId, queued: false, reason: "pull requests from forks are not run on this host" }
+    ]);
+    const runs = ctx.db
+      .prepare("SELECT lane, event, deploy_after FROM ci_runs WHERE service_id = ?")
+      .all(serviceId) as Array<{ lane: string; event: string; deploy_after: number }>;
+    assert.deepEqual(
+      runs.map((run) => ({ ...run })),
+      [{ lane: "pr:3", event: "pull_request", deploy_after: 0 }]
+    );
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});
+
+test("webhook: unsigned mode refuses pull request and branch CI", async () => {
+  const ctx = await buildApp();
+  try {
+    ctx.config.webhookSecret = "";
+    ctx.config.webhookInsecure = true;
+    const repo = `example/unsigned-${nanoid(6)}`;
+    const serviceId = seedWebhookService(ctx, { repo, branch: "main", pipeline: true });
+    const pr = await deliver(ctx, "pull_request", prPayload(repo, repo, 5));
+    assert.match(String(pr.json.message), /SURVHUB_WEBHOOK_INSECURE/);
+    const push = await deliver(ctx, "push", {
+      ref: "refs/heads/feature/y",
+      after: "e".repeat(40),
+      repository: { full_name: repo }
+    });
+    const ci = push.json.ci as Array<{ queued: boolean; reason?: string }>;
+    assert.equal(ci[0].queued, false);
+    assert.match(ci[0].reason ?? "", /unsigned/);
+    const count = ctx.db.prepare("SELECT COUNT(*) AS n FROM ci_runs WHERE service_id = ?").get(serviceId) as {
+      n: number;
+    };
+    assert.equal(count.n, 0);
+  } finally {
+    await gracefulShutdown(ctx);
+  }
+});

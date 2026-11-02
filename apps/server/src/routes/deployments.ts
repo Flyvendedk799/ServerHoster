@@ -1,10 +1,6 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import {
-  applyPostDeployServiceState,
-  deployFromGit,
-  rollbackDeployment
-} from "../services/deploy.js";
+import { applyPostDeployServiceState, deployFromGit, rollbackDeployment } from "../services/deploy.js";
 import { getGithubSyncStatus, getGithubSyncStatuses } from "../services/poller.js";
 
 const deploySchema = z.object({

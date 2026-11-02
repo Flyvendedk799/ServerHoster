@@ -111,19 +111,28 @@ export type Price = { input: number; output: number; cacheRead: number; cacheWri
 export type ModelPrice = { model: string; price: Price | null; custom: boolean; priced: boolean };
 
 export const getSummary = (range: RangeKey, service?: string, opts?: ApiOptions) =>
-  api<UsageSummary>(`/api/ai-usage/summary?range=${range}${service ? `&service=${encodeURIComponent(service)}` : ""}`, opts);
+  api<UsageSummary>(
+    `/api/ai-usage/summary?range=${range}${service ? `&service=${encodeURIComponent(service)}` : ""}`,
+    opts
+  );
 
 export const getEvents = (limit = 30, service?: string, opts?: ApiOptions) =>
-  api<{ events: UsageEvent[] }>(`/api/ai-usage/events?limit=${limit}${service ? `&service=${encodeURIComponent(service)}` : ""}`, opts);
+  api<{ events: UsageEvent[] }>(
+    `/api/ai-usage/events?limit=${limit}${service ? `&service=${encodeURIComponent(service)}` : ""}`,
+    opts
+  );
 
 export const getApps = (opts?: ApiOptions) => api<{ apps: UsageApp[] }>("/api/ai-usage/apps", opts);
 
 export const getPrices = (opts?: ApiOptions) => api<{ models: ModelPrice[] }>("/api/ai-usage/prices", opts);
 
 export const connectApp = (serviceId: string) =>
-  api<{ ok: boolean; token_prefix: string; restart_required: boolean }>(`/api/ai-usage/connect/${encodeURIComponent(serviceId)}`, {
-    method: "POST"
-  });
+  api<{ ok: boolean; token_prefix: string; restart_required: boolean }>(
+    `/api/ai-usage/connect/${encodeURIComponent(serviceId)}`,
+    {
+      method: "POST"
+    }
+  );
 
 export const disconnectApp = (serviceId: string) =>
   api<{ ok: boolean }>(`/api/ai-usage/connect/${encodeURIComponent(serviceId)}`, { method: "DELETE" });
@@ -132,7 +141,10 @@ export const saveBudgets = (budgets: Budgets) =>
   api<Budgets>("/api/ai-usage/budgets", { method: "PUT", body: JSON.stringify(budgets) });
 
 export const savePrices = (overrides: Record<string, Price>) =>
-  api<{ models: ModelPrice[] }>("/api/ai-usage/prices", { method: "PUT", body: JSON.stringify({ overrides }) });
+  api<{ models: ModelPrice[] }>("/api/ai-usage/prices", {
+    method: "PUT",
+    body: JSON.stringify({ overrides })
+  });
 
 /** micro-USD -> "$0.0036" / "$12.40". Small amounts keep precision so a cheap app is not shown as free. */
 export function formatUsd(micro: number): string {

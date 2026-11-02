@@ -100,8 +100,8 @@ export function PromoteEmbeddedDbModal({ embedded, onClose, onPromoted }: Props)
             <InfoHint title="Two ways to promote" side="right">
               <p>
                 <strong>Provision managed Postgres</strong> — ServerHoster creates a brand-new Postgres
-                database, can copy your existing data into it, connects it to the app, and hands the
-                app its address.
+                database, can copy your existing data into it, connects it to the app, and hands the app its
+                address.
               </p>
               <p>
                 <strong>Use existing DATABASE_URL</strong> — point the app at a database you already run

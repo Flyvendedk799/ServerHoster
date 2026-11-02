@@ -181,7 +181,10 @@ test("secret routes require auth, mask values, and inject decrypted runtime env"
     assert.equal(visible.statusCode, 200);
     assert.ok(!visible.body.includes(plainServiceSecret), "plain service secret must be masked");
     assert.ok(!visible.body.includes(plainSharedSecret), "plain shared secret must be masked");
-    assert.ok(!visible.body.includes("repo-hardcoded-platform-key-abcdef"), "repo detected secret must be masked");
+    assert.ok(
+      !visible.body.includes("repo-hardcoded-platform-key-abcdef"),
+      "repo detected secret must be masked"
+    );
     const visibleBody = visible.json() as {
       secrets: Array<{ id: string; key: string; storage?: string; source_file?: string }>;
     };

@@ -323,7 +323,9 @@ export function QuickLaunchModal({ projects, onClose, onLaunched }: Props) {
                       <button
                         key={candidate.id}
                         className={`candidate-item ${
-                          command === candidate.command && workingDir === (candidate.workingDir ?? "") ? "active" : ""
+                          command === candidate.command && workingDir === (candidate.workingDir ?? "")
+                            ? "active"
+                            : ""
                         }`}
                         aria-label={`Use ${candidate.label}: ${candidate.command || "Dockerfile service"}`}
                         data-tooltip="Use this launch command"

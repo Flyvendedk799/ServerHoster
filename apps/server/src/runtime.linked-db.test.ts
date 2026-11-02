@@ -19,7 +19,10 @@ type FakeState = { status: string; policy: string };
  * daemon. `status: "not-found"` makes inspect() throw, mimicking a missing
  * container.
  */
-function installFakeDocker(ctx: Ctx, state: FakeState): {
+function installFakeDocker(
+  ctx: Ctx,
+  state: FakeState
+): {
   started: string[];
   updated: Array<Record<string, unknown>>;
 } {
@@ -56,7 +59,13 @@ function seedDatabase(ctx: Ctx, containerId: string): string {
       `INSERT INTO databases (id, project_id, name, engine, port, container_id, connection_string, created_at)
        VALUES (?, 'proj-linked-db', ?, 'postgres', 5433, ?, ?, ?)`
     )
-    .run(id, `db-${id.slice(0, 6)}`, containerId, "postgresql://leader:leader@localhost:5433/leader", nowIso());
+    .run(
+      id,
+      `db-${id.slice(0, 6)}`,
+      containerId,
+      "postgresql://leader:leader@localhost:5433/leader",
+      nowIso()
+    );
   return id;
 }
 
@@ -87,7 +96,10 @@ test("ensureLinkedDatabaseRunning: starts a stopped linked database and re-asser
     await ensureLinkedDatabaseRunning(ctx, serviceId);
 
     assert.equal(calls.started.length, 1, "a stopped linked DB should be started before the service");
-    assert.ok(hasPolicy(calls.updated, "unless-stopped"), "its restart policy should be set to unless-stopped");
+    assert.ok(
+      hasPolicy(calls.updated, "unless-stopped"),
+      "its restart policy should be set to unless-stopped"
+    );
   } finally {
     await gracefulShutdown(ctx);
   }
@@ -103,7 +115,10 @@ test("ensureLinkedDatabaseRunning: leaves a running linked database alone but ke
     await ensureLinkedDatabaseRunning(ctx, serviceId);
 
     assert.equal(calls.started.length, 0, "a running DB must not be restarted");
-    assert.ok(hasPolicy(calls.updated, "unless-stopped"), "a drifted policy on a running DB should be corrected");
+    assert.ok(
+      hasPolicy(calls.updated, "unless-stopped"),
+      "a drifted policy on a running DB should be corrected"
+    );
   } finally {
     await gracefulShutdown(ctx);
   }
@@ -145,7 +160,10 @@ test("reconcileRuntimeStateOnBoot: re-asserts unless-stopped on managed database
 
     await reconcileRuntimeStateOnBoot(ctx);
 
-    assert.ok(hasPolicy(calls.updated, "unless-stopped"), "boot reconcile should fix the managed DB restart policy");
+    assert.ok(
+      hasPolicy(calls.updated, "unless-stopped"),
+      "boot reconcile should fix the managed DB restart policy"
+    );
   } finally {
     await gracefulShutdown(ctx);
   }
@@ -159,7 +177,10 @@ type FakeContainerDef = { id: string; image: string; name: string; status: strin
  * Fake Docker backed by a registry of containers, so the boot self-heal sweep
  * (which discovers containers via listContainers) can be exercised end-to-end.
  */
-function installFakeDockerWith(ctx: Ctx, defs: FakeContainerDef[]): {
+function installFakeDockerWith(
+  ctx: Ctx,
+  defs: FakeContainerDef[]
+): {
   started: string[];
   policyUpdates: Array<{ container: string; policy: string }>;
 } {
@@ -171,7 +192,8 @@ function installFakeDockerWith(ctx: Ctx, defs: FakeContainerDef[]): {
     byKey.set(d.name, d);
   }
   (ctx as { docker: unknown }).docker = {
-    listContainers: async () => defs.map((d) => ({ Id: d.id, Names: [`/${d.name}`], Image: d.image, State: d.status })),
+    listContainers: async () =>
+      defs.map((d) => ({ Id: d.id, Names: [`/${d.name}`], Image: d.image, State: d.status })),
     getContainer: (key: string) => {
       const def = byKey.get(key);
       return {
@@ -221,12 +243,22 @@ test("self-heal: leaves a deliberately-stopped (already durable) DB stopped", as
   const ctx = await buildApp();
   try {
     const calls = installFakeDockerWith(ctx, [
-      { id: "paused-db-id", image: "mysql:8.0", name: "paused-db", status: "exited", policy: "unless-stopped" }
+      {
+        id: "paused-db-id",
+        image: "mysql:8.0",
+        name: "paused-db",
+        status: "exited",
+        policy: "unless-stopped"
+      }
     ]);
 
     await reconcileRuntimeStateOnBoot(ctx);
 
-    assert.equal(calls.started.length, 0, "a DB stopped on purpose (already unless-stopped) must not be restarted");
+    assert.equal(
+      calls.started.length,
+      0,
+      "a DB stopped on purpose (already unless-stopped) must not be restarted"
+    );
     assert.equal(calls.policyUpdates.length, 0, "and its policy is already correct, so nothing changes");
   } finally {
     await gracefulShutdown(ctx);
@@ -237,7 +269,13 @@ test("self-heal: never touches Supabase's own stack", async () => {
   const ctx = await buildApp();
   try {
     const calls = installFakeDockerWith(ctx, [
-      { id: "sb-db-id", image: "public.ecr.aws/supabase/postgres:17", name: "supabase_db_proj", status: "exited", policy: "no" }
+      {
+        id: "sb-db-id",
+        image: "public.ecr.aws/supabase/postgres:17",
+        name: "supabase_db_proj",
+        status: "exited",
+        policy: "no"
+      }
     ]);
 
     await reconcileRuntimeStateOnBoot(ctx);

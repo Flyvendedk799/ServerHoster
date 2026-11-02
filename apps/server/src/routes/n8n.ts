@@ -141,9 +141,7 @@ export function registerN8nRoutes(ctx: AppContext): void {
   ctx.app.get("/n8n/workflows/export", async () => exportN8nWorkflows(ctx));
 
   ctx.app.post("/n8n/workflows/import", { bodyLimit: 10 * 1024 * 1024 }, async (req) => {
-    const body = z
-      .object({ workflow: z.unknown(), activate: z.boolean().optional() })
-      .parse(req.body ?? {});
+    const body = z.object({ workflow: z.unknown(), activate: z.boolean().optional() }).parse(req.body ?? {});
     return importN8nWorkflow(ctx, body.workflow, {
       activate: body.activate,
       actor: actorOf(req as { actor?: string })
@@ -205,7 +203,9 @@ export function registerN8nRoutes(ctx: AppContext): void {
     autoInstallN8nEventStarter(ctx, decodedEvent(req.params), actorOf(req as { actor?: string }))
   );
 
-  ctx.app.post("/n8n/webhooks/:event/test", async (req) => testN8nEventStarter(ctx, decodedEvent(req.params)));
+  ctx.app.post("/n8n/webhooks/:event/test", async (req) =>
+    testN8nEventStarter(ctx, decodedEvent(req.params))
+  );
 
   ctx.app.delete("/n8n/webhooks/:event", async (req) => {
     removeN8nEventStarter(ctx, decodedEvent(req.params), actorOf(req as { actor?: string }));

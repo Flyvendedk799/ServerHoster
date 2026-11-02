@@ -7,11 +7,12 @@
  * inherits that tier's CURRENT env at deploy time — so a rotated secret flows
  * through, and only the companion inherits (no leak to unrelated tiers).
  *
- * Uses node:sqlite (built in) so it needs no native build.
+ * Uses an in-memory better-sqlite3 database (the app's own driver), so it
+ * runs on every Node version CI uses.
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 
 import { getInheritedServiceEnv } from "./services/runtime.js";
@@ -30,7 +31,7 @@ CREATE TABLE env_vars (
 );
 `;
 
-let db: DatabaseSync;
+let db: DatabaseSync.Database;
 let ctx: AppContext;
 
 function makeCtx(): AppContext {
@@ -46,9 +47,13 @@ function addService(id: string, envFrom: string | null = null): void {
 }
 
 function addEnv(serviceId: string, key: string, value: string, secret = 0): void {
-  db.prepare(
-    "INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)"
-  ).run(`${serviceId}:${key}`, serviceId, key, secret ? encryptSecret(value, SECRET) : value, secret);
+  db.prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)").run(
+    `${serviceId}:${key}`,
+    serviceId,
+    key,
+    secret ? encryptSecret(value, SECRET) : value,
+    secret
+  );
 }
 
 beforeEach(() => {
@@ -81,7 +86,9 @@ describe("getInheritedServiceEnv", () => {
     assert.equal(getInheritedServiceEnv(ctx, "worker").OPENAI_API_KEY, "sgk_old");
 
     // Rotate the secret on the primary — the companion should see the new value.
-    db.prepare("UPDATE env_vars SET value = 'sgk_new' WHERE service_id = 'backend' AND key = 'OPENAI_API_KEY'").run();
+    db.prepare(
+      "UPDATE env_vars SET value = 'sgk_new' WHERE service_id = 'backend' AND key = 'OPENAI_API_KEY'"
+    ).run();
     assert.equal(
       getInheritedServiceEnv(ctx, "worker").OPENAI_API_KEY,
       "sgk_new",

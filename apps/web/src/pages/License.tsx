@@ -250,10 +250,7 @@ export function LicensePage() {
   }
 
   async function extendKey(k: LicenseKey): Promise<void> {
-    const next = window.prompt(
-      "New expiry (ISO datetime), or leave empty for never:",
-      k.expires_at ?? ""
-    );
+    const next = window.prompt("New expiry (ISO datetime), or leave empty for never:", k.expires_at ?? "");
     if (next === null) return;
     setBusy(`ext-${k.id}`);
     try {
@@ -527,7 +524,11 @@ export function LicensePage() {
                 onChange={(e) => setKeyMax(e.target.value)}
                 style={{ width: 110 }}
               />
-              <button className="primary small" disabled={busy !== null || !products.length} onClick={() => void generateKey()}>
+              <button
+                className="primary small"
+                disabled={busy !== null || !products.length}
+                onClick={() => void generateKey()}
+              >
                 {busy === "mint" ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Mint
               </button>
             </div>
@@ -568,7 +569,11 @@ export function LicensePage() {
                         />
                       </span>
                       <span className="muted tiny">
-                        {[k.product_name, k.customer_email, k.expires_at ? `exp ${k.expires_at}` : "no expiry"]
+                        {[
+                          k.product_name,
+                          k.customer_email,
+                          k.expires_at ? `exp ${k.expires_at}` : "no expiry"
+                        ]
                           .filter(Boolean)
                           .join(" · ")}{" "}
                         · {k.activation_count} seats
@@ -654,8 +659,8 @@ export function LicensePage() {
               </h3>
             </div>
             <p className="muted small">
-              Apps call the public validate endpoint with a license key and device fingerprint.
-              Keys are hashed at rest; plaintext is never returned after mint.
+              Apps call the public validate endpoint with a license key and device fingerprint. Keys are
+              hashed at rest; plaintext is never returned after mint.
             </p>
             {client && (
               <>

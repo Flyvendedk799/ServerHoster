@@ -41,7 +41,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const method = (init?.method ?? "GET").toUpperCase();
   calls.push({ method, path: url.pathname, body: init?.body as string | undefined });
   const body = method === "POST" ? minted : { tokens: [existing] };
-  return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body)
+  } as Response;
 }) as typeof fetch;
 
 let ApiTokensPanel: ComponentType;

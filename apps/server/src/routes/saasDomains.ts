@@ -85,7 +85,9 @@ export function registerSaasDomainRoutes(ctx: AppContext): void {
     if (p.fallbackServiceId !== undefined) {
       const svc = ctx.db.prepare("SELECT id FROM services WHERE id = ?").get(p.fallbackServiceId);
       if (!svc) {
-        const err = new Error("fallbackServiceId does not match any service") as Error & { statusCode?: number };
+        const err = new Error("fallbackServiceId does not match any service") as Error & {
+          statusCode?: number;
+        };
         err.statusCode = 404;
         throw err;
       }
@@ -111,7 +113,12 @@ export function registerSaasDomainRoutes(ctx: AppContext): void {
         apiHostnameError = error instanceof Error ? error.message : String(error);
       }
     }
-    return { ok: !fallbackError && !apiHostnameError, fallbackError, apiHostnameError, status: getSaasConfigStatus(ctx) };
+    return {
+      ok: !fallbackError && !apiHostnameError,
+      fallbackError,
+      apiHostnameError,
+      status: getSaasConfigStatus(ctx)
+    };
   });
 
   // Generates (or replaces) the machine token. The plaintext is returned ONCE —

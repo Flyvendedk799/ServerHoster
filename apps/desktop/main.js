@@ -143,9 +143,7 @@ async function startServer() {
   // strong SURVHUB_SECRET_KEY from survhub.env, so a server booted with the
   // strong key can still read secrets a dev-key launch wrote. Idempotent.
   try {
-    const { migrateSecretsToStrongKey } = await import(
-      path.join(REPO_ROOT, "scripts", "secret-key.mjs")
-    );
+    const { migrateSecretsToStrongKey } = await import(path.join(REPO_ROOT, "scripts", "secret-key.mjs"));
     migrateSecretsToStrongKey(fileEnv.SURVHUB_SECRET_KEY || "", (m) => console.log(m));
   } catch (err) {
     console.error(`[main] secret-key migration skipped: ${err.message}`);

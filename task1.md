@@ -1,19 +1,21 @@
 # Task 1 — Make managed Redis actually provision (not just scaffold)
 
 ## Goal
+
 When ServerHoster detects a Redis driver in a service, let the operator
 one-click provision a **real Redis container** (inject `REDIS_URL`), the same
 way Postgres works today — instead of the current misleading "Add Postgres"
 offer that can't satisfy a Redis need.
 
 ## Current state (why it's broken)
-Redis is fully *scaffolded* but the actual provisioning is a stub:
+
+Redis is fully _scaffolded_ but the actual provisioning is a stub:
 
 - `apps/server/src/services/resources/profiles/redis.ts` — `provision()` and
   `remove()` **throw** `"…not implemented in this phase (Phase 3 wires this
-  profile)"`. Detection + `plan()` work; provisioning does not.
+profile)"`. Detection + `plan()` work; provisioning does not.
 - `apps/server/src/routes/databases.ts` — the POST schema accepts
-  `engine: "redis"`, but the managed path only *"spin[s] up a new Postgres"*
+  `engine: "redis"`, but the managed path only _"spin[s] up a new Postgres"_
   (`databases.ts:56`). No Redis image / port `6379` / auth branch exists.
 - `apps/web/src/pages/Services.tsx:1921-1971` — the `db-suggest-banner` ignores
   the detected driver: the copy is hardcoded `"…Add Postgres so data persists."`
@@ -28,17 +30,20 @@ the container spin-up and the UI offer are missing.
 ## The fix
 
 ### 1. Real Redis container creation (backend)
+
 The container-creation helper used by `provisionPostgres`
 (`createManagedDatabase` in the databases service) assumes Postgres. Either:
+
 - **(preferred)** teach `createManagedDatabase` to branch on `engine`: for
   `"redis"` run image `redis:7`, expose `6379`, set `--requirepass <password>`,
   skip the SQL `databaseName`/`username` concepts; or
 - add a small dedicated `createManagedRedis(ctx, {projectId, name, port,
-  password})` helper next to it.
+password})` helper next to it.
 
 Connection string: `redis://:<password>@127.0.0.1:<port>` (or `redis://…/0`).
 
 ### 2. Implement `redisProfile.provision()` / `remove()`
+
 In `apps/server/src/services/resources/profiles/redis.ts`, replace the two
 `throw` bodies. **Mirror `provisionPostgres`** in `profiles/postgres.ts` almost
 line-for-line:
@@ -66,7 +71,9 @@ line-for-line:
 change is needed once the throws are gone.
 
 ### 3. Make the suggestion banner engine-aware (frontend)
+
 In `apps/web/src/pages/Services.tsx` (the `db-suggest-banner` block, ~1921):
+
 - Pick the dominant detected engine from `uniqueDrivers` (the scanner already
   tags each `code_signal` with a `driver`). Map driver → resource profile
   (`redis` → `"redis"`, `PostgreSQL/Prisma/Drizzle` → `"postgres"`, etc.).
@@ -78,12 +85,14 @@ In `apps/web/src/pages/Services.tsx` (the `db-suggest-banner` block, ~1921):
   genuine Postgres/SQLite-promote case.
 
 ### 4. (Optional) Tidy the legacy `/databases` path
+
 Either generalize `databases.ts` managed-mode to branch on `engine`, or route
 all new provisioning through the resource profiles and leave `/databases` for
 existing Postgres/MySQL management only. Avoid two code paths that both claim to
 "add a database" but only one knows Redis.
 
 ### 5. Tests
+
 - `apps/server/src/resources.guardrails.test.ts` — flip the `:141` expectation:
   a Redis signal must yield an **"Add Redis"** offer, not "Add Postgres".
 - `apps/web/src/resources.smoke.test.tsx` — add a redis-driver fixture and
@@ -94,6 +103,7 @@ existing Postgres/MySQL management only. Avoid two code paths that both claim to
   (Docker mocked, like the Postgres provision tests).
 
 ## Acceptance criteria
+
 - [ ] A service with a Redis signal shows **"Add Redis"** (not "Add Postgres").
 - [ ] Clicking it spins a real `redis:7` container on a free port and injects
       `REDIS_URL`; the service restarts and can reach it.
@@ -102,6 +112,7 @@ existing Postgres/MySQL management only. Avoid two code paths that both claim to
       tests are green.
 
 ## Notes / gotchas
+
 - **Redis is usually an ephemeral cache, not a persistence store.** Don't reuse
   the "…so data persists" copy verbatim — frame it as "Add Redis (cache)" and,
   if you want durability, mention enabling AOF/RDB on the volume. For a service

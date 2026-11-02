@@ -147,7 +147,10 @@ function parseParams(value: string): { value: string; params: Record<string, str
     const eq = p.indexOf("=");
     if (eq === -1) continue;
     const key = p.slice(0, eq).trim().toLowerCase().replace(/\*$/, "");
-    let v = p.slice(eq + 1).trim().replace(/^"|"$/g, "");
+    let v = p
+      .slice(eq + 1)
+      .trim()
+      .replace(/^"|"$/g, "");
     // RFC 2231 `filename*=utf-8''na%C3%AFve.pdf`
     const ext = /^([^']*)'[^']*'(.*)$/.exec(v);
     if (ext && p.slice(0, eq).trim().endsWith("*")) {
@@ -191,7 +194,13 @@ export function parseAddressList(value: string | null | undefined): MailAddress[
       out.push({ address: angleMatch[2].trim().toLowerCase(), name: name || null });
     } else if (trimmed.includes("@")) {
       const parenName = /\(([^)]*)\)/.exec(trimmed)?.[1] ?? null;
-      out.push({ address: trimmed.replace(/\([^)]*\)/g, "").trim().toLowerCase(), name: parenName });
+      out.push({
+        address: trimmed
+          .replace(/\([^)]*\)/g, "")
+          .trim()
+          .toLowerCase(),
+        name: parenName
+      });
     }
   }
   return out;
@@ -274,7 +283,8 @@ function walk(part: Part, acc: Collected, depth: number, binary: boolean): void 
     walk({ headers: parseHeaderBlock(head), body }, acc, depth + 1, binary);
     return;
   }
-  const isAttachment = disposition.value === "attachment" || (filename !== null && !ct.value.startsWith("text/"));
+  const isAttachment =
+    disposition.value === "attachment" || (filename !== null && !ct.value.startsWith("text/"));
   if (isAttachment) {
     acc.attachments.push({
       filename: filename ?? "attachment",
@@ -313,9 +323,10 @@ export function parseMail(raw: string, opts: { binary?: boolean } = {}): ParsedM
   const split = splitHeadersBody(raw);
   const body = split.body;
   // SMTPUTF8 headers carry raw UTF-8 bytes; recover them before parsing.
-  const head = binary && /[\x80-\xff]/.test(split.head)
-    ? bytesToString(binaryStringToBytes(split.head), "utf-8")
-    : split.head;
+  const head =
+    binary && /[\x80-\xff]/.test(split.head)
+      ? bytesToString(binaryStringToBytes(split.head), "utf-8")
+      : split.head;
   const headers = parseHeaderBlock(head);
   const acc: Collected = { text: null, html: null, attachments: [] };
   walk({ headers, body }, acc, 0, binary);

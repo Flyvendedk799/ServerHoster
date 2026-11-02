@@ -10,11 +10,7 @@ import {
   setStackEmailConfirmations
 } from "../services/resources/supabaseAuthMail.js";
 import { detectEmailConsumers } from "../services/emailConsumers.js";
-import {
-  getResource,
-  resourceConfig,
-  updateResourceRuntimeState
-} from "../services/resources/lifecycle.js";
+import { getResource, resourceConfig, updateResourceRuntimeState } from "../services/resources/lifecycle.js";
 import { sendSmtpMail } from "../services/smtp.js";
 import { resolveEmailBranding } from "../services/emailBranding.js";
 
@@ -55,7 +51,9 @@ function emailConfigured(ctx: AppContext): boolean {
 const CF_BASE = "https://api.cloudflare.com/client/v4";
 
 function routingConfigured(ctx: AppContext): boolean {
-  return Boolean(getSecretSetting(ctx, "email_routing_token") && getSecretSetting(ctx, "cloudflare_account_id"));
+  return Boolean(
+    getSecretSetting(ctx, "email_routing_token") && getSecretSetting(ctx, "cloudflare_account_id")
+  );
 }
 
 type CfEnvelope = { success?: boolean; result?: unknown; errors?: Array<{ message?: string }> };
@@ -126,9 +124,10 @@ export function registerEmailRoutes(ctx: AppContext): void {
   });
 
   ctx.app.get("/email/projects", async () => {
-    const projects = ctx.db
-      .prepare("SELECT id, name FROM projects ORDER BY name ASC")
-      .all() as Array<{ id: string; name: string }>;
+    const projects = ctx.db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all() as Array<{
+      id: string;
+      name: string;
+    }>;
     const defaultFrom = getSetting(ctx, "smtp_from") ?? "";
     const defaultFromName = getSetting(ctx, "smtp_from_name") ?? "";
     return projects.map((pr) => {
@@ -266,7 +265,9 @@ export function registerEmailRoutes(ctx: AppContext): void {
       e.statusCode = 400;
       throw e;
     }
-    const body = z.object({ from: z.string().optional(), fromName: z.string().optional() }).parse(req.body ?? {});
+    const body = z
+      .object({ from: z.string().optional(), fromName: z.string().optional() })
+      .parse(req.body ?? {});
     const existingFrom = (
       ctx.db
         .prepare("SELECT value FROM project_env_vars WHERE project_id = ? AND key = 'SMTP_FROM' LIMIT 1")
@@ -391,7 +392,9 @@ export function registerEmailRoutes(ctx: AppContext): void {
   }));
 
   ctx.app.put("/email/receiving/config", async (req) => {
-    const p = z.object({ token: z.string().optional(), accountId: z.string().optional() }).parse(req.body ?? {});
+    const p = z
+      .object({ token: z.string().optional(), accountId: z.string().optional() })
+      .parse(req.body ?? {});
     if (p.token && p.token.trim()) setSecretSetting(ctx, "email_routing_token", p.token.trim());
     if (p.accountId && p.accountId.trim()) setSecretSetting(ctx, "cloudflare_account_id", p.accountId.trim());
     return { ok: true };
@@ -432,7 +435,10 @@ export function registerEmailRoutes(ctx: AppContext): void {
       ? { enabled: Boolean(ca.enabled), dest: forwardDest(ca.actions) }
       : { enabled: false, dest: "" };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const destinations = (addrRes as any[]).map((a) => ({ email: a.email as string, verified: Boolean(a.verified) }));
+    const destinations = (addrRes as any[]).map((a) => ({
+      email: a.email as string,
+      verified: Boolean(a.verified)
+    }));
     return { catch_all, rules, destinations };
   });
 

@@ -394,9 +394,7 @@ export function ServicesPage() {
 
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [secretTarget, setSecretTarget] = useState<{ service: Service; initialKey?: string } | null>(null);
-  const [editingOperatorGroup, setEditingOperatorGroup] = useState<OperatorServiceGroup | "new" | null>(
-    null
-  );
+  const [editingOperatorGroup, setEditingOperatorGroup] = useState<OperatorServiceGroup | "new" | null>(null);
   const [operatorGroupActionKey, setOperatorGroupActionKey] = useState<string | null>(null);
   const [showGithubDeploy, setShowGithubDeploy] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -426,9 +424,9 @@ export function ServicesPage() {
     profile?: ResourceProfileId;
   } | null>(null);
   const [rescanningId, setRescanningId] = useState<string | null>(null);
-  const [mailSummary, setMailSummary] = useState<Map<string, { unread: number; threads: number; mailboxes: number }>>(
-    new Map()
-  );
+  const [mailSummary, setMailSummary] = useState<
+    Map<string, { unread: number; threads: number; mailboxes: number }>
+  >(new Map());
 
   async function load(): Promise<void> {
     try {
@@ -527,7 +525,8 @@ export function ServicesPage() {
   function actionableRecognition(serviceId: string): DatabaseRecognition | null {
     const recognition = recognitionFor(serviceId);
     if (!recognition) return null;
-    if (recognition.detected.profile === "manual" && recognition.current_provider.kind === "none") return null;
+    if (recognition.detected.profile === "manual" && recognition.current_provider.kind === "none")
+      return null;
     if (recognition.state === "satisfied" || recognition.preference.mode === "ignore") return null;
     return recognition;
   }
@@ -562,7 +561,9 @@ export function ServicesPage() {
     ];
     return (
       priority
-        .map((id) => recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled))
+        .map((id) =>
+          recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled)
+        )
         .find(Boolean) ??
       priority
         .map((id) => recognition.actions.find((action) => action.id === id && !action.disabled))
@@ -918,7 +919,9 @@ export function ServicesPage() {
       if (failures.length > 0) {
         toast.error(`${failures.length} service${failures.length === 1 ? "" : "s"} could not ${action}`);
       } else {
-        toast.success(`${titleAction} sent to ${result.results.length} service${result.results.length === 1 ? "" : "s"}`);
+        toast.success(
+          `${titleAction} sent to ${result.results.length} service${result.results.length === 1 ? "" : "s"}`
+        );
       }
       await load();
     } catch {
@@ -1028,7 +1031,10 @@ export function ServicesPage() {
     }
   }
 
-  async function runRecognitionPrimaryAction(service: Service, recognition: DatabaseRecognition): Promise<void> {
+  async function runRecognitionPrimaryAction(
+    service: Service,
+    recognition: DatabaseRecognition
+  ): Promise<void> {
     const preferred = primaryRecognitionAction(recognition);
     if (!preferred) {
       setEditingService(service);
@@ -2455,9 +2461,17 @@ export function ServicesPage() {
                                             topIssue?.message ??
                                             `ServerHoster detected ${profileLabel(profile)} signals and needs a provider check.`;
                                           return (
-                                            <div className={isSupabase ? "res-supabase-banner" : "db-suggest-banner"}>
+                                            <div
+                                              className={
+                                                isSupabase ? "res-supabase-banner" : "db-suggest-banner"
+                                              }
+                                            >
                                               <DatabaseIcon size={14} />
-                                              <div className={isSupabase ? "res-supabase-text" : "db-suggest-text"}>
+                                              <div
+                                                className={
+                                                  isSupabase ? "res-supabase-text" : "db-suggest-text"
+                                                }
+                                              >
                                                 <span className="row" style={{ gap: "0.3rem" }}>
                                                   <strong>{headline}</strong>
                                                   <InfoHint title="Database check" side="right">
@@ -2482,7 +2496,10 @@ export function ServicesPage() {
                                                     : ""}
                                                 </span>
                                                 {actionable.issues.slice(1, 3).map((issue) => (
-                                                  <span key={`${issue.code}-${issue.message}`} className="res-hosted-note">
+                                                  <span
+                                                    key={`${issue.code}-${issue.message}`}
+                                                    className="res-hosted-note"
+                                                  >
                                                     <AlertTriangle size={11} /> {issue.message}
                                                   </span>
                                                 ))}
@@ -2497,7 +2514,9 @@ export function ServicesPage() {
                                                       Review requirements
                                                     </button>
                                                   )}
-                                                  {actionable.providers.some((p) => p.kind === "hosted-env") && (
+                                                  {actionable.providers.some(
+                                                    (p) => p.kind === "hosted-env"
+                                                  ) && (
                                                     <button
                                                       className="ghost tiny"
                                                       onClick={() => void chooseHostedProvider(service)}
@@ -2529,7 +2548,9 @@ export function ServicesPage() {
                                               <button
                                                 className="primary xsmall"
                                                 disabled={provisioningId === service.id}
-                                                onClick={() => void runRecognitionPrimaryAction(service, actionable)}
+                                                onClick={() =>
+                                                  void runRecognitionPrimaryAction(service, actionable)
+                                                }
                                               >
                                                 {provisioningId === service.id ? (
                                                   <>
@@ -2572,7 +2593,10 @@ export function ServicesPage() {
                                               <Link
                                                 to="/databases"
                                                 className={`res-linked-chip ${recognition.current_provider.kind === "hosted-env" ? "hosted" : "running"}`}
-                                                data-tooltip={recognition.current_provider.details ?? "Open database recognition on the Databases page"}
+                                                data-tooltip={
+                                                  recognition.current_provider.details ??
+                                                  "Open database recognition on the Databases page"
+                                                }
                                               >
                                                 <DatabaseIcon size={12} />
                                                 {recognition.current_provider.kind === "hosted-env"
@@ -2598,7 +2622,10 @@ export function ServicesPage() {
                                         // don't need a DB (static frontends, etc.). In multi-service
                                         // apps, the API owns the DB; the frontend should call the API.
                                         if (!embedded && isFrontend && stackHasDatabaseOwner) return null;
-                                        if (!orphan || (!embedded && !composeDb && orphan.code_signals.length === 0))
+                                        if (
+                                          !orphan ||
+                                          (!embedded && !composeDb && orphan.code_signals.length === 0)
+                                        )
                                           return null;
                                         const drivers = orphan.code_signals.map((s) => s.driver);
                                         const uniqueDrivers = Array.from(new Set(drivers));
@@ -2607,13 +2634,13 @@ export function ServicesPage() {
                                           ? "SQLite detected — promote to Postgres"
                                           : composeDb
                                             ? `Existing compose ${profileLabel(composeDb.engine)} detected`
-                                          : offer?.headline ?? "No managed database";
+                                            : (offer?.headline ?? "No managed database");
                                         const detail = embedded
                                           ? `${embedded.file_path} won't survive container recreates.`
                                           : composeDb
                                             ? `${composeDb.database_service_name}${composeDb.container_name ? ` (${composeDb.container_name})` : ""} can be attached as ${composeDb.env_key}${composeDb.connection_preview ? `: ${composeDb.connection_preview}` : "."}`
-                                          : (offer?.detail(uniqueDrivers) ??
-                                            `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "..." : ""}. Add a managed dependency for this service.`);
+                                            : (offer?.detail(uniqueDrivers) ??
+                                              `Your code uses ${uniqueDrivers.slice(0, 3).join(", ")}${uniqueDrivers.length > 3 ? "..." : ""}. Add a managed dependency for this service.`);
                                         const dataDir = service.data_dir_container ?? service.data_dir;
                                         return (
                                           <div className="db-suggest-banner">
@@ -2629,8 +2656,8 @@ export function ServicesPage() {
                                                   </p>
                                                   <p>
                                                     Prefer not to use a database? Apps that just need to keep
-                                                    files around can use a persistent folder
-                                                    (<code>$DATA_DIR</code>) instead.
+                                                    files around can use a persistent folder (
+                                                    <code>$DATA_DIR</code>) instead.
                                                   </p>
                                                 </InfoHint>
                                               </span>
@@ -2664,9 +2691,9 @@ export function ServicesPage() {
                                                     ? void attachComposeDatabase(service, orphan)
                                                     : composeDb
                                                       ? toast.error(composeDb.note)
-                                                  : offer
-                                                    ? void provisionDetectedResource(service, offer)
-                                                    : void quickAddDatabase(service)
+                                                      : offer
+                                                        ? void provisionDetectedResource(service, offer)
+                                                        : void quickAddDatabase(service)
                                               }
                                             >
                                               {provisioningId === service.id ? (
@@ -2695,7 +2722,8 @@ export function ServicesPage() {
                                         // hard-reset every deploy does. Editing custom paths
                                         // takes effect on the next deploy/restart.
                                         const persisted = service.persisted_paths ?? [];
-                                        let cfg: { auto?: boolean; paths?: string[]; exclude?: string[] } = {};
+                                        let cfg: { auto?: boolean; paths?: string[]; exclude?: string[] } =
+                                          {};
                                         try {
                                           cfg = service.persisted_paths_config
                                             ? JSON.parse(service.persisted_paths_config)
@@ -2722,10 +2750,16 @@ export function ServicesPage() {
                                             await api(`/services/${service.id}`, {
                                               method: "PATCH",
                                               body: JSON.stringify({
-                                                persistedPathsConfig: { auto: autoOn, paths, exclude: cfg.exclude ?? [] }
+                                                persistedPathsConfig: {
+                                                  auto: autoOn,
+                                                  paths,
+                                                  exclude: cfg.exclude ?? []
+                                                }
                                               })
                                             });
-                                            toast.success("Persistent uploads saved — redeploy or restart to apply");
+                                            toast.success(
+                                              "Persistent uploads saved — redeploy or restart to apply"
+                                            );
                                             void load();
                                           } catch {
                                             toast.error("Could not update persistent uploads");
@@ -2746,7 +2780,8 @@ export function ServicesPage() {
                                               ) : (
                                                 <em>none detected</em>
                                               )}
-                                              {!isDocker && (autoOn ? " · auto-detect on" : " · auto-detect off")}
+                                              {!isDocker &&
+                                                (autoOn ? " · auto-detect on" : " · auto-detect off")}
                                             </span>
                                             <button className="link xsmall" onClick={() => void editPaths()}>
                                               Edit
@@ -3281,7 +3316,10 @@ function ServiceGroupModal({
   }, [group]);
 
   const runtimeStacks = useMemo(() => buildRuntimeServiceStacks(services), [services]);
-  const sortedServices = useMemo(() => [...services].sort((a, b) => a.name.localeCompare(b.name)), [services]);
+  const sortedServices = useMemo(
+    () => [...services].sort((a, b) => a.name.localeCompare(b.name)),
+    [services]
+  );
 
   function toggleService(serviceId: string): void {
     setSelected((prev) => {

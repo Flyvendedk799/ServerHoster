@@ -80,7 +80,7 @@ export async function ensureRepoWebhook(
       method: "PATCH",
       body: JSON.stringify({
         active: true,
-        events: ["push"],
+        events: ["push", "pull_request"],
         config
       })
     });
@@ -91,7 +91,7 @@ export async function ensureRepoWebhook(
     body: JSON.stringify({
       name: "web",
       active: true,
-      events: ["push"],
+      events: ["push", "pull_request"],
       config
     })
   });

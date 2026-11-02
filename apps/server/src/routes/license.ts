@@ -133,7 +133,7 @@ export function registerLicenseRoutes(ctx: AppContext): void {
         productId: body.productId,
         customerEmail: body.customerEmail || undefined,
         customerName: body.customerName,
-        expiresAt: body.expiresAt === "" ? null : body.expiresAt ?? null,
+        expiresAt: body.expiresAt === "" ? null : (body.expiresAt ?? null),
         maxActivations: body.maxActivations ?? null
       },
       actorOf(req as { actor?: string })

@@ -148,7 +148,9 @@ function primaryRecognitionAction(recognition: DatabaseRecognition): Recognition
   ];
   return (
     priority
-      .map((id) => recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled))
+      .map((id) =>
+        recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled)
+      )
       .find(Boolean) ??
     priority
       .map((id) => recognition.actions.find((action) => action.id === id && !action.disabled))
@@ -491,7 +493,10 @@ export function DatabasesPage() {
     }
   }
 
-  async function runRecognitionAction(recognition: DatabaseRecognition, action: RecognitionAction): Promise<void> {
+  async function runRecognitionAction(
+    recognition: DatabaseRecognition,
+    action: RecognitionAction
+  ): Promise<void> {
     try {
       if (action.id === "rescan") {
         const updated = await runResourceRecognition(recognition.service_id, { silent: true });
@@ -623,11 +628,12 @@ export function DatabasesPage() {
             <InfoHint title="Service links" side="bottom">
               <p>
                 How many of your apps are connected to a database. When you link one, ServerHoster
-                automatically hands the app the database's address (a setting called{" "}
-                <code>DATABASE_URL</code>) the next time it starts — so you never copy or paste it
-                yourself.
+                automatically hands the app the database's address (a setting called <code>DATABASE_URL</code>
+                ) the next time it starts — so you never copy or paste it yourself.
               </p>
-              <p>If an app already sets its own <code>DATABASE_URL</code>, ServerHoster leaves it alone.</p>
+              <p>
+                If an app already sets its own <code>DATABASE_URL</code>, ServerHoster leaves it alone.
+              </p>
             </InfoHint>
           </span>
         </div>
@@ -638,13 +644,13 @@ export function DatabasesPage() {
             Embedded (unmanaged)
             <InfoHint title="Embedded databases" side="bottom">
               <p>
-                Some apps ship with a small built-in database file (called SQLite) tucked inside the
-                app itself. It works, but ServerHoster isn't looking after it — there are no automatic
-                backups, and the data can be lost if the app's container is rebuilt.
+                Some apps ship with a small built-in database file (called SQLite) tucked inside the app
+                itself. It works, but ServerHoster isn't looking after it — there are no automatic backups,
+                and the data can be lost if the app's container is rebuilt.
               </p>
               <p>
-                "Promoting" it copies the data into a proper managed database, so you get backups, a
-                data browser, and one-click links.
+                "Promoting" it copies the data into a proper managed database, so you get backups, a data
+                browser, and one-click links.
               </p>
             </InfoHint>
           </span>
@@ -659,14 +665,14 @@ export function DatabasesPage() {
               <h3>Recognition</h3>
               <InfoHint title="How recognition works" side="right">
                 <p>
-                  For each app, ServerHoster looks at what kind of database the code seems to need,
-                  then checks what's actually connected — and tells you if the two don't line up.
+                  For each app, ServerHoster looks at what kind of database the code seems to need, then
+                  checks what's actually connected — and tells you if the two don't line up.
                 </p>
                 <p>
-                  <strong>Satisfied</strong> — all good. <strong>Missing</strong> — the app needs a
-                  database but none is connected. <strong>Partial</strong> — connected, but something's
-                  unfinished. <strong>Conflict</strong> — two settings disagree (for example, a manual
-                  setting is overriding the database you linked).
+                  <strong>Satisfied</strong> — all good. <strong>Missing</strong> — the app needs a database
+                  but none is connected. <strong>Partial</strong> — connected, but something's unfinished.{" "}
+                  <strong>Conflict</strong> — two settings disagree (for example, a manual setting is
+                  overriding the database you linked).
                 </p>
               </InfoHint>
               <span className={`chip xsmall ${recognitionNeedsAttention.length ? "warn-chip" : ""}`}>
@@ -761,12 +767,12 @@ export function DatabasesPage() {
               <InfoHint title="Apps without a managed database" side="right">
                 <p>These apps don't have a ServerHoster-managed database yet. Two kinds show up:</p>
                 <p>
-                  <strong>Built-in database file</strong> — a small database (SQLite) inside the app.
-                  Promote it to copy the data into a managed database with backups.
+                  <strong>Built-in database file</strong> — a small database (SQLite) inside the app. Promote
+                  it to copy the data into a managed database with backups.
                 </p>
                 <p>
-                  <strong>No database connected</strong> — connect a database the app already describes
-                  in its compose file, or create a fresh managed Postgres in one click.
+                  <strong>No database connected</strong> — connect a database the app already describes in its
+                  compose file, or create a fresh managed Postgres in one click.
                 </p>
               </InfoHint>
               <span className="chip xsmall warn-chip">{embedded.length + orphans.length} unmanaged</span>
@@ -791,12 +797,12 @@ export function DatabasesPage() {
                     </span>
                     <InfoHint title="Will the data survive?" side="left">
                       <p>
-                        <strong>Volume-backed</strong> — saved to permanent storage, so the data
-                        survives restarts and redeploys.
+                        <strong>Volume-backed</strong> — saved to permanent storage, so the data survives
+                        restarts and redeploys.
                       </p>
                       <p>
-                        <strong>Ephemeral</strong> — kept only inside the running app; it's wiped the
-                        moment the app's container is rebuilt.
+                        <strong>Ephemeral</strong> — kept only inside the running app; it's wiped the moment
+                        the app's container is rebuilt.
                       </p>
                     </InfoHint>
                   </span>
@@ -1097,8 +1103,8 @@ export function DatabasesPage() {
               </button>
               <InfoHint title="Transfer to hosted" side="left">
                 <p>
-                  Copies this database into an outside hosted database (like one in the cloud) — handy
-                  when you're ready to move your local data to production.
+                  Copies this database into an outside hosted database (like one in the cloud) — handy when
+                  you're ready to move your local data to production.
                 </p>
                 <p>The destination has to already exist and be empty (or willing to accept overwrites).</p>
               </InfoHint>
@@ -1142,9 +1148,9 @@ export function DatabasesPage() {
                   Connection
                   <InfoHint title="Connection string" side="bottom">
                     <p>
-                      The full address apps use to reach this database — the username, password, host,
-                      and database name all in one line. Linked apps receive it automatically, so you
-                      usually won't need it by hand.
+                      The full address apps use to reach this database — the username, password, host, and
+                      database name all in one line. Linked apps receive it automatically, so you usually
+                      won't need it by hand.
                     </p>
                     <p>Click to copy.</p>
                   </InfoHint>
@@ -1261,11 +1267,13 @@ export function DatabasesPage() {
                 Recent Backups
                 <InfoHint title="Backups & restore" side="right">
                   <p>
-                    A backup is a full snapshot of the database saved on this machine. Take one anytime
-                    with <em>Manual Backup</em> above, or <em>Download</em> to keep a copy somewhere
-                    else.
+                    A backup is a full snapshot of the database saved on this machine. Take one anytime with{" "}
+                    <em>Manual Backup</em> above, or <em>Download</em> to keep a copy somewhere else.
                   </p>
-                  <p>Restoring replaces everything in the database with the snapshot — the current data is overwritten.</p>
+                  <p>
+                    Restoring replaces everything in the database with the snapshot — the current data is
+                    overwritten.
+                  </p>
                 </InfoHint>
               </h4>
               <div className="list">
@@ -1307,12 +1315,12 @@ export function DatabasesPage() {
                 Service Linking
                 <InfoHint title="Linking an app to this database" side="right">
                   <p>
-                    Linking hands the app this database's address (<code>DATABASE_URL</code>) the next
-                    time it starts — no redeploy needed for normal apps.
+                    Linking hands the app this database's address (<code>DATABASE_URL</code>) the next time it
+                    starts — no redeploy needed for normal apps.
                   </p>
                   <p>
-                    If the app already sets its own <code>DATABASE_URL</code>, that one is kept and the
-                    link is skipped — which is why it then shows as a "conflict" under Recognition.
+                    If the app already sets its own <code>DATABASE_URL</code>, that one is kept and the link
+                    is skipped — which is why it then shows as a "conflict" under Recognition.
                   </p>
                 </InfoHint>
               </h4>
@@ -1350,10 +1358,12 @@ export function DatabasesPage() {
                 Seed SQL
                 <InfoHint title="Seed SQL" side="right">
                   <p>
-                    Runs the SQL below straight against this database — handy for creating tables or
-                    adding starter data. Load a <code>.sql</code> file or paste commands.
+                    Runs the SQL below straight against this database — handy for creating tables or adding
+                    starter data. Load a <code>.sql</code> file or paste commands.
                   </p>
-                  <p>There's no undo, so take a backup first if the database already holds data you care about.</p>
+                  <p>
+                    There's no undo, so take a backup first if the database already holds data you care about.
+                  </p>
                 </InfoHint>
               </h4>
               <SqlFileInput
