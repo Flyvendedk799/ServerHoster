@@ -68,7 +68,11 @@ function validPrice(p: unknown): p is Price {
   if (!p || typeof p !== "object") return false;
   const v = p as Record<string, unknown>;
   return ["input", "output", "cacheRead", "cacheWrite"].every(
-    (k) => typeof v[k] === "number" && Number.isFinite(v[k] as number) && (v[k] as number) >= 0 && (v[k] as number) < 10000
+    (k) =>
+      typeof v[k] === "number" &&
+      Number.isFinite(v[k] as number) &&
+      (v[k] as number) >= 0 &&
+      (v[k] as number) < 10000
   );
 }
 
@@ -103,7 +107,12 @@ export function priceFor(ctx: AppContext, model: string): { price: Price; custom
 type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
 export function computeCostMicro(price: Price, t: Tokens): number {
-  return Math.round(t.input * price.input + t.output * price.output + t.cacheRead * price.cacheRead + t.cacheWrite * price.cacheWrite);
+  return Math.round(
+    t.input * price.input +
+      t.output * price.output +
+      t.cacheRead * price.cacheRead +
+      t.cacheWrite * price.cacheWrite
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -128,16 +137,26 @@ const USAGE_TOKEN_KEY = "SURVHUB_AI_USAGE_TOKEN";
 // Connecting an app (token + env injection)
 // ---------------------------------------------------------------------------
 
-export function setSecretSystemEnv(ctx: AppContext, serviceId: string, key: string, value: string, secret: boolean): void {
+export function setSecretSystemEnv(
+  ctx: AppContext,
+  serviceId: string,
+  key: string,
+  value: string,
+  secret: boolean
+): void {
   const stored = secret ? encryptSecret(value, ctx.config.secretKey) : value;
   const existing = ctx.db
     .prepare("SELECT id FROM env_vars WHERE service_id = ? AND key = ? AND COALESCE(system, 0) = 1")
     .get(serviceId, key) as { id?: string } | undefined;
   if (existing?.id) {
-    ctx.db.prepare("UPDATE env_vars SET value = ?, is_secret = ? WHERE id = ?").run(stored, secret ? 1 : 0, existing.id);
+    ctx.db
+      .prepare("UPDATE env_vars SET value = ?, is_secret = ? WHERE id = ?")
+      .run(stored, secret ? 1 : 0, existing.id);
   } else {
     ctx.db
-      .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 1)")
+      .prepare(
+        "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, ?, 1)"
+      )
       .run(nanoid(), serviceId, key, stored, secret ? 1 : 0);
   }
 }
@@ -148,7 +167,10 @@ function reportUrlFor(ctx: AppContext, serviceType: string | undefined): string 
 }
 
 /** Mint (or rotate) the service's token and inject it into the app's env. */
-export function connectService(ctx: AppContext, serviceId: string): { token_prefix: string; restart_required: true } {
+export function connectService(
+  ctx: AppContext,
+  serviceId: string
+): { token_prefix: string; restart_required: true } {
   const service = ctx.db.prepare("SELECT id, type FROM services WHERE id = ?").get(serviceId) as
     | { id: string; type?: string }
     | undefined;
@@ -180,7 +202,9 @@ export function serviceForToken(ctx: AppContext, token: string): { service_id: s
   if (!row) return null;
   // Touch at most once a minute: reporting is hot and this is only for display.
   if (!row.last_used_at || Date.now() - Date.parse(row.last_used_at) > 60_000) {
-    ctx.db.prepare("UPDATE ai_usage_tokens SET last_used_at = ? WHERE service_id = ?").run(nowIso(), row.service_id);
+    ctx.db
+      .prepare("UPDATE ai_usage_tokens SET last_used_at = ? WHERE service_id = ?")
+      .run(nowIso(), row.service_id);
   }
   return { service_id: row.service_id };
 }
@@ -208,8 +232,14 @@ export type UsageReport = {
 let lastPrune = 0;
 const RETENTION_DAYS = 400;
 
-export function recordUsage(ctx: AppContext, serviceId: string, report: UsageReport): { recorded: boolean; cost_micro_usd: number | null } {
-  const service = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as { name: string } | undefined;
+export function recordUsage(
+  ctx: AppContext,
+  serviceId: string,
+  report: UsageReport
+): { recorded: boolean; cost_micro_usd: number | null } {
+  const service = ctx.db.prepare("SELECT name FROM services WHERE id = ?").get(serviceId) as
+    | { name: string }
+    | undefined;
   if (!service) throw badRequest("Service not found", 404);
 
   const tokens: Tokens = {
@@ -299,7 +329,8 @@ export function getBudgets(ctx: AppContext): Budgets {
 
 export function setBudgets(ctx: AppContext, budgets: Budgets): void {
   const check = (v: number | null, label: string) => {
-    if (v !== null && (!Number.isFinite(v) || v <= 0 || v > 1_000_000)) throw badRequest(`${label} must be a positive amount`);
+    if (v !== null && (!Number.isFinite(v) || v <= 0 || v > 1_000_000))
+      throw badRequest(`${label} must be a positive amount`);
   };
   check(budgets.global_daily_usd, "Global daily budget");
   for (const [id, b] of Object.entries(budgets.per_service)) {
@@ -319,9 +350,13 @@ function startOfUtcMonth(d = new Date()): string {
 function spendSince(ctx: AppContext, since: string, serviceId?: string): number {
   const row = serviceId
     ? (ctx.db
-        .prepare("SELECT COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? AND service_id = ?")
+        .prepare(
+          "SELECT COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? AND service_id = ?"
+        )
         .get(since, serviceId) as { s: number })
-    : (ctx.db.prepare("SELECT COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ?").get(since) as {
+    : (ctx.db
+        .prepare("SELECT COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ?")
+        .get(since) as {
         s: number;
       });
   return Number(row.s);
@@ -342,11 +377,41 @@ function checkBudgets(ctx: AppContext, serviceId: string, appName: string): void
     const budgets = getBudgets(ctx);
     const today = startOfUtcDay();
     const month = startOfUtcMonth();
-    const checks: Array<{ key: string; period: string; label: string; spent: number; limit: number; serviceId?: string }> = [];
+    const checks: Array<{
+      key: string;
+      period: string;
+      label: string;
+      spent: number;
+      limit: number;
+      serviceId?: string;
+    }> = [];
     const per = budgets.per_service[serviceId];
-    if (per?.daily_usd) checks.push({ key: `svc:${serviceId}:daily`, period: today.slice(0, 10), label: `${appName} daily`, spent: spendSince(ctx, today, serviceId), limit: per.daily_usd * 1e6, serviceId });
-    if (per?.monthly_usd) checks.push({ key: `svc:${serviceId}:monthly`, period: month.slice(0, 7), label: `${appName} monthly`, spent: spendSince(ctx, month, serviceId), limit: per.monthly_usd * 1e6, serviceId });
-    if (budgets.global_daily_usd) checks.push({ key: "global:daily", period: today.slice(0, 10), label: "All apps daily", spent: spendSince(ctx, today), limit: budgets.global_daily_usd * 1e6 });
+    if (per?.daily_usd)
+      checks.push({
+        key: `svc:${serviceId}:daily`,
+        period: today.slice(0, 10),
+        label: `${appName} daily`,
+        spent: spendSince(ctx, today, serviceId),
+        limit: per.daily_usd * 1e6,
+        serviceId
+      });
+    if (per?.monthly_usd)
+      checks.push({
+        key: `svc:${serviceId}:monthly`,
+        period: month.slice(0, 7),
+        label: `${appName} monthly`,
+        spent: spendSince(ctx, month, serviceId),
+        limit: per.monthly_usd * 1e6,
+        serviceId
+      });
+    if (budgets.global_daily_usd)
+      checks.push({
+        key: "global:daily",
+        period: today.slice(0, 10),
+        label: "All apps daily",
+        spent: spendSince(ctx, today),
+        limit: budgets.global_daily_usd * 1e6
+      });
     for (const c of checks) {
       for (const level of [100, 80]) {
         if (c.spent >= (c.limit * level) / 100) {
@@ -456,7 +521,9 @@ export function usageSummary(ctx: AppContext, range: RangeKey, serviceId?: strin
 
   const durations = (
     ctx.db
-      .prepare(`SELECT duration_ms FROM ai_usage_events WHERE ${where} AND status = 'ok' AND duration_ms > 0 ORDER BY duration_ms ASC LIMIT 100000`)
+      .prepare(
+        `SELECT duration_ms FROM ai_usage_events WHERE ${where} AND status = 'ok' AND duration_ms > 0 ORDER BY duration_ms ASC LIMIT 100000`
+      )
       .all(...args) as Array<{ duration_ms: number }>
   ).map((r) => r.duration_ms);
 
@@ -506,14 +573,22 @@ export function usageSummary(ctx: AppContext, range: RangeKey, serviceId?: strin
       today_micro_usd: spendSince(ctx, today),
       month_micro_usd: spendSince(ctx, month),
       per_service_today: Object.fromEntries(
-        (ctx.db
-          .prepare("SELECT service_id, COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? GROUP BY service_id")
-          .all(today) as Array<{ service_id: string; s: number }>).map((r) => [r.service_id, Number(r.s)])
+        (
+          ctx.db
+            .prepare(
+              "SELECT service_id, COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? GROUP BY service_id"
+            )
+            .all(today) as Array<{ service_id: string; s: number }>
+        ).map((r) => [r.service_id, Number(r.s)])
       ),
       per_service_month: Object.fromEntries(
-        (ctx.db
-          .prepare("SELECT service_id, COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? GROUP BY service_id")
-          .all(month) as Array<{ service_id: string; s: number }>).map((r) => [r.service_id, Number(r.s)])
+        (
+          ctx.db
+            .prepare(
+              "SELECT service_id, COALESCE(SUM(cost_micro_usd), 0) AS s FROM ai_usage_events WHERE created_at >= ? GROUP BY service_id"
+            )
+            .all(month) as Array<{ service_id: string; s: number }>
+        ).map((r) => [r.service_id, Number(r.s)])
       )
     },
     budgets: getBudgets(ctx)
@@ -523,7 +598,9 @@ export function usageSummary(ctx: AppContext, range: RangeKey, serviceId?: strin
 export function recentEvents(ctx: AppContext, limit: number, serviceId?: string) {
   const n = Math.min(Math.max(Math.floor(limit) || 50, 1), 200);
   return serviceId
-    ? ctx.db.prepare("SELECT * FROM ai_usage_events WHERE service_id = ? ORDER BY created_at DESC LIMIT ?").all(serviceId, n)
+    ? ctx.db
+        .prepare("SELECT * FROM ai_usage_events WHERE service_id = ? ORDER BY created_at DESC LIMIT ?")
+        .all(serviceId, n)
     : ctx.db.prepare("SELECT * FROM ai_usage_events ORDER BY created_at DESC LIMIT ?").all(n);
 }
 

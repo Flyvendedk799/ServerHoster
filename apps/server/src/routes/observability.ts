@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { AppContext } from "../types.js";
-import { getLatestMetrics, getServiceSparkline, snapshotDeployKpis, getHostMemoryBreakdown } from "../services/metrics.js";
+import {
+  getLatestMetrics,
+  getServiceSparkline,
+  snapshotDeployKpis,
+  getHostMemoryBreakdown
+} from "../services/metrics.js";
 import { listNotifications, markAllRead, markRead, unreadCount } from "../services/notifications.js";
 import { collectSystemHealth } from "../services/health.js";
 import { setSetting } from "../services/settings.js";
@@ -58,7 +63,8 @@ export function registerObservabilityRoutes(ctx: AppContext): void {
   // client suppress the banner for users who run no containers.
   ctx.app.get("/health/docker", async () => {
     const hasDockerServices =
-      (ctx.db.prepare("SELECT COUNT(*) AS n FROM services WHERE type = 'docker'").get() as { n: number }).n > 0;
+      (ctx.db.prepare("SELECT COUNT(*) AS n FROM services WHERE type = 'docker'").get() as { n: number }).n >
+      0;
     try {
       await Promise.race([
         ctx.docker.ping(),

@@ -87,9 +87,7 @@ describe("consumer tokens", () => {
   test("only a hash is persisted — the plaintext token is never stored", () => {
     const { token } = mintConsumerToken(ctx, "mymetaview-prod");
 
-    const rows = ctx.db.prepare("SELECT * FROM ai_gateway_tokens").all() as Array<
-      Record<string, unknown>
-    >;
+    const rows = ctx.db.prepare("SELECT * FROM ai_gateway_tokens").all() as Array<Record<string, unknown>>;
     assert.equal(rows.length, 1);
     const serialised = JSON.stringify(rows);
     assert.ok(!serialised.includes(token), "plaintext token found in the tokens table");
@@ -254,9 +252,7 @@ describe("provider credentials", () => {
 
     clearProviderKey(ctx, "openai");
     assert.deepEqual(listAvailableProviders(ctx), []);
-    const row = ctx.db
-      .prepare("SELECT value FROM settings WHERE key = 'ai_gateway_key_openai'")
-      .get();
+    const row = ctx.db.prepare("SELECT value FROM settings WHERE key = 'ai_gateway_key_openai'").get();
     assert.equal(row, undefined);
   });
 
@@ -404,9 +400,7 @@ describe("gateway config", () => {
   });
 
   test("a corrupted config blob falls back to defaults instead of throwing", () => {
-    ctx.db
-      .prepare("INSERT INTO settings (key, value) VALUES ('ai_gateway_config', '{not json')")
-      .run();
+    ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ai_gateway_config', '{not json')").run();
     assert.equal(getGatewayConfig(ctx).enabled, false);
   });
 

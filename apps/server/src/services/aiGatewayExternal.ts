@@ -48,12 +48,7 @@ export function isExternalMode(ctx: AppContext): boolean {
   return getExternalTarget(ctx) !== null;
 }
 
-export function setExternalTarget(
-  ctx: AppContext,
-  url: string,
-  adminToken: string,
-  actor = "system"
-): void {
+export function setExternalTarget(ctx: AppContext, url: string, adminToken: string, actor = "system"): void {
   const cleanUrl = url.trim().replace(/\/+$/, "");
   if (!/^https?:\/\//.test(cleanUrl)) {
     throw new GatewayError("invalid_request", "External gateway URL must start with http:// or https://.");

@@ -123,9 +123,7 @@ export type MigrationDbClient = {
   end(): Promise<void> | void;
 };
 
-export type MigrationDbClientFactory = (
-  dbUrl: string
-) => Promise<MigrationDbClient> | MigrationDbClient;
+export type MigrationDbClientFactory = (dbUrl: string) => Promise<MigrationDbClient> | MigrationDbClient;
 
 /** Default factory: `pg` Client against the local stack's db_url. */
 const defaultDbClientFactory: MigrationDbClientFactory = async (dbUrl) => {
@@ -154,8 +152,7 @@ export type MigrationCliRunner = (
   options: { local?: boolean; includeAll?: boolean }
 ) => Promise<string>;
 
-const defaultCliRunner: MigrationCliRunner = (workdir, options) =>
-  supabaseMigrationApply(workdir, options);
+const defaultCliRunner: MigrationCliRunner = (workdir, options) => supabaseMigrationApply(workdir, options);
 
 let activeCliRunner: MigrationCliRunner = defaultCliRunner;
 
@@ -194,9 +191,7 @@ const HISTORY_EXISTS_SQL =
 const LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('survhub:supabase-migrations')) AS locked";
 const UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('survhub:supabase-migrations'))";
 
-async function readHistory(
-  client: MigrationDbClient
-): Promise<{ present: boolean; versions: string[] }> {
+async function readHistory(client: MigrationDbClient): Promise<{ present: boolean; versions: string[] }> {
   const existence = await client.query(HISTORY_EXISTS_SQL);
   if (existence.rows[0]?.present !== true) return { present: false, versions: [] };
   const result = await client.query(APPLIED_SQL);
@@ -208,9 +203,7 @@ async function readHistory(
  * there is nothing trustworthy to read — no local db_url, no history table, or
  * the stack is down — so callers render "unknown" instead of "nothing applied".
  */
-export async function readStackAppliedVersions(
-  config: Record<string, unknown>
-): Promise<string[] | null> {
+export async function readStackAppliedVersions(config: Record<string, unknown>): Promise<string[] | null> {
   const dbUrl = typeof config.db_url === "string" ? config.db_url : "";
   if (!dbUrl || !isLocalDbUrl(dbUrl)) return null;
   let client: MigrationDbClient;
@@ -314,7 +307,14 @@ export async function applyPendingSupabaseMigrations(
   if (!target) {
     if (candidates.length > 1) {
       // Two started stacks: skip and name them rather than migrate the wrong one.
-      return { ...EMPTY, ...duplicates, resourceId: null, name: "", skipped: "ambiguous-resources", candidates };
+      return {
+        ...EMPTY,
+        ...duplicates,
+        resourceId: null,
+        name: "",
+        skipped: "ambiguous-resources",
+        candidates
+      };
     }
     return {
       ...EMPTY,

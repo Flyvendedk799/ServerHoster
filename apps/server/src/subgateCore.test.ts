@@ -24,14 +24,8 @@ import { formatSSE, formatSSEJson, parseSSE } from "./subgate/sse.js";
 import { buildHeaders, redactHeaders } from "./subgate/upstream/http.js";
 import { anthropicStream } from "./subgate/upstream/anthropic.js";
 import { openaiStream } from "./subgate/upstream/openai.js";
-import {
-  anthropicRequestToOpenAI,
-  openaiRequestToAnthropic
-} from "./subgate/translate/request.js";
-import {
-  anthropicResponseToOpenAI,
-  openaiResponseToAnthropic
-} from "./subgate/translate/response.js";
+import { anthropicRequestToOpenAI, openaiRequestToAnthropic } from "./subgate/translate/request.js";
+import { anthropicResponseToOpenAI, openaiResponseToAnthropic } from "./subgate/translate/response.js";
 import {
   anthropicStreamToOpenAI,
   createUsageSink,
@@ -176,9 +170,7 @@ describe("never-leak", () => {
   });
 
   test("a full failing request produces no credential in any surface", async () => {
-    stubFetch(() =>
-      jsonResponse({ error: { message: `auth failed for ${FAKE_ANTHROPIC_KEY}` } }, 401)
-    );
+    stubFetch(() => jsonResponse({ error: { message: `auth failed for ${FAKE_ANTHROPIC_KEY}` } }, 401));
     await assert.rejects(
       () => chatCompletion({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] }, deps),
       (err: unknown) => {
@@ -219,9 +211,12 @@ describe("provider routing", () => {
   test("missing credentials surface as 503, not 500", async () => {
     await assert.rejects(
       () =>
-        chatCompletion({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] }, {
-          credentialsFor: () => null
-        }),
+        chatCompletion(
+          { model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] },
+          {
+            credentialsFor: () => null
+          }
+        ),
       (err: unknown) => {
         assert.ok(err instanceof GatewayError);
         assert.equal(err.code, "no_provider_configured");
@@ -260,7 +255,13 @@ describe("provider routing", () => {
 /* ------------------------------------------------------------------------ */
 
 describe("translation: OpenAI -> Anthropic", () => {
-  const resolved = { provider: "anthropic" as const, upstreamId: "claude-sonnet-5", requestedId: "sonnet", maxOutputTokens: 64000, inferred: false };
+  const resolved = {
+    provider: "anthropic" as const,
+    upstreamId: "claude-sonnet-5",
+    requestedId: "sonnet",
+    maxOutputTokens: 64000,
+    inferred: false
+  };
 
   test("system messages are lifted out of the turn list and concatenated", () => {
     const out = openaiRequestToAnthropic(
@@ -289,7 +290,11 @@ describe("translation: OpenAI -> Anthropic", () => {
             role: "assistant",
             content: null,
             tool_calls: [
-              { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Oslo"}' } }
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"city":"Oslo"}' }
+              }
             ]
           },
           { role: "tool", tool_call_id: "call_1", content: "12C" },
@@ -403,7 +408,13 @@ describe("translation: OpenAI -> Anthropic", () => {
 });
 
 describe("translation: Anthropic -> OpenAI", () => {
-  const resolved = { provider: "openai" as const, upstreamId: "gpt-4o", requestedId: "gpt-4o", maxOutputTokens: 16384, inferred: false };
+  const resolved = {
+    provider: "openai" as const,
+    upstreamId: "gpt-4o",
+    requestedId: "gpt-4o",
+    maxOutputTokens: 16384,
+    inferred: false
+  };
 
   test("system becomes a leading system message and tool_result becomes a tool message", () => {
     const request: AnthropicRequest = {
@@ -462,7 +473,11 @@ describe("translation: round-trip", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":"Oslo"}' } }
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"Oslo"}' }
+            }
           ]
         },
         { role: "tool", tool_call_id: "call_1", content: "12C" },
@@ -531,9 +546,7 @@ describe("translation: round-trip", () => {
         object: "chat.completion",
         created: 0,
         model: "gpt-4o",
-        choices: [
-          { index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "length" }
-        ],
+        choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "length" }],
         usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }
       },
       "gpt-4o"
@@ -551,7 +564,7 @@ describe("translation: round-trip", () => {
 describe("SSE parsing", () => {
   test("an event split across chunk boundaries is reassembled", async () => {
     // The regression this guards: naive per-chunk splitting silently truncates.
-    const stream = streamOf(['data: {"a"', ':1}\n', "\n", 'data: {"b":2}\n\n']);
+    const stream = streamOf(['data: {"a"', ":1}\n", "\n", 'data: {"b":2}\n\n']);
     const messages = await collect(parseSSE(stream));
     assert.deepEqual(
       messages.map((message) => message.data),
@@ -573,7 +586,10 @@ describe("SSE parsing", () => {
   test("a final event with no terminating blank line is still emitted", async () => {
     const stream = streamOf(['data: {"last":true}']);
     const messages = await collect(parseSSE(stream));
-    assert.deepEqual(messages.map((m) => m.data), ['{"last":true}']);
+    assert.deepEqual(
+      messages.map((m) => m.data),
+      ['{"last":true}']
+    );
   });
 
   test("formatted frames always carry the blank-line terminator", () => {
@@ -606,14 +622,26 @@ describe("stream translation", () => {
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
       { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Let me check." } },
       { type: "content_block_stop", index: 0 },
-      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "a", input: {} } },
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "toolu_1", name: "a", input: {} }
+      },
       { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"x":' } },
       { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "1}" } },
       { type: "content_block_stop", index: 1 },
-      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_2", name: "b", input: {} } },
+      {
+        type: "content_block_start",
+        index: 2,
+        content_block: { type: "tool_use", id: "toolu_2", name: "b", input: {} }
+      },
       { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: "{}" } },
       { type: "content_block_stop", index: 2 },
-      { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 11 } },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { output_tokens: 11 }
+      },
       { type: "message_stop" }
     ];
 
@@ -641,7 +669,10 @@ describe("stream translation", () => {
 
     assert.equal(chunks[0].choices[0].delta.role, "assistant");
     assert.equal(chunks[chunks.length - 1].choices[0].finish_reason, "tool_calls");
-    assert.equal(chunks.every((chunk) => chunk.model === "sonnet"), true);
+    assert.equal(
+      chunks.every((chunk) => chunk.model === "sonnet"),
+      true
+    );
     assert.deepEqual(sink.usage, { prompt_tokens: 7, completion_tokens: 11, total_tokens: 18 });
     assert.equal(sink.completed, true);
   });
@@ -650,7 +681,11 @@ describe("stream translation", () => {
     const chunks = await collect(
       anthropicStreamToOpenAI(
         (async function* () {
-          yield { type: "content_block_delta", index: 9, delta: { type: "input_json_delta", partial_json: "{}" } } as AnthropicStreamEvent;
+          yield {
+            type: "content_block_delta",
+            index: 9,
+            delta: { type: "input_json_delta", partial_json: "{}" }
+          } as AnthropicStreamEvent;
         })(),
         { requestedModel: "sonnet" }
       )
@@ -660,9 +695,38 @@ describe("stream translation", () => {
 
   test("OpenAI -> Anthropic keeps content blocks strictly nested", async () => {
     const chunks: OpenAIChatChunk[] = [
-      { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "gpt-4o", choices: [{ index: 0, delta: { role: "assistant", content: "Think" }, finish_reason: null }] },
-      { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "gpt-4o", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "f", arguments: "{}" } }] }, finish_reason: null }] },
-      { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "gpt-4o", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }
+      {
+        id: "chatcmpl-1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "gpt-4o",
+        choices: [{ index: 0, delta: { role: "assistant", content: "Think" }, finish_reason: null }]
+      },
+      {
+        id: "chatcmpl-1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "gpt-4o",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, id: "call_1", type: "function", function: { name: "f", arguments: "{}" } }
+              ]
+            },
+            finish_reason: null
+          }
+        ]
+      },
+      {
+        id: "chatcmpl-1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "gpt-4o",
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 }
+      }
     ];
 
     const events = await collect(
@@ -718,11 +782,14 @@ describe("streaming upstream behaviour", () => {
       ])
     );
 
-    const events = anthropicStream({ provider: "anthropic", apiKey: FAKE_ANTHROPIC_KEY }, {
-      model: "claude-sonnet-5",
-      max_tokens: 10,
-      messages: [{ role: "user", content: "hi" }]
-    });
+    const events = anthropicStream(
+      { provider: "anthropic", apiKey: FAKE_ANTHROPIC_KEY },
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 10,
+        messages: [{ role: "user", content: "hi" }]
+      }
+    );
 
     await assert.rejects(
       async () => {
@@ -748,10 +815,13 @@ describe("streaming upstream behaviour", () => {
 
     await assert.rejects(
       async () => {
-        for await (const _chunk of openaiStream({ provider: "openai", apiKey: FAKE_OPENAI_KEY }, {
-          model: "gpt-4o",
-          messages: [{ role: "user", content: "hi" }]
-        })) {
+        for await (const _chunk of openaiStream(
+          { provider: "openai", apiKey: FAKE_OPENAI_KEY },
+          {
+            model: "gpt-4o",
+            messages: [{ role: "user", content: "hi" }]
+          }
+        )) {
           /* drain */
         }
       },
@@ -768,10 +838,13 @@ describe("streaming upstream behaviour", () => {
       ])
     );
     const chunks = await collect(
-      openaiStream({ provider: "openai", apiKey: FAKE_OPENAI_KEY }, {
-        model: "gpt-4o",
-        messages: [{ role: "user", content: "hi" }]
-      })
+      openaiStream(
+        { provider: "openai", apiKey: FAKE_OPENAI_KEY },
+        {
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "hi" }]
+        }
+      )
     );
     assert.equal(chunks.length, 1);
     assert.equal(chunks[0].id, "chatcmpl-1");
@@ -786,10 +859,13 @@ describe("streaming upstream behaviour", () => {
       ])
     );
     const chunks = await collect(
-      openaiStream({ provider: "openai", apiKey: FAKE_OPENAI_KEY }, {
-        model: "gpt-4o",
-        messages: [{ role: "user", content: "hi" }]
-      })
+      openaiStream(
+        { provider: "openai", apiKey: FAKE_OPENAI_KEY },
+        {
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "hi" }]
+        }
+      )
     );
     assert.equal(chunks.length, 2);
   });
@@ -803,7 +879,9 @@ describe("streaming upstream behaviour", () => {
             start(streamController) {
               const encoder = new TextEncoder();
               streamController.enqueue(
-                encoder.encode('data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"a"}}]}\n\n')
+                encoder.encode(
+                  'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"a"}}]}\n\n'
+                )
               );
               // Never closes — only the abort can end this.
             }
@@ -922,7 +1000,13 @@ describe("gateway end-to-end", () => {
     );
 
     const { response, meta } = await chatCompletion(
-      { model: "sonnet", messages: [{ role: "system", content: "Be nice." }, { role: "user", content: "hi" }] },
+      {
+        model: "sonnet",
+        messages: [
+          { role: "system", content: "Be nice." },
+          { role: "user", content: "hi" }
+        ]
+      },
       deps
     );
 

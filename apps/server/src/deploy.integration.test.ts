@@ -740,7 +740,13 @@ test("scan-local-project surfaces serverhoster manifest services", async () => {
     assert.equal(res.statusCode, 200);
     const body = res.json() as {
       buildType: string;
-      candidates: Array<{ label: string; command: string; workingDir?: string; port?: number; env?: Record<string, string> }>;
+      candidates: Array<{
+        label: string;
+        command: string;
+        workingDir?: string;
+        port?: number;
+        env?: Record<string, string>;
+      }>;
     };
     assert.equal(body.buildType, "manifest");
     assert.ok(

@@ -46,9 +46,13 @@ function addService(id: string, envFrom: string | null = null): void {
 }
 
 function addEnv(serviceId: string, key: string, value: string, secret = 0): void {
-  db.prepare(
-    "INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)"
-  ).run(`${serviceId}:${key}`, serviceId, key, secret ? encryptSecret(value, SECRET) : value, secret);
+  db.prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)").run(
+    `${serviceId}:${key}`,
+    serviceId,
+    key,
+    secret ? encryptSecret(value, SECRET) : value,
+    secret
+  );
 }
 
 beforeEach(() => {
@@ -81,7 +85,9 @@ describe("getInheritedServiceEnv", () => {
     assert.equal(getInheritedServiceEnv(ctx, "worker").OPENAI_API_KEY, "sgk_old");
 
     // Rotate the secret on the primary — the companion should see the new value.
-    db.prepare("UPDATE env_vars SET value = 'sgk_new' WHERE service_id = 'backend' AND key = 'OPENAI_API_KEY'").run();
+    db.prepare(
+      "UPDATE env_vars SET value = 'sgk_new' WHERE service_id = 'backend' AND key = 'OPENAI_API_KEY'"
+    ).run();
     assert.equal(
       getInheritedServiceEnv(ctx, "worker").OPENAI_API_KEY,
       "sgk_new",

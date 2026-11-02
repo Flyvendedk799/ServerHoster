@@ -5446,10 +5446,18 @@ a.list-row:hover .row-chevron,
   letter-spacing: 0.04em;
   border: 1px solid currentColor;
 }
-.domains-page .dom-status-pending { color: var(--warning, #d97706); }
-.domains-page .dom-status-progress { color: var(--accent); }
-.domains-page .dom-status-active { color: var(--success); }
-.domains-page .dom-status-failed { color: var(--danger); }
+.domains-page .dom-status-pending {
+  color: var(--warning, #d97706);
+}
+.domains-page .dom-status-progress {
+  color: var(--accent);
+}
+.domains-page .dom-status-active {
+  color: var(--success);
+}
+.domains-page .dom-status-failed {
+  color: var(--danger);
+}
 .domains-page .dom-mode {
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -5503,15 +5511,36 @@ a.list-row:hover .row-chevron,
   animation: dom-spin 0.9s linear infinite;
 }
 @keyframes dom-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
-.domains-page .text-danger { color: var(--danger) !important; }
-.domains-page .font-bold { font-weight: 700; }
-.domains-page .uppercase { text-transform: uppercase; letter-spacing: 0.05em; }
-.domains-page .tiny { font-size: 0.7rem; }
-.domains-page .with-icon { padding-left: 2.5rem !important; }
-.domains-page .pr-overlap { position: relative; }
-.domains-page .icon-overlay { position: absolute; left: 0.75rem; top: 12px; pointer-events: none; z-index: 1; }
+.domains-page .text-danger {
+  color: var(--danger) !important;
+}
+.domains-page .font-bold {
+  font-weight: 700;
+}
+.domains-page .uppercase {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.domains-page .tiny {
+  font-size: 0.7rem;
+}
+.domains-page .with-icon {
+  padding-left: 2.5rem !important;
+}
+.domains-page .pr-overlap {
+  position: relative;
+}
+.domains-page .icon-overlay {
+  position: absolute;
+  left: 0.75rem;
+  top: 12px;
+  pointer-events: none;
+  z-index: 1;
+}
 
 /* Persistent-uploads row in the service detail: lists upload dirs symlinked into
    the data volume (survive redeploys). Inline, low-emphasis, with an Edit action. */
@@ -5875,7 +5904,6 @@ a.list-row:hover .row-chevron,
   border-bottom: none;
 }
 
-
 /* ---- AI Usage page ------------------------------------------------------ */
 .ai-usage-page {
   display: flex;
@@ -6034,7 +6062,6 @@ a.list-row:hover .row-chevron,
     overflow-x: auto;
   }
 }
-
 
 /* ---- Stripe page -------------------------------------------------------- */
 .sr-only {

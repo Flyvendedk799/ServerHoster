@@ -92,7 +92,10 @@ describe("n8n env", () => {
     assert.throws(() => validateN8nConfig({ imageTag: "latest; rm -rf" }), /Image tag/);
     assert.throws(() => validateN8nConfig({ extraEnv: { N8N_ENCRYPTION_KEY: "x" } }), /managed/);
     assert.throws(() => validateN8nConfig({ pruneMaxAgeHours: 0 }), /Prune age/);
-    assert.deepEqual(validateN8nConfig({ imageTag: " ", timezone: "UTC" }), { imageTag: "latest", timezone: "UTC" });
+    assert.deepEqual(validateN8nConfig({ imageTag: " ", timezone: "UTC" }), {
+      imageTag: "latest",
+      timezone: "UTC"
+    });
     assert.equal(getN8nConfig(ctx).imageTag, "latest");
   });
 });

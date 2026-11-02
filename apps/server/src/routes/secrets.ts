@@ -33,13 +33,19 @@ type EnvSecretRow = {
 
 const serviceSecretSchema = z.object({
   serviceId: z.string().min(1),
-  key: z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use an environment variable name"),
+  key: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use an environment variable name"),
   value: z.string().min(1)
 });
 
 const sharedSecretSchema = z.object({
   projectId: z.string().min(1),
-  key: z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use an environment variable name"),
+  key: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Use an environment variable name"),
   value: z.string().min(1)
 });
 
@@ -147,7 +153,7 @@ function sharedSecretItem(ctx: AppContext, row: EnvSecretRow, linkedServices?: S
     project_name: row.project_name ?? null,
     service_id: null,
     service_name: null,
-  linked_services: services.map(serviceLink),
+    linked_services: services.map(serviceLink),
     system: false
   };
 }
@@ -280,7 +286,10 @@ function repoSecretId(serviceId: string, sourceFile: string, key: string, line: 
     .slice(0, 20)}`;
 }
 
-function scanRootForService(ctx: AppContext, service: { id: string; working_dir?: string | null }): string | null {
+function scanRootForService(
+  ctx: AppContext,
+  service: { id: string; working_dir?: string | null }
+): string | null {
   if (!service.working_dir) return null;
   const workingDir = path.resolve(service.working_dir);
   const cloneRoot = path.resolve(path.join(ctx.config.projectsDir, service.id));
@@ -451,7 +460,9 @@ export function registerSecretRoutes(ctx: AppContext): void {
       )
       .get(body.serviceId, body.key) as { id: string; system: number } | undefined;
     if (existing?.system) {
-      const err = new Error("This key is managed by ServerHoster. Add a different key or change the owning feature.");
+      const err = new Error(
+        "This key is managed by ServerHoster. Add a different key or change the owning feature."
+      );
       (err as Error & { statusCode?: number }).statusCode = 409;
       throw err;
     }
@@ -498,11 +509,15 @@ export function registerSecretRoutes(ctx: AppContext): void {
           continue;
         }
         if (existing) {
-          ctx.db.prepare("UPDATE env_vars SET value = ?, is_secret = 1 WHERE id = ?").run(stored, existing.id);
+          ctx.db
+            .prepare("UPDATE env_vars SET value = ?, is_secret = 1 WHERE id = ?")
+            .run(stored, existing.id);
           updated++;
         } else {
           ctx.db
-            .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, 1, 0)")
+            .prepare(
+              "INSERT INTO env_vars (id, service_id, key, value, is_secret, system) VALUES (?, ?, ?, ?, 1, 0)"
+            )
             .run(nanoid(), body.serviceId, key, stored);
           created++;
         }
@@ -616,7 +631,13 @@ export function registerSecretRoutes(ctx: AppContext): void {
     const updated = getServiceSecretById(ctx, id);
     const affected =
       updated.service_id && updated.service_name && updated.service_status
-        ? [serviceLink({ id: updated.service_id, name: updated.service_name, status: updated.service_status })]
+        ? [
+            serviceLink({
+              id: updated.service_id,
+              name: updated.service_name,
+              status: updated.service_status
+            })
+          ]
         : [];
     return {
       ok: true,
@@ -655,7 +676,8 @@ export function registerSecretRoutes(ctx: AppContext): void {
       secret: sharedSecretItem(ctx, updated, linked),
       affected_services: linked.map(serviceLink),
       redeploy_required: true,
-      message: "Shared secret encrypted at rest. Redeploy or restart linked services before the new value is live."
+      message:
+        "Shared secret encrypted at rest. Redeploy or restart linked services before the new value is live."
     };
   });
 }

@@ -69,7 +69,12 @@ function httpError(message: string, statusCode: number, code?: string): Error {
 const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 export function normalizeHostname(raw: string): string {
-  return raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/\.$/, "");
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.$/, "");
 }
 
 /** The tunnel UUID currently in use — login tunnel preferred, token tunnel fallback. */
@@ -257,9 +262,9 @@ export async function registerSaasDomain(
   const targetPort = explicitPort ?? service.port;
   if (!targetPort) throw httpError("Service has no port assigned", 422, "NO_PORT");
 
-  const existing = ctx.db.prepare("SELECT id, service_id FROM saas_domains WHERE hostname = ?").get(hostname) as
-    | { id: string; service_id: string }
-    | undefined;
+  const existing = ctx.db
+    .prepare("SELECT id, service_id FROM saas_domains WHERE hostname = ?")
+    .get(hostname) as { id: string; service_id: string } | undefined;
   if (existing && existing.service_id !== serviceId) {
     throw httpError(`${hostname} is already registered to another service`, 409, "DOMAIN_IN_USE");
   }
@@ -267,14 +272,20 @@ export async function registerSaasDomain(
     | { service_id: string }
     | undefined;
   if (proxyOwner) {
-    throw httpError(`${hostname} is already bound as an operator domain (Edge Ingress)`, 409, "DOMAIN_IN_USE");
+    throw httpError(
+      `${hostname} is already bound as an operator domain (Edge Ingress)`,
+      409,
+      "DOMAIN_IN_USE"
+    );
   }
 
   // Login-only mode: no API token/zone configured, but the browser-login
   // tunnel is connected. `cloudflared tunnel route dns` can bind any hostname
   // in a zone the login cert covers — exactly the own-zone case. Tenant
   // custom hostnames (foreign zones) still need Cloudflare for SaaS.
-  const apiCreds = Boolean(getSecretSetting(ctx, "cloudflare_api_token") && getSetting(ctx, "cloudflare_zone_id"));
+  const apiCreds = Boolean(
+    getSecretSetting(ctx, "cloudflare_api_token") && getSetting(ctx, "cloudflare_zone_id")
+  );
   if (!apiCreds) {
     if (!isCloudflareConnected(ctx)) {
       throw httpError(
@@ -533,7 +544,12 @@ export async function verifySaasDomain(
 
   const zoneId = getSetting(ctx, "cloudflare_zone_id");
   if (!zoneId || !row.cf_custom_hostname_id) {
-    return finish("failed", "failed", "Cloudflare custom hostname reference is missing — remove and re-add the domain.", "missing cf_custom_hostname_id");
+    return finish(
+      "failed",
+      "failed",
+      "Cloudflare custom hostname reference is missing — remove and re-add the domain.",
+      "missing cf_custom_hostname_id"
+    );
   }
 
   const pointing = await dohHasPointingRecord(row.hostname);
@@ -544,7 +560,9 @@ export async function verifySaasDomain(
   // Persist ownership TXT details if Cloudflare (re)issued them.
   if (ch.ownership_verification?.value && ch.ownership_verification.value !== row.verification_txt_value) {
     ctx.db
-      .prepare("UPDATE saas_domains SET verification_txt_name = ?, verification_txt_value = ?, updated_at = ? WHERE id = ?")
+      .prepare(
+        "UPDATE saas_domains SET verification_txt_name = ?, verification_txt_value = ?, updated_at = ? WHERE id = ?"
+      )
       .run(ch.ownership_verification.name ?? null, ch.ownership_verification.value, now, domainId);
   }
 
@@ -561,7 +579,10 @@ export async function verifySaasDomain(
     );
   }
 
-  const sslErrors = (ch.ssl?.validation_errors ?? []).map((e) => e.message).filter(Boolean).join("; ");
+  const sslErrors = (ch.ssl?.validation_errors ?? [])
+    .map((e) => e.message)
+    .filter(Boolean)
+    .join("; ");
   if (sslStatus && !SSL_PENDING.has(sslStatus) && sslStatus !== "active") {
     return finish(
       "failed",
@@ -624,7 +645,10 @@ export async function deleteSaasDomain(ctx: AppContext, domainId: string): Promi
  * /saas. The hostname gets a proxied CNAME → tunnel and an ingress rule to the
  * API port.
  */
-export async function exposeApiHostname(ctx: AppContext, rawHostname: string): Promise<{ apiHostname: string }> {
+export async function exposeApiHostname(
+  ctx: AppContext,
+  rawHostname: string
+): Promise<{ apiHostname: string }> {
   const hostname = normalizeHostname(rawHostname);
   if (!HOSTNAME_RE.test(hostname)) {
     throw httpError(`"${rawHostname}" is not a valid hostname`, 400, "BAD_HOSTNAME");

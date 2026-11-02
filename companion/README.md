@@ -10,17 +10,17 @@ Today it is an installable web app (PWA) built for a phone screen. It is structu
 
 ## What it does
 
-|                   |                                                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| **Pair by QR**    | Scan the code on **Settings → Companion** in the dashboard. No account, no sign-up, no cloud.                      |
+|                   |                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pair by QR**    | Scan the code on **Settings → Companion** in the dashboard. No account, no sign-up, no cloud.                                               |
 | **Pair by code**  | Camera not cooperating? Type the 8-character code. Opened from the machine's own `/m`, that is all you type — it already knows the address. |
-| **Many machines** | Pair as many boxes as you like and switch between them from the header.                                            |
-| **Home**          | Health at a glance: what's running, what's broken, memory and load, recent deploys. Broken things sort to the top. |
-| **Services**      | Search and filter the whole fleet, grouped by project.                                                             |
-| **Control**       | Start · Stop · Restart · Redeploy, with live status straight off the machine's WebSocket.                          |
-| **Live logs**     | The same log stream the desktop dashboard shows, tail-following, with a follow toggle when you scroll up to read.  |
-| **Activity**      | Deploy history and alerts, with unread badges.                                                                     |
-| **Offline-aware** | Opens and explains itself with no signal instead of showing a browser error page.                                  |
+| **Many machines** | Pair as many boxes as you like and switch between them from the header.                                                                     |
+| **Home**          | Health at a glance: what's running, what's broken, memory and load, recent deploys. Broken things sort to the top.                          |
+| **Services**      | Search and filter the whole fleet, grouped by project.                                                                                      |
+| **Control**       | Start · Stop · Restart · Redeploy, with live status straight off the machine's WebSocket.                                                   |
+| **Live logs**     | The same log stream the desktop dashboard shows, tail-following, with a follow toggle when you scroll up to read.                           |
+| **Activity**      | Deploy history and alerts, with unread badges.                                                                                              |
+| **Offline-aware** | Opens and explains itself with no signal instead of showing a browser error page.                                                           |
 
 ### What it deliberately cannot do
 

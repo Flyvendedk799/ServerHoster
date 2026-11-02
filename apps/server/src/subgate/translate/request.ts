@@ -31,10 +31,7 @@ import type {
 /* OpenAI → Anthropic                                                         */
 /* ------------------------------------------------------------------------ */
 
-export function openaiRequestToAnthropic(
-  req: OpenAIChatRequest,
-  resolved: ResolvedModel
-): AnthropicRequest {
+export function openaiRequestToAnthropic(req: OpenAIChatRequest, resolved: ResolvedModel): AnthropicRequest {
   if (!Array.isArray(req.messages) || req.messages.length === 0) {
     throw new GatewayError("invalid_request", "`messages` must be a non-empty array.");
   }
@@ -75,10 +72,7 @@ export function openaiRequestToAnthropic(
       }
       case "tool": {
         if (!message.tool_call_id) {
-          throw new GatewayError(
-            "invalid_request",
-            "A `role: \"tool\"` message requires `tool_call_id`."
-          );
+          throw new GatewayError("invalid_request", 'A `role: "tool"` message requires `tool_call_id`.');
         }
         // Tool results ride in a user turn on the Anthropic wire.
         pushMerged(messages, {
@@ -141,7 +135,7 @@ export function openaiRequestToAnthropic(
 
 function openaiToolToAnthropic(tool: OpenAITool): AnthropicTool {
   if (tool.type !== "function" || !tool.function?.name) {
-    throw new GatewayError("invalid_request", "Only `type: \"function\"` tools are supported.");
+    throw new GatewayError("invalid_request", 'Only `type: "function"` tools are supported.');
   }
   return {
     name: tool.function.name,
@@ -166,9 +160,7 @@ function openaiToolChoiceToAnthropic(choice: OpenAIToolChoice | undefined): Anth
   return undefined;
 }
 
-function openaiContentToBlocks(
-  content: OpenAIMessage["content"]
-): AnthropicContentBlock[] {
+function openaiContentToBlocks(content: OpenAIMessage["content"]): AnthropicContentBlock[] {
   if (content == null) return [{ type: "text", text: "" }];
   if (typeof content === "string") return [{ type: "text", text: content }];
 
@@ -199,10 +191,7 @@ function imageUrlToAnthropicSource(url: string): AnthropicImageSource {
 /* Anthropic → OpenAI                                                         */
 /* ------------------------------------------------------------------------ */
 
-export function anthropicRequestToOpenAI(
-  req: AnthropicRequest,
-  resolved: ResolvedModel
-): OpenAIChatRequest {
+export function anthropicRequestToOpenAI(req: AnthropicRequest, resolved: ResolvedModel): OpenAIChatRequest {
   if (!Array.isArray(req.messages) || req.messages.length === 0) {
     throw new GatewayError("invalid_request", "`messages` must be a non-empty array.");
   }
@@ -260,9 +249,7 @@ export function anthropicRequestToOpenAI(
       const onlyText = userParts.every((part) => part.type === "text");
       messages.push({
         role: "user",
-        content: onlyText
-          ? userParts.map((part) => (part as { text: string }).text).join("")
-          : userParts
+        content: onlyText ? userParts.map((part) => (part as { text: string }).text).join("") : userParts
       });
     }
   }
@@ -322,9 +309,7 @@ function pushMerged(messages: AnthropicMessage[], next: AnthropicMessage): void 
   messages.push(next);
 }
 
-export function normalizeAnthropicContent(
-  content: AnthropicMessage["content"]
-): AnthropicContentBlock[] {
+export function normalizeAnthropicContent(content: AnthropicMessage["content"]): AnthropicContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content;
 }
@@ -344,9 +329,7 @@ export function flattenAnthropicSystem(system: AnthropicRequest["system"]): stri
   return system.map((block) => block.text).join("\n\n");
 }
 
-function flattenToolResultContent(
-  content: string | Array<{ type: "text"; text: string }>
-): string {
+function flattenToolResultContent(content: string | Array<{ type: "text"; text: string }>): string {
   if (typeof content === "string") return content;
   return content.map((block) => block.text).join("");
 }
@@ -367,10 +350,7 @@ function parseToolArguments(raw: string, toolName: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
-    throw new GatewayError(
-      "invalid_request",
-      `Tool call arguments for "${toolName}" are not valid JSON.`
-    );
+    throw new GatewayError("invalid_request", `Tool call arguments for "${toolName}" are not valid JSON.`);
   }
 }
 

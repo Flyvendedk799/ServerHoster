@@ -216,16 +216,16 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
           <h3>Stacks</h3>
           <InfoHint title="Local Supabase stacks" side="right">
             <p>
-              A full copy of Supabase running on your own machine — its database, user logins (auth),
-              file storage, and edge functions — built straight from the app's code.
+              A full copy of Supabase running on your own machine — its database, user logins (auth), file
+              storage, and edge functions — built straight from the app's code.
             </p>
             <p>
-              Your tables come from the app's migration files. None of your hosted/cloud Supabase data
-              is ever copied here.
+              Your tables come from the app's migration files. None of your hosted/cloud Supabase data is ever
+              copied here.
             </p>
             <p>
-              <strong>API</strong> is the address your app talks to. <strong>Studio</strong> is
-              Supabase's built-in web dashboard for browsing the data.
+              <strong>API</strong> is the address your app talks to. <strong>Studio</strong> is Supabase's
+              built-in web dashboard for browsing the data.
             </p>
           </InfoHint>
           <span className="chip xsmall">{resources.length} local Supabase</span>
@@ -405,12 +405,12 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
               </button>
               <InfoHint title="Bootstrap a first user" side="left">
                 <p>
-                  A brand-new local Supabase starts empty — no accounts at all. Bootstrapping creates
-                  your first login so you can actually sign in.
+                  A brand-new local Supabase starts empty — no accounts at all. Bootstrapping creates your
+                  first login so you can actually sign in.
                 </p>
                 <p>
-                  If the app supports it, you can also make that user a platform admin and set up a
-                  starting organization in the same step.
+                  If the app supports it, you can also make that user a platform admin and set up a starting
+                  organization in the same step.
                 </p>
               </InfoHint>
             </div>
@@ -445,13 +445,12 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
                 <span>Edge Functions</span>
                 <InfoHint title="Edge Functions" side="right">
                   <p>
-                    Small serverless functions that ship with the app (in its{" "}
-                    <code>supabase/functions</code> folder). ServerHoster runs them locally for you.
+                    Small serverless functions that ship with the app (in its <code>supabase/functions</code>{" "}
+                    folder). ServerHoster runs them locally for you.
                   </p>
                   <p>
-                    <strong>Serving</strong> — running fine. <strong>Degraded</strong> — running, but
-                    missing an optional setting so some features may not work. <strong>Off</strong> —
-                    not running.
+                    <strong>Serving</strong> — running fine. <strong>Degraded</strong> — running, but missing
+                    an optional setting so some features may not work. <strong>Off</strong> — not running.
                   </p>
                 </InfoHint>
               </div>
@@ -499,13 +498,13 @@ export function ResourceStacks({ services, reloadKey = 0 }: Props) {
                 <span>Function secrets</span>
                 <InfoHint title="Function secrets" side="right">
                   <p>
-                    Settings your functions need — usually API keys. ServerHoster fills in the Supabase
-                    ones for you; you provide any extras (like a third-party service's key).
+                    Settings your functions need — usually API keys. ServerHoster fills in the Supabase ones
+                    for you; you provide any extras (like a third-party service's key).
                   </p>
                   <p>
-                    <strong>Generated</strong> — created for you. <strong>Provided</strong> — you
-                    entered it. <strong>Required missing</strong> — a function won't work until you add
-                    it. <strong>Optional missing</strong> — only some features need it.{" "}
+                    <strong>Generated</strong> — created for you. <strong>Provided</strong> — you entered it.{" "}
+                    <strong>Required missing</strong> — a function won't work until you add it.{" "}
+                    <strong>Optional missing</strong> — only some features need it.{" "}
                     <strong>Disabled locally</strong> — you've chosen to skip it for local use.
                   </p>
                 </InfoHint>

@@ -229,7 +229,9 @@ export function ServiceSecretModal({ service, initialKey = "", onClose, onSaved 
                     className="bulk-env-input"
                     value={bulk}
                     onChange={(event) => setBulk(event.target.value)}
-                    placeholder={"KEY=value\nANOTHER_KEY=another value\n# comments and blank lines are ignored"}
+                    placeholder={
+                      "KEY=value\nANOTHER_KEY=another value\n# comments and blank lines are ignored"
+                    }
                     spellCheck={false}
                     rows={10}
                     autoComplete="off"

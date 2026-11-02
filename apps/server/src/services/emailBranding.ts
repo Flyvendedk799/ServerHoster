@@ -34,7 +34,13 @@ function clean(value: string | null | undefined): string {
 
 function domainOf(address: string): string {
   const at = address.lastIndexOf("@");
-  return at === -1 ? "" : address.slice(at + 1).replace(/>.*$/, "").trim().toLowerCase();
+  return at === -1
+    ? ""
+    : address
+        .slice(at + 1)
+        .replace(/>.*$/, "")
+        .trim()
+        .toLowerCase();
 }
 
 /**

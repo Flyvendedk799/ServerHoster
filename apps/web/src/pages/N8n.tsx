@@ -158,10 +158,12 @@ export function N8nPage() {
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [workflows, setWorkflows] = useState<N8nWorkflow[]>([]);
-  const [workflowsMeta, setWorkflowsMeta] = useState<{ available: boolean; error?: string; loaded: boolean }>({
-    available: false,
-    loaded: false
-  });
+  const [workflowsMeta, setWorkflowsMeta] = useState<{ available: boolean; error?: string; loaded: boolean }>(
+    {
+      available: false,
+      loaded: false
+    }
+  );
   const [starters, setStarters] = useState<N8nEventStarter[]>([]);
 
   const loadStatus = useCallback(async (): Promise<N8nStatus | null> => {
@@ -219,7 +221,11 @@ export function N8nPage() {
     return () => clearInterval(intv);
   }, [refresh, loadStatus]);
 
-  async function run<T>(key: string, fn: () => Promise<T>, success?: string | ((r: T) => string)): Promise<T | null> {
+  async function run<T>(
+    key: string,
+    fn: () => Promise<T>,
+    success?: string | ((r: T) => string)
+  ): Promise<T | null> {
     setBusy(key);
     try {
       const res = await fn();
@@ -310,15 +316,18 @@ export function N8nPage() {
     <div className="n8n-page">
       <header className="page-header">
         <div className="title-group">
-          <h2>
-            n8n {status?.version && <span className="n8n-version">v{status.version}</span>}
-          </h2>
+          <h2>n8n {status?.version && <span className="n8n-version">v{status.version}</span>}</h2>
           <p className="muted">Workflow automation, managed by LocalSURV.</p>
         </div>
         <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
           <StatusBadge status={badge} label={badgeLabel} />
           {running && status?.openUrl && (
-            <a className="button primary small n8n-open" href={status.openUrl} target="_blank" rel="noreferrer">
+            <a
+              className="button primary small n8n-open"
+              href={status.openUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
               <ExternalLink size={14} /> Open editor
             </a>
           )}
@@ -333,7 +342,8 @@ export function N8nPage() {
           <AlertTriangle size={16} />
           <span>Saved settings differ from the running container. Restart n8n to apply them.</span>
           <button className="small" disabled={busy !== null} onClick={() => void power("restart")}>
-            {busy === "restart" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Restart now
+            {busy === "restart" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Restart
+            now
           </button>
         </div>
       )}
@@ -389,12 +399,20 @@ export function N8nPage() {
         />
       )}
       {tab === "executions" && (
-        <ExecutionsTab running={running} apiOk={apiOk} workflows={workflows} openUrl={status?.openUrl ?? null} onGoto={setTab} />
+        <ExecutionsTab
+          running={running}
+          apiOk={apiOk}
+          workflows={workflows}
+          openUrl={status?.openUrl ?? null}
+          onGoto={setTab}
+        />
       )}
       {tab === "automations" && status && (
         <AutomationsTab status={status} starters={starters} reload={loadStarters} />
       )}
-      {tab === "settings" && status && <SettingsTab status={status} onStatus={setStatus} run={run} busy={busy} />}
+      {tab === "settings" && status && (
+        <SettingsTab status={status} onStatus={setStatus} run={run} busy={busy} />
+      )}
       {tab === "logs" && <LogsTab running={running} />}
 
       <N8nStyles />
@@ -402,7 +420,11 @@ export function N8nPage() {
   );
 }
 
-type RunFn = <T>(key: string, fn: () => Promise<T>, success?: string | ((r: T) => string)) => Promise<T | null>;
+type RunFn = <T>(
+  key: string,
+  fn: () => Promise<T>,
+  success?: string | ((r: T) => string)
+) => Promise<T | null>;
 
 // ---------------------------------------------------------------------------
 // Overview
@@ -496,7 +518,11 @@ function OverviewTab(props: {
             <Cpu size={15} /> Container
           </h3>
           <div className="row" style={{ gap: "0.4rem", flexWrap: "wrap" }}>
-            <button className="primary small" disabled={running || busy !== null} onClick={() => props.onPower("start")}>
+            <button
+              className="primary small"
+              disabled={running || busy !== null}
+              onClick={() => props.onPower("start")}
+            >
               {busy === "start" ? <Loader2 size={14} className="spin" /> : <Play size={14} />} Start
             </button>
             <button
@@ -506,10 +532,19 @@ function OverviewTab(props: {
             >
               {busy === "restart" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Restart
             </button>
-            <button className="ghost small text-danger" disabled={!running || busy !== null} onClick={() => props.onPower("stop")}>
+            <button
+              className="ghost small text-danger"
+              disabled={!running || busy !== null}
+              onClick={() => props.onPower("stop")}
+            >
               {busy === "stop" ? <Loader2 size={14} className="spin" /> : <Square size={14} />} Stop
             </button>
-            <button className="ghost small" disabled={busy !== null} onClick={props.onUpdate} title="Pull the image tag again">
+            <button
+              className="ghost small"
+              disabled={busy !== null}
+              onClick={props.onUpdate}
+              title="Pull the image tag again"
+            >
               {busy === "update" ? <Loader2 size={14} className="spin" /> : <Download size={14} />} Update
             </button>
           </div>
@@ -534,7 +569,9 @@ function OverviewTab(props: {
             {metrics?.available && metrics.memoryMb != null ? (
               <span>
                 {metrics.memoryMb} MB
-                {metrics.memoryLimitMb ? <span className="muted"> / {Math.round(metrics.memoryLimitMb / 1024)} GB</span> : null}
+                {metrics.memoryLimitMb ? (
+                  <span className="muted"> / {Math.round(metrics.memoryLimitMb / 1024)} GB</span>
+                ) : null}
               </span>
             ) : (
               "—"
@@ -610,7 +647,9 @@ function OverviewTab(props: {
               <span className="muted">not set</span>
             )}
           </Kv>
-          <Kv label="AI Gateway">{status.aiGateway.wired ? "wired" : <span className="muted">not wired</span>}</Kv>
+          <Kv label="AI Gateway">
+            {status.aiGateway.wired ? "wired" : <span className="muted">not wired</span>}
+          </Kv>
         </div>
       </section>
 
@@ -626,14 +665,22 @@ function OverviewTab(props: {
         <ol className="n8n-steps">
           {steps.map((s, i) => (
             <li key={s.title} className={s.done ? "done" : ""}>
-              <span className="n8n-step-icon">{s.done ? <CheckCircle2 size={16} /> : <Circle size={16} />}</span>
+              <span className="n8n-step-icon">
+                {s.done ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+              </span>
               <div className="fcol" style={{ gap: "0.15rem", flex: 1, minWidth: 0 }}>
                 <span className="n8n-step-title">
                   {i + 1}. {s.title}
                 </span>
                 <span className="muted small">{s.body}</span>
                 {s.title === "Connect the n8n API" && !status.api.ok && (
-                  <ApiKeyForm status={status} onStatus={props.onStatus} run={props.run} busy={busy} onConnected={props.onApiConnected} />
+                  <ApiKeyForm
+                    status={status}
+                    onStatus={props.onStatus}
+                    run={props.run}
+                    busy={busy}
+                    onConnected={props.onApiConnected}
+                  />
                 )}
               </div>
               {s.action && <div className="n8n-step-action">{s.action}</div>}
@@ -671,8 +718,8 @@ function OverviewTab(props: {
           </Kv>
         </div>
         <p className="muted small" style={{ marginTop: "0.75rem" }}>
-          The encryption key protects every credential stored in n8n. It lives in LocalSURV's encrypted settings and
-          is included in instance backups — losing it means re-entering all credentials.
+          The encryption key protects every credential stored in n8n. It lives in LocalSURV's encrypted
+          settings and is included in instance backups — losing it means re-entering all credentials.
         </p>
         {status.api.keySet && status.api.ok && (
           <button
@@ -740,7 +787,8 @@ function ApiKeyForm(props: {
           onClick={async () => {
             const res = await props.run(
               "api-key",
-              () => api<N8nStatus>("/n8n/api-key", { method: "PUT", body: JSON.stringify({ key: key.trim() }) }),
+              () =>
+                api<N8nStatus>("/n8n/api-key", { method: "PUT", body: JSON.stringify({ key: key.trim() }) }),
               "n8n API connected"
             );
             if (res) {
@@ -916,7 +964,11 @@ function WorkflowsTab(props: {
       <div className="n8n-toolbar">
         <div className="n8n-search">
           <Search size={14} />
-          <input placeholder="Search name, tag or trigger…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input
+            placeholder="Search name, tag or trigger…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
         </div>
         <div className="n8n-seg" role="group" aria-label="Filter workflows">
           {(["all", "active", "inactive"] as const).map((f) => (
@@ -927,7 +979,11 @@ function WorkflowsTab(props: {
         </div>
         <div className="row" style={{ gap: "0.4rem", marginLeft: "auto", flexWrap: "wrap" }}>
           <label className="toggle-inline small" title="Activate imported workflows immediately">
-            <input type="checkbox" checked={activateOnImport} onChange={(e) => setActivateOnImport(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={activateOnImport}
+              onChange={(e) => setActivateOnImport(e.target.checked)}
+            />
             activate
           </label>
           <input
@@ -943,7 +999,11 @@ function WorkflowsTab(props: {
           <button className="ghost small" disabled={importing} onClick={() => fileRef.current?.click()}>
             {importing ? <Loader2 size={14} className="spin" /> : <Upload size={14} />} Import
           </button>
-          <button className="ghost small" disabled={busyId === "export" || props.workflows.length === 0} onClick={() => void exportAll()}>
+          <button
+            className="ghost small"
+            disabled={busyId === "export" || props.workflows.length === 0}
+            onClick={() => void exportAll()}
+          >
             {busyId === "export" ? <Loader2 size={14} className="spin" /> : <Download size={14} />} Export all
           </button>
           <button className="ghost small" onClick={() => void props.reload()} aria-label="Reload workflows">
@@ -961,7 +1021,11 @@ function WorkflowsTab(props: {
       {list.length === 0 ? (
         <div className="n8n-empty">
           <Workflow size={22} />
-          <p>{props.workflows.length === 0 ? "No workflows yet — build one in the editor or import a JSON file." : "No workflows match."}</p>
+          <p>
+            {props.workflows.length === 0
+              ? "No workflows yet — build one in the editor or import a JSON file."
+              : "No workflows match."}
+          </p>
         </div>
       ) : (
         <div className="n8n-list">
@@ -1003,14 +1067,30 @@ function WorkflowsTab(props: {
                 <div className="n8n-row-actions">
                   {busyId === w.id && <Loader2 size={14} className="spin muted" />}
                   {w.editorUrl && (
-                    <a className="button ghost xsmall" href={w.editorUrl} target="_blank" rel="noreferrer" title="Open in editor">
+                    <a
+                      className="button ghost xsmall"
+                      href={w.editorUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in editor"
+                    >
                       <ExternalLink size={13} />
                     </a>
                   )}
-                  <button className="ghost xsmall" onClick={() => void download(w)} title="Download JSON" aria-label="Download JSON">
+                  <button
+                    className="ghost xsmall"
+                    onClick={() => void download(w)}
+                    title="Download JSON"
+                    aria-label="Download JSON"
+                  >
                     <Download size={13} />
                   </button>
-                  <button className="ghost xsmall text-danger" onClick={() => void remove(w)} title="Delete" aria-label="Delete workflow">
+                  <button
+                    className="ghost xsmall text-danger"
+                    onClick={() => void remove(w)}
+                    title="Delete"
+                    aria-label="Delete workflow"
+                  >
                     <Trash2 size={13} />
                   </button>
                 </div>
@@ -1024,10 +1104,15 @@ function WorkflowsTab(props: {
                       <div key={`${h.method}-${h.path}`} className="n8n-hook">
                         <span className="n8n-pill">{h.method}</span>
                         <code className="n8n-mono">{h.productionUrl}</code>
-                        <button className="ghost xsmall" onClick={() => void copyText(h.productionUrl, "Webhook URL copied")}>
+                        <button
+                          className="ghost xsmall"
+                          onClick={() => void copyText(h.productionUrl, "Webhook URL copied")}
+                        >
                           <Copy size={12} />
                         </button>
-                        {!w.active && <span className="n8n-warn tiny">inactive — production URL won't answer</span>}
+                        {!w.active && (
+                          <span className="n8n-warn tiny">inactive — production URL won't answer</span>
+                        )}
                       </div>
                     ))
                   )}
@@ -1071,11 +1156,13 @@ function ExecutionsTab(props: {
         if (statusFilter) qs.set("status", statusFilter);
         if (workflowFilter) qs.set("workflowId", workflowFilter);
         if (append) qs.set("cursor", append);
-        const res = await api<{ available: boolean; items: N8nExecution[]; nextCursor: string | null; error?: string }>(
-          `/n8n/executions?${qs}`,
-          { silent: true }
-        );
-        setError(res.available ? null : res.error ?? "Executions unavailable");
+        const res = await api<{
+          available: boolean;
+          items: N8nExecution[];
+          nextCursor: string | null;
+          error?: string;
+        }>(`/n8n/executions?${qs}`, { silent: true });
+        setError(res.available ? null : (res.error ?? "Executions unavailable"));
         setItems((prev) => (append ? [...prev, ...res.items] : res.items));
         setCursor(res.nextCursor);
       } catch {
@@ -1136,7 +1223,11 @@ function ExecutionsTab(props: {
   return (
     <section className="card">
       <div className="n8n-toolbar">
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status filter">
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          aria-label="Status filter"
+        >
           <option value="">All statuses</option>
           <option value="success">Succeeded</option>
           <option value="error">Failed</option>
@@ -1144,7 +1235,11 @@ function ExecutionsTab(props: {
           <option value="waiting">Waiting</option>
           <option value="canceled">Canceled</option>
         </select>
-        <select value={workflowFilter} onChange={(e) => setWorkflowFilter(e.target.value)} aria-label="Workflow filter">
+        <select
+          value={workflowFilter}
+          onChange={(e) => setWorkflowFilter(e.target.value)}
+          aria-label="Workflow filter"
+        >
           <option value="">All workflows</option>
           {props.workflows.map((w) => (
             <option key={w.id} value={w.id}>
@@ -1214,11 +1309,21 @@ function ExecutionsTab(props: {
                         </a>
                       )}
                       {execTone(e.status) === "bad" && (
-                        <button className="ghost xsmall" onClick={() => void retry(e)} title="Retry" aria-label="Retry execution">
+                        <button
+                          className="ghost xsmall"
+                          onClick={() => void retry(e)}
+                          title="Retry"
+                          aria-label="Retry execution"
+                        >
                           <RefreshCw size={12} />
                         </button>
                       )}
-                      <button className="ghost xsmall" onClick={() => void remove(e)} title="Delete" aria-label="Delete execution">
+                      <button
+                        className="ghost xsmall"
+                        onClick={() => void remove(e)}
+                        title="Delete"
+                        aria-label="Delete execution"
+                      >
                         <Trash2 size={12} />
                       </button>
                     </div>
@@ -1228,7 +1333,12 @@ function ExecutionsTab(props: {
             </tbody>
           </table>
           {cursor && (
-            <button className="ghost small" style={{ marginTop: "0.75rem" }} disabled={loading} onClick={() => void load(cursor)}>
+            <button
+              className="ghost small"
+              style={{ marginTop: "0.75rem" }}
+              disabled={loading}
+              onClick={() => void load(cursor)}
+            >
               {loading ? <Loader2 size={14} className="spin" /> : null} Load more
             </button>
           )}
@@ -1242,7 +1352,11 @@ function ExecutionsTab(props: {
 // LocalSURV events
 // ---------------------------------------------------------------------------
 
-function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[]; reload: () => Promise<void> }) {
+function AutomationsTab(props: {
+  status: N8nStatus;
+  starters: N8nEventStarter[];
+  reload: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [customOpen, setCustomOpen] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -1297,7 +1411,10 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
         toast.error("Paste the n8n production webhook URL first");
         return;
       }
-      await api("/n8n/webhooks", { method: "POST", body: JSON.stringify({ event: s.event, webhookUrl: url }) });
+      await api("/n8n/webhooks", {
+        method: "POST",
+        body: JSON.stringify({ event: s.event, webhookUrl: url })
+      });
       toast.success("Webhook saved");
       setCustomOpen(null);
       await props.reload();
@@ -1319,7 +1436,9 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
 
   const downloadStarter = (s: N8nEventStarter) =>
     act(`json-${s.event}`, async () => {
-      const res = await api<Record<string, unknown>>(`/n8n/webhooks/${encodeURIComponent(s.event)}/workflow.json`);
+      const res = await api<Record<string, unknown>>(
+        `/n8n/webhooks/${encodeURIComponent(s.event)}/workflow.json`
+      );
       downloadJson(`localsurv-${s.event.replace(/\./g, "-")}.json`, res);
       const suggested = (res.meta as { suggestedUrl?: string } | undefined)?.suggestedUrl;
       if (suggested) setDrafts((d) => ({ ...d, [s.event]: suggested }));
@@ -1335,9 +1454,9 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
           </h3>
         </div>
         <p className="muted small">
-          LocalSURV POSTs a JSON payload to n8n whenever one of these happens. <b>Install</b> creates a ready-to-edit
-          workflow with a Webhook trigger in n8n, activates it and registers it here — then open it and add your logic
-          (Slack, Discord, a ticket, an AI reply…).
+          LocalSURV POSTs a JSON payload to n8n whenever one of these happens. <b>Install</b> creates a
+          ready-to-edit workflow with a Webhook trigger in n8n, activates it and registers it here — then open
+          it and add your logic (Slack, Discord, a ticket, an AI reply…).
           {!canAuto && " Connect the n8n API on the Overview tab to enable one-click install."}
         </p>
         {groups.map(([group, list]) => (
@@ -1357,7 +1476,9 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
                         )}
                       </span>
                       <span className="muted tiny">{s.description}</span>
-                      {s.installed && s.webhookUrl && <span className="muted tiny n8n-mono">→ {s.webhookUrl}</span>}
+                      {s.installed && s.webhookUrl && (
+                        <span className="muted tiny n8n-mono">→ {s.webhookUrl}</span>
+                      )}
                     </div>
                     <div className="n8n-row-actions">
                       {!s.installed && (
@@ -1365,14 +1486,30 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
                           className="primary xsmall"
                           disabled={!canAuto || busy !== null}
                           onClick={() => void autoInstall(s)}
-                          title={canAuto ? "Create + activate the workflow in n8n" : "Connect the n8n API first"}
+                          title={
+                            canAuto ? "Create + activate the workflow in n8n" : "Connect the n8n API first"
+                          }
                         >
-                          {busy === `auto-${s.event}` ? <Loader2 size={12} className="spin" /> : <Zap size={12} />} Install
+                          {busy === `auto-${s.event}` ? (
+                            <Loader2 size={12} className="spin" />
+                          ) : (
+                            <Zap size={12} />
+                          )}{" "}
+                          Install
                         </button>
                       )}
                       {s.installed && (
-                        <button className="ghost xsmall" disabled={busy !== null} onClick={() => void testFire(s)}>
-                          {busy === `test-${s.event}` ? <Loader2 size={12} className="spin" /> : <Send size={12} />} Test
+                        <button
+                          className="ghost xsmall"
+                          disabled={busy !== null}
+                          onClick={() => void testFire(s)}
+                        >
+                          {busy === `test-${s.event}` ? (
+                            <Loader2 size={12} className="spin" />
+                          ) : (
+                            <Send size={12} />
+                          )}{" "}
+                          Test
                         </button>
                       )}
                       <button
@@ -1383,7 +1520,12 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
                         <Settings2 size={12} />
                       </button>
                       {s.installed && (
-                        <button className="ghost xsmall text-danger" disabled={busy !== null} onClick={() => void remove(s)} aria-label="Stop forwarding">
+                        <button
+                          className="ghost xsmall text-danger"
+                          disabled={busy !== null}
+                          onClick={() => void remove(s)}
+                          aria-label="Stop forwarding"
+                        >
                           <Trash2 size={12} />
                         </button>
                       )}
@@ -1405,8 +1547,17 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
                           value={drafts[s.event] ?? s.webhookUrl ?? ""}
                           onChange={(e) => setDrafts((d) => ({ ...d, [s.event]: e.target.value }))}
                         />
-                        <button className="ghost small" disabled={busy !== null} onClick={() => void saveCustom(s)}>
-                          {busy === `save-${s.event}` ? <Loader2 size={12} className="spin" /> : <Webhook size={12} />} Save URL
+                        <button
+                          className="ghost small"
+                          disabled={busy !== null}
+                          onClick={() => void saveCustom(s)}
+                        >
+                          {busy === `save-${s.event}` ? (
+                            <Loader2 size={12} className="spin" />
+                          ) : (
+                            <Webhook size={12} />
+                          )}{" "}
+                          Save URL
                         </button>
                       </div>
                     </div>
@@ -1427,20 +1578,20 @@ function AutomationsTab(props: { status: N8nStatus; starters: N8nEventStarter[];
         <p className="muted small">Things your workflows can call back into on this host:</p>
         <ul className="n8n-callbacks">
           <li>
-            <b>Send email from a mailbox</b> — HTTP Request node, <code>POST /emailer/api/send</code> with a mailbox
-            API token as Bearer. Replies land in the same conversation in the{" "}
+            <b>Send email from a mailbox</b> — HTTP Request node, <code>POST /emailer/api/send</code> with a
+            mailbox API token as Bearer. Replies land in the same conversation in the{" "}
             <Link className="link" to="/emailer?view=setup">
               Emailer
             </Link>
             .
           </li>
           <li>
-            <b>AI models</b> — once the AI Gateway is wired, OpenAI-compatible nodes use <code>OPENAI_API_KEY</code> /{" "}
-            <code>OPENAI_BASE_URL</code> automatically (Settings tab).
+            <b>AI models</b> — once the AI Gateway is wired, OpenAI-compatible nodes use{" "}
+            <code>OPENAI_API_KEY</code> / <code>OPENAI_BASE_URL</code> automatically (Settings tab).
           </li>
           <li>
-            <b>Other services</b> — n8n reaches the host as <code>host.docker.internal</code>, so a service on port
-            3000 is <code>http://host.docker.internal:3000</code>.
+            <b>Other services</b> — n8n reaches the host as <code>host.docker.internal</code>, so a service on
+            port 3000 is <code>http://host.docker.internal:3000</code>.
           </li>
         </ul>
       </section>
@@ -1467,7 +1618,12 @@ const COMMON_TIMEZONES = [
   "Australia/Sydney"
 ];
 
-function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => void; run: RunFn; busy: string | null }) {
+function SettingsTab(props: {
+  status: N8nStatus;
+  onStatus: (s: N8nStatus) => void;
+  run: RunFn;
+  busy: string | null;
+}) {
   const { status, busy } = props;
   const [publicUrl, setPublicUrl] = useState(status.publicUrl ?? "");
   const [cfg, setCfg] = useState<N8nConfig>(status.config);
@@ -1484,7 +1640,8 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
   }, []);
 
   const dirty =
-    JSON.stringify({ ...cfg, extraEnv: undefined }) !== JSON.stringify({ ...status.config, extraEnv: undefined }) ||
+    JSON.stringify({ ...cfg, extraEnv: undefined }) !==
+      JSON.stringify({ ...status.config, extraEnv: undefined }) ||
     JSON.stringify(Object.fromEntries(envRows.filter((r) => r.k.trim()).map((r) => [r.k.trim(), r.v]))) !==
       JSON.stringify(status.config.extraEnv);
 
@@ -1522,8 +1679,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
           <Link className="link" to="/proxy">
             Edge Ingress
           </Link>{" "}
-          or a tunnel to <code>127.0.0.1:{status.port}</code>. It becomes <code>WEBHOOK_URL</code> and the editor URL,
-          so webhook nodes and OAuth callbacks show the right address. Saving recreates a running container.
+          or a tunnel to <code>127.0.0.1:{status.port}</code>. It becomes <code>WEBHOOK_URL</code> and the
+          editor URL, so webhook nodes and OAuth callbacks show the right address. Saving recreates a running
+          container.
         </p>
         <div className="row" style={{ marginTop: "0.75rem", gap: "0.5rem", flexWrap: "wrap" }}>
           <input
@@ -1539,7 +1697,11 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
             onClick={async () => {
               const res = await props.run(
                 "public-url",
-                () => api<N8nStatus>("/n8n/public-url", { method: "POST", body: JSON.stringify({ url: publicUrl.trim() }) }),
+                () =>
+                  api<N8nStatus>("/n8n/public-url", {
+                    method: "POST",
+                    body: JSON.stringify({ url: publicUrl.trim() })
+                  }),
                 (r) => (r.publicUrl ? "Public URL saved" : "Public URL cleared")
               );
               if (res) props.onStatus(res);
@@ -1548,15 +1710,18 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
             {busy === "public-url" && <Loader2 size={14} className="spin" />} Save
           </button>
           {status.webhookUrl && (
-            <button className="ghost small" onClick={() => void copyText(status.webhookUrl!, "Webhook base copied")}>
+            <button
+              className="ghost small"
+              onClick={() => void copyText(status.webhookUrl!, "Webhook base copied")}
+            >
               <Copy size={14} /> Webhook base
             </button>
           )}
         </div>
         {publicUrl.startsWith("http://") && !/127\.0\.0\.1|localhost/.test(publicUrl) && (
           <p className="n8n-warn small" style={{ marginTop: "0.5rem" }}>
-            <AlertTriangle size={13} /> Plain http: secure cookies are turned off so login works, but use https for
-            anything internet-facing.
+            <AlertTriangle size={13} /> Plain http: secure cookies are turned off so login works, but use
+            https for anything internet-facing.
           </p>
         )}
       </section>
@@ -1567,11 +1732,20 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
             <Settings2 size={15} /> Runtime
           </h3>
           <div className="row" style={{ gap: "0.4rem" }}>
-            <button className="ghost small" disabled={!dirty || busy !== null} onClick={() => void save(false)}>
+            <button
+              className="ghost small"
+              disabled={!dirty || busy !== null}
+              onClick={() => void save(false)}
+            >
               {busy === "config" && <Loader2 size={14} className="spin" />} Save
             </button>
-            <button className="primary small" disabled={!dirty || busy !== null} onClick={() => void save(true)}>
-              {busy === "config-apply" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Save & restart
+            <button
+              className="primary small"
+              disabled={!dirty || busy !== null}
+              onClick={() => void save(true)}
+            >
+              {busy === "config-apply" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}{" "}
+              Save & restart
             </button>
           </div>
         </div>
@@ -1604,7 +1778,8 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
           <label className="n8n-field">
             <span className="n8n-label tiny muted">Image channel</span>
             <span className="muted tiny">
-              <code>latest</code> (stable), <code>next</code> (beta) or a pinned version like <code>1.80.3</code>.
+              <code>latest</code> (stable), <code>next</code> (beta) or a pinned version like{" "}
+              <code>1.80.3</code>.
             </span>
             <input
               className="input"
@@ -1639,7 +1814,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
                   value={cfg.pruneMaxAgeHours}
                   onChange={(e) => setCfg({ ...cfg, pruneMaxAgeHours: Number(e.target.value) })}
                 />
-                <span className="muted small">hours ({Math.round((cfg.pruneMaxAgeHours / 24) * 10) / 10} days)</span>
+                <span className="muted small">
+                  hours ({Math.round((cfg.pruneMaxAgeHours / 24) * 10) / 10} days)
+                </span>
               </div>
             )}
           </div>
@@ -1654,7 +1831,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
               />
               Task runners for Code nodes
             </label>
-            <span className="muted tiny">Runs Code-node JavaScript in an isolated runner (n8n's recommended setup).</span>
+            <span className="muted tiny">
+              Runs Code-node JavaScript in an isolated runner (n8n's recommended setup).
+            </span>
           </div>
 
           <div className="n8n-field">
@@ -1683,10 +1862,16 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
           <span className="n8n-label tiny muted">Extra environment</span>
           <span className="muted tiny">
             Any other{" "}
-            <a className="link" href="https://docs.n8n.io/hosting/configuration/environment-variables/" target="_blank" rel="noreferrer">
+            <a
+              className="link"
+              href="https://docs.n8n.io/hosting/configuration/environment-variables/"
+              target="_blank"
+              rel="noreferrer"
+            >
               n8n env var
             </a>{" "}
-            — e.g. <code>N8N_LOG_LEVEL</code>, <code>NODE_FUNCTION_ALLOW_EXTERNAL</code>, <code>N8N_DEFAULT_BINARY_DATA_MODE</code>.
+            — e.g. <code>N8N_LOG_LEVEL</code>, <code>NODE_FUNCTION_ALLOW_EXTERNAL</code>,{" "}
+            <code>N8N_DEFAULT_BINARY_DATA_MODE</code>.
           </span>
           <div className="n8n-env">
             {envRows.map((row, i) => (
@@ -1696,7 +1881,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
                   placeholder="KEY"
                   value={row.k}
                   onChange={(e) =>
-                    setEnvRows((rows) => rows.map((r, j) => (j === i ? { ...r, k: e.target.value.toUpperCase() } : r)))
+                    setEnvRows((rows) =>
+                      rows.map((r, j) => (j === i ? { ...r, k: e.target.value.toUpperCase() } : r))
+                    )
                   }
                   style={{ flex: "0 1 260px" }}
                 />
@@ -1704,7 +1891,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
                   className="input n8n-mono"
                   placeholder="value"
                   value={row.v}
-                  onChange={(e) => setEnvRows((rows) => rows.map((r, j) => (j === i ? { ...r, v: e.target.value } : r)))}
+                  onChange={(e) =>
+                    setEnvRows((rows) => rows.map((r, j) => (j === i ? { ...r, v: e.target.value } : r)))
+                  }
                   style={{ flex: 1 }}
                 />
                 <button
@@ -1716,7 +1905,11 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
                 </button>
               </div>
             ))}
-            <button className="ghost xsmall" style={{ alignSelf: "flex-start" }} onClick={() => setEnvRows((r) => [...r, { k: "", v: "" }])}>
+            <button
+              className="ghost xsmall"
+              style={{ alignSelf: "flex-start" }}
+              onClick={() => setEnvRows((r) => [...r, { k: "", v: "" }])}
+            >
               <Plus size={12} /> Add variable
             </button>
           </div>
@@ -1745,7 +1938,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
           </button>
         </div>
         <div className="n8n-kv">
-          <Kv label="Status">{status.aiGateway.wired ? "wired" : <span className="muted">not wired</span>}</Kv>
+          <Kv label="Status">
+            {status.aiGateway.wired ? "wired" : <span className="muted">not wired</span>}
+          </Kv>
           <Kv label="OPENAI_BASE_URL">
             <span className="n8n-mono">{status.aiGateway.baseUrl ?? "—"}</span>
           </Kv>
@@ -1758,8 +1953,9 @@ function SettingsTab(props: { status: N8nStatus; onStatus: (s: N8nStatus) => voi
           <Link className="link" to="/ai-gateway">
             AI Gateway
           </Link>{" "}
-          consumer token and injects it as <code>OPENAI_API_KEY</code> / <code>OPENAI_BASE_URL</code>. In n8n, create an
-          OpenAI credential with that key and base URL (or reference <code>{"{{ $env.OPENAI_API_KEY }}"}</code>).
+          consumer token and injects it as <code>OPENAI_API_KEY</code> / <code>OPENAI_BASE_URL</code>. In n8n,
+          create an OpenAI credential with that key and base URL (or reference{" "}
+          <code>{"{{ $env.OPENAI_API_KEY }}"}</code>).
         </p>
       </section>
     </div>

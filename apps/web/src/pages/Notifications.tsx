@@ -1,12 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Info,
-  AlertCircle,
-  XCircle,
-  RotateCw
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, AlertCircle, XCircle, RotateCw } from "lucide-react";
 import { api } from "../lib/api";
 import { connectLogs } from "../lib/ws";
 import { toast } from "../lib/toast";

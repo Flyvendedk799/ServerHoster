@@ -22,8 +22,7 @@ const run = promisify(execFile);
  */
 
 const UNIT = "plexmediaserver";
-const PREFS_PATH =
-  "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml";
+const PREFS_PATH = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml";
 const ORIGIN = "http://127.0.0.1:32400";
 const HTTP_TIMEOUT_MS = 6000;
 
@@ -156,10 +155,7 @@ export async function getPlexStatus(): Promise<PlexStatus> {
 
   const running = active === "active";
   const identity = running
-    ? await plexGet<{ MediaContainer?: { machineIdentifier?: string; version?: string } }>(
-        "/identity",
-        null
-      )
+    ? await plexGet<{ MediaContainer?: { machineIdentifier?: string; version?: string } }>("/identity", null)
     : null;
 
   return {
@@ -262,9 +258,37 @@ export type MediaLibrary = (typeof MEDIA_LIBRARIES)[number];
  * doubling as a general-purpose file drop onto the host.
  */
 const ALLOWED_EXTENSIONS = new Set([
-  ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m2ts",
-  ".mpg", ".mpeg", ".iso", ".m4b", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus",
-  ".wav", ".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".nfo", ".jpg", ".jpeg", ".png"
+  ".mkv",
+  ".mp4",
+  ".m4v",
+  ".avi",
+  ".mov",
+  ".wmv",
+  ".flv",
+  ".webm",
+  ".ts",
+  ".m2ts",
+  ".mpg",
+  ".mpeg",
+  ".iso",
+  ".m4b",
+  ".mp3",
+  ".flac",
+  ".m4a",
+  ".aac",
+  ".ogg",
+  ".opus",
+  ".wav",
+  ".srt",
+  ".ass",
+  ".ssa",
+  ".sub",
+  ".idx",
+  ".vtt",
+  ".nfo",
+  ".jpg",
+  ".jpeg",
+  ".png"
 ]);
 
 /** Leave this much headroom on the filesystem rather than filling it. */
@@ -347,7 +371,11 @@ function safeFolderSegments(folder: string): string[] {
  * Build the destination path and prove it stays inside the library root even
  * after symlink-free normalisation.
  */
-function resolveTarget(library: MediaLibrary, filename: string, folder?: string): {
+function resolveTarget(
+  library: MediaLibrary,
+  filename: string,
+  folder?: string
+): {
   dir: string;
   file: string;
 } {
@@ -453,7 +481,19 @@ async function refreshLibraryForDir(dir: string): Promise<boolean> {
 }
 
 const VIDEO_EXTENSIONS = new Set([
-  ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m2ts", ".mpg", ".mpeg", ".iso"
+  ".mkv",
+  ".mp4",
+  ".m4v",
+  ".avi",
+  ".mov",
+  ".wmv",
+  ".flv",
+  ".webm",
+  ".ts",
+  ".m2ts",
+  ".mpg",
+  ".mpeg",
+  ".iso"
 ]);
 const SUBTITLE_EXTENSIONS = new Set([".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt"]);
 
@@ -656,10 +696,7 @@ type SessionMetadata = {
 
 export async function listPlexSessions(): Promise<PlexSession[]> {
   const token = await plexToken();
-  const res = await plexGet<{ MediaContainer?: { Metadata?: SessionMetadata[] } }>(
-    "/status/sessions",
-    token
-  );
+  const res = await plexGet<{ MediaContainer?: { Metadata?: SessionMetadata[] } }>("/status/sessions", token);
   if (!res) throw new PlexUnavailableError("Plex is not responding on 127.0.0.1:32400");
   const items = res.MediaContainer?.Metadata ?? [];
   return items.map((item, index) => ({

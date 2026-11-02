@@ -142,7 +142,9 @@ function toMailbox(ctx: AppContext, row: MailboxRow): Mailbox {
 }
 
 function getMailboxRow(ctx: AppContext, id: string): MailboxRow {
-  const row = ctx.db.prepare("SELECT * FROM emailer_mailboxes WHERE id = ?").get(id) as MailboxRow | undefined;
+  const row = ctx.db.prepare("SELECT * FROM emailer_mailboxes WHERE id = ?").get(id) as
+    | MailboxRow
+    | undefined;
   if (!row) throw httpError("Mailbox not found", 404);
   return row;
 }
@@ -160,7 +162,8 @@ function normalizeMailboxAddress(address: string): string {
   const trimmed = address.trim().toLowerCase();
   if (trimmed.startsWith("*@")) {
     const domain = trimmed.slice(2);
-    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) throw httpError("Catch-all must look like *@example.com", 400);
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain))
+      throw httpError("Catch-all must look like *@example.com", 400);
     return trimmed;
   }
   if (!isEmailAddress(trimmed)) throw httpError("Mailbox address must be a valid email address", 400);
@@ -229,7 +232,12 @@ export function createMailbox(ctx: AppContext, input: MailboxInput, actor = "sys
   return toMailbox(ctx, getMailboxRow(ctx, id));
 }
 
-function adoptUnassignedThreads(ctx: AppContext, mailboxId: string, address: string, serviceId: string | null): void {
+function adoptUnassignedThreads(
+  ctx: AppContext,
+  mailboxId: string,
+  address: string,
+  serviceId: string | null
+): void {
   if (address.startsWith("*@")) {
     const domain = address.slice(1); // "@example.com"
     ctx.db
@@ -239,7 +247,9 @@ function adoptUnassignedThreads(ctx: AppContext, mailboxId: string, address: str
       .run(mailboxId, serviceId, `%${domain}`);
   } else {
     ctx.db
-      .prepare("UPDATE emailer_threads SET mailbox_id = ?, service_id = ? WHERE mailbox_id IS NULL AND local_address = ?")
+      .prepare(
+        "UPDATE emailer_threads SET mailbox_id = ?, service_id = ? WHERE mailbox_id IS NULL AND local_address = ?"
+      )
       .run(mailboxId, serviceId, address);
   }
   ctx.db
@@ -258,7 +268,9 @@ export function updateMailbox(
   const row = getMailboxRow(ctx, id);
   const address = patch.address !== undefined ? normalizeMailboxAddress(patch.address) : row.address;
   if (address !== row.address) {
-    const clash = ctx.db.prepare("SELECT id FROM emailer_mailboxes WHERE address = ? AND id != ?").get(address, id);
+    const clash = ctx.db
+      .prepare("SELECT id FROM emailer_mailboxes WHERE address = ? AND id != ?")
+      .get(address, id);
     if (clash) throw httpError(`Mailbox ${address} already exists`, 409);
   }
   if (patch.serviceId !== undefined) assertServiceExists(ctx, patch.serviceId);
@@ -297,8 +309,12 @@ export function deleteMailbox(ctx: AppContext, id: string, actor = "system"): vo
   const row = getMailboxRow(ctx, id);
   // Conversations survive as "unassigned" — deleting an address must never
   // silently delete customer mail.
-  ctx.db.prepare("UPDATE emailer_threads SET mailbox_id = NULL, service_id = NULL WHERE mailbox_id = ?").run(id);
-  ctx.db.prepare("UPDATE emailer_messages SET mailbox_id = NULL, service_id = NULL WHERE mailbox_id = ?").run(id);
+  ctx.db
+    .prepare("UPDATE emailer_threads SET mailbox_id = NULL, service_id = NULL WHERE mailbox_id = ?")
+    .run(id);
+  ctx.db
+    .prepare("UPDATE emailer_messages SET mailbox_id = NULL, service_id = NULL WHERE mailbox_id = ?")
+    .run(id);
   ctx.db.prepare("DELETE FROM emailer_mailboxes WHERE id = ?").run(id);
   writeAuditLog(ctx, {
     actor,
@@ -311,14 +327,23 @@ export function deleteMailbox(ctx: AppContext, id: string, actor = "system"): vo
 }
 
 /** Mint (or rotate) the mailbox API token. The plaintext is returned once. */
-export function mintMailboxToken(ctx: AppContext, id: string, actor = "system"): { token: string; mailbox: Mailbox } {
+export function mintMailboxToken(
+  ctx: AppContext,
+  id: string,
+  actor = "system"
+): { token: string; mailbox: Mailbox } {
   const row = getMailboxRow(ctx, id);
   if (row.address.startsWith("*@")) {
-    throw httpError("A catch-all mailbox cannot send — create a concrete address for the app to send from", 400);
+    throw httpError(
+      "A catch-all mailbox cannot send — create a concrete address for the app to send from",
+      400
+    );
   }
   const token = `emk_${crypto.randomBytes(24).toString("base64url")}`;
   ctx.db
-    .prepare("UPDATE emailer_mailboxes SET api_token_hash = ?, api_token_prefix = ?, updated_at = ? WHERE id = ?")
+    .prepare(
+      "UPDATE emailer_mailboxes SET api_token_hash = ?, api_token_prefix = ?, updated_at = ? WHERE id = ?"
+    )
     .run(sha256(token), token.slice(0, 10), nowIso(), id);
   writeAuditLog(ctx, {
     actor,
@@ -333,16 +358,18 @@ export function mintMailboxToken(ctx: AppContext, id: string, actor = "system"):
 export function revokeMailboxToken(ctx: AppContext, id: string): Mailbox {
   getMailboxRow(ctx, id);
   ctx.db
-    .prepare("UPDATE emailer_mailboxes SET api_token_hash = NULL, api_token_prefix = NULL, updated_at = ? WHERE id = ?")
+    .prepare(
+      "UPDATE emailer_mailboxes SET api_token_hash = NULL, api_token_prefix = NULL, updated_at = ? WHERE id = ?"
+    )
     .run(nowIso(), id);
   return toMailbox(ctx, getMailboxRow(ctx, id));
 }
 
 export function mailboxForToken(ctx: AppContext, token: string): MailboxRow | null {
   if (!token || !token.startsWith("emk_")) return null;
-  const row = ctx.db.prepare("SELECT * FROM emailer_mailboxes WHERE api_token_hash = ?").get(sha256(token)) as
-    | MailboxRow
-    | undefined;
+  const row = ctx.db
+    .prepare("SELECT * FROM emailer_mailboxes WHERE api_token_hash = ?")
+    .get(sha256(token)) as MailboxRow | undefined;
   return row ?? null;
 }
 
@@ -420,7 +447,10 @@ type MessageRow = {
   created_at: string;
 };
 
-export type EmailerMessage = Omit<MessageRow, "references_json" | "to_json" | "cc_json" | "attachments_json"> & {
+export type EmailerMessage = Omit<
+  MessageRow,
+  "references_json" | "to_json" | "cc_json" | "attachments_json"
+> & {
   references: string[];
   to: MailAddress[];
   cc: MailAddress[];
@@ -470,7 +500,10 @@ export type ThreadFilter = {
   offset?: number;
 };
 
-export function listThreads(ctx: AppContext, filter: ThreadFilter = {}): { items: EmailerThread[]; total: number } {
+export function listThreads(
+  ctx: AppContext,
+  filter: ThreadFilter = {}
+): { items: EmailerThread[]; total: number } {
   const where: string[] = [];
   const args: Array<string | number> = [];
   switch (filter.folder ?? "inbox") {
@@ -484,7 +517,9 @@ export function listThreads(ctx: AppContext, filter: ThreadFilter = {}): { items
       where.push("t.starred = 1");
       break;
     case "sent":
-      where.push("EXISTS (SELECT 1 FROM emailer_messages m WHERE m.thread_id = t.id AND m.direction = 'out')");
+      where.push(
+        "EXISTS (SELECT 1 FROM emailer_messages m WHERE m.thread_id = t.id AND m.direction = 'out')"
+      );
       break;
     case "archived":
       where.push("t.status = 'archived'");
@@ -549,7 +584,8 @@ export function updateThread(
   patch: { status?: "open" | "archived" | "spam"; starred?: boolean; read?: boolean }
 ): EmailerThread {
   getThreadRow(ctx, id);
-  if (patch.status) ctx.db.prepare("UPDATE emailer_threads SET status = ? WHERE id = ?").run(patch.status, id);
+  if (patch.status)
+    ctx.db.prepare("UPDATE emailer_threads SET status = ? WHERE id = ?").run(patch.status, id);
   if (patch.starred !== undefined) {
     ctx.db.prepare("UPDATE emailer_threads SET starred = ? WHERE id = ?").run(patch.starred ? 1 : 0, id);
   }
@@ -770,8 +806,8 @@ export async function ingestInbound(ctx: AppContext, input: InboundInput): Promi
   if (!from || !from.address) throw httpError("Inbound message has no sender", 400);
 
   const to = addressList(input.to);
-  const headerTo = to.length ? to : parsed?.to ?? [];
-  const cc = input.cc ? addressList(input.cc) : parsed?.cc ?? [];
+  const headerTo = to.length ? to : (parsed?.to ?? []);
+  const cc = input.cc ? addressList(input.cc) : (parsed?.cc ?? []);
   const envelopeTo = addressList(input.envelope?.to ?? null);
   // The envelope recipient is the address mail was actually delivered to —
   // the only reliable one for Bcc'd or catch-all mail.
@@ -783,7 +819,7 @@ export async function ingestInbound(ctx: AppContext, input: InboundInput): Promi
   const html = input.html ?? parsed?.html ?? null;
   const messageId = normalizeMessageId(input.messageId ?? parsed?.messageId ?? null);
   const inReplyTo = normalizeMessageId(input.inReplyTo ?? parsed?.inReplyTo ?? null);
-  const references = input.references ? referenceList(input.references) : parsed?.references ?? [];
+  const references = input.references ? referenceList(input.references) : (parsed?.references ?? []);
   const attachments = parsed?.attachments ?? [];
 
   if (messageId) {
@@ -792,7 +828,11 @@ export async function ingestInbound(ctx: AppContext, input: InboundInput): Promi
       .get(messageId) as MessageRow | undefined;
     if (dup) {
       // Relays retry on timeouts; the second delivery must not double-post.
-      return { duplicate: true, thread: toThread(ctx, getThreadRow(ctx, dup.thread_id)), message: toMessage(dup) };
+      return {
+        duplicate: true,
+        thread: toThread(ctx, getThreadRow(ctx, dup.thread_id)),
+        message: toMessage(dup)
+      };
     }
   }
 
@@ -802,9 +842,7 @@ export async function ingestInbound(ctx: AppContext, input: InboundInput): Promi
   );
   const localAddress =
     (mailbox && !mailbox.address.startsWith("*@") ? mailbox.address : null) ??
-    (mailbox
-      ? recipients.find((r) => r.address.endsWith(mailbox.address.slice(1)))?.address
-      : undefined) ??
+    (mailbox ? recipients.find((r) => r.address.endsWith(mailbox.address.slice(1)))?.address : undefined) ??
     recipients[0].address;
 
   const at = nowIso();
@@ -938,7 +976,8 @@ export type SendInput = {
 
 function validateRecipients(list: string[] | undefined, label: string): string[] {
   const out = (list ?? []).map((a) => a.trim().toLowerCase()).filter(Boolean);
-  for (const a of out) if (!isEmailAddress(a)) throw httpError(`${label}: "${a}" is not a valid email address`, 400);
+  for (const a of out)
+    if (!isEmailAddress(a)) throw httpError(`${label}: "${a}" is not a valid email address`, 400);
   return out;
 }
 
@@ -981,7 +1020,8 @@ export async function sendEmailerMessage(
     }
   }
   if (!fromAddress) fromAddress = requestedFrom || smtp?.from || "";
-  if (!isEmailAddress(fromAddress)) throw httpError("No valid From address — set one on the mailbox or Email tab", 400);
+  if (!isEmailAddress(fromAddress))
+    throw httpError("No valid From address — set one on the mailbox or Email tab", 400);
   const fromName = mailbox?.display_name || smtp?.fromName || null;
 
   // Threading headers for a reply.
@@ -1055,10 +1095,19 @@ export async function sendEmailerMessage(
     at: nowIso()
   });
   // Replying is reading: the operator has clearly seen the conversation.
-  ctx.db.prepare("UPDATE emailer_threads SET unread_count = 0, status = CASE WHEN status = 'spam' THEN status ELSE 'open' END WHERE id = ?").run(thread.id);
+  ctx.db
+    .prepare(
+      "UPDATE emailer_threads SET unread_count = 0, status = CASE WHEN status = 'spam' THEN status ELSE 'open' END WHERE id = ?"
+    )
+    .run(thread.id);
   const fresh = getThreadRow(ctx, thread.id);
   const message = toMessage(row);
-  broadcast(ctx, { type: "emailer_message", direction: "out", threadId: fresh.id, serviceId: fresh.service_id });
+  broadcast(ctx, {
+    type: "emailer_message",
+    direction: "out",
+    threadId: fresh.id,
+    serviceId: fresh.service_id
+  });
   writeAuditLog(ctx, {
     actor: input.actor ?? "system",
     action: status === "sent" ? "emailer.send" : "emailer.send.failed",
@@ -1077,10 +1126,17 @@ export async function sendEmailerMessage(
 }
 
 /** Re-send a failed outbound message in place. */
-export async function retryMessage(ctx: AppContext, messageId: string, actor = "system"): Promise<EmailerMessage> {
-  const row = ctx.db.prepare("SELECT * FROM emailer_messages WHERE id = ?").get(messageId) as MessageRow | undefined;
+export async function retryMessage(
+  ctx: AppContext,
+  messageId: string,
+  actor = "system"
+): Promise<EmailerMessage> {
+  const row = ctx.db.prepare("SELECT * FROM emailer_messages WHERE id = ?").get(messageId) as
+    | MessageRow
+    | undefined;
   if (!row) throw httpError("Message not found", 404);
-  if (row.direction !== "out" || row.status !== "failed") throw httpError("Only failed outbound messages can be retried", 400);
+  if (row.direction !== "out" || row.status !== "failed")
+    throw httpError("Only failed outbound messages can be retried", 400);
   const m = toMessage(row);
   try {
     const sent = await sendSmtpMail(ctx, {
@@ -1098,7 +1154,9 @@ export async function retryMessage(ctx: AppContext, messageId: string, actor = "
       .prepare("UPDATE emailer_messages SET status = 'sent', error = NULL, message_id = ? WHERE id = ?")
       .run(sent.messageId, messageId);
   } catch (err) {
-    ctx.db.prepare("UPDATE emailer_messages SET error = ? WHERE id = ?").run((err as Error).message, messageId);
+    ctx.db
+      .prepare("UPDATE emailer_messages SET error = ? WHERE id = ?")
+      .run((err as Error).message, messageId);
     throw err;
   }
   writeAuditLog(ctx, {
@@ -1109,7 +1167,9 @@ export async function retryMessage(ctx: AppContext, messageId: string, actor = "
     statusCode: 200
   });
   broadcast(ctx, { type: "emailer_update", threadId: row.thread_id, serviceId: row.service_id });
-  return toMessage(ctx.db.prepare("SELECT * FROM emailer_messages WHERE id = ?").get(messageId) as MessageRow);
+  return toMessage(
+    ctx.db.prepare("SELECT * FROM emailer_messages WHERE id = ?").get(messageId) as MessageRow
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,7 +1207,9 @@ export function emailerSummary(ctx: AppContext): {
     )
     .all() as Array<{ service_id: string; unread: number; threads: number; last_message_at: string | null }>;
   const mailboxCounts = ctx.db
-    .prepare("SELECT service_id, COUNT(*) AS c FROM emailer_mailboxes WHERE service_id IS NOT NULL GROUP BY service_id")
+    .prepare(
+      "SELECT service_id, COUNT(*) AS c FROM emailer_mailboxes WHERE service_id IS NOT NULL GROUP BY service_id"
+    )
     .all() as Array<{ service_id: string; c: number }>;
   const byService = new Map<string, ServiceMailSummary>();
   for (const r of perService) {
@@ -1178,7 +1240,10 @@ export function emailerSummary(ctx: AppContext): {
   };
 }
 
-export function emailerStats(ctx: AppContext, serviceId?: string | null): {
+export function emailerStats(
+  ctx: AppContext,
+  serviceId?: string | null
+): {
   received_7d: number;
   sent_7d: number;
   failed_7d: number;
@@ -1333,7 +1398,11 @@ async function cf(ctx: AppContext, apiPath: string, init: RequestInit = {}): Pro
     headers: { ...headers, ...((init.headers as Record<string, string>) ?? {}) },
     signal: AbortSignal.timeout(20000)
   });
-  type CfEnvelope = { success?: boolean; result?: unknown; errors?: Array<{ message?: string; code?: number }> };
+  type CfEnvelope = {
+    success?: boolean;
+    result?: unknown;
+    errors?: Array<{ message?: string; code?: number }>;
+  };
   let data: CfEnvelope | null = null;
   try {
     data = (await res.json()) as CfEnvelope;
@@ -1362,10 +1431,7 @@ export async function deployCloudflareWorker(
   const { accountId } = cloudflareCreds(ctx);
   const base = emailerBaseUrl(ctx, opts.requestHost);
   if (/^https?:\/\/(127\.|localhost|0\.0\.0\.0)/.test(base)) {
-    throw httpError(
-      "Set the Emailer public URL first — Cloudflare cannot reach a loopback address",
-      400
-    );
+    throw httpError("Set the Emailer public URL first — Cloudflare cannot reach a loopback address", 400);
   }
   const ingestUrl = `${base}/emailer/inbound`;
   const script = workerName(ctx);
@@ -1410,14 +1476,20 @@ export async function routeMailboxToWorker(
 ): Promise<{ zone: string; rule: string }> {
   const mailbox = getMailboxRow(ctx, mailboxId);
   const domain = mailbox.address.split("@")[1];
-  const zones = (await cf(ctx, `/zones?name=${encodeURIComponent(domain)}`)) as Array<{ id: string; name: string }>;
+  const zones = (await cf(ctx, `/zones?name=${encodeURIComponent(domain)}`)) as Array<{
+    id: string;
+    name: string;
+  }>;
   let zone = zones[0];
   if (!zone) {
     // Subdomain address — walk up to the registrable zone.
     const parts = domain.split(".");
     for (let i = 1; i < parts.length - 1 && !zone; i++) {
       const parent = parts.slice(i).join(".");
-      const found = (await cf(ctx, `/zones?name=${encodeURIComponent(parent)}`)) as Array<{ id: string; name: string }>;
+      const found = (await cf(ctx, `/zones?name=${encodeURIComponent(parent)}`)) as Array<{
+        id: string;
+        name: string;
+      }>;
       zone = found[0];
     }
   }
@@ -1427,7 +1499,11 @@ export async function routeMailboxToWorker(
   if (mailbox.address.startsWith("*@")) {
     await cf(ctx, `/zones/${zone.id}/email/routing/rules/catch_all`, {
       method: "PUT",
-      body: JSON.stringify({ actions: [{ type: "worker", value: [script] }], matchers: [{ type: "all" }], enabled: true })
+      body: JSON.stringify({
+        actions: [{ type: "worker", value: [script] }],
+        matchers: [{ type: "all" }],
+        enabled: true
+      })
     });
   } else {
     await cf(ctx, `/zones/${zone.id}/email/routing/rules`, {
@@ -1480,7 +1556,9 @@ export function injectMailboxEnv(
       .prepare("SELECT id FROM env_vars WHERE service_id = ? AND key = ?")
       .get(row.service_id, key) as { id: string } | undefined;
     if (existing) {
-      ctx.db.prepare("UPDATE env_vars SET value = ?, is_secret = ? WHERE id = ?").run(stored, secret ? 1 : 0, existing.id);
+      ctx.db
+        .prepare("UPDATE env_vars SET value = ?, is_secret = ? WHERE id = ?")
+        .run(stored, secret ? 1 : 0, existing.id);
     } else {
       ctx.db
         .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")

@@ -83,11 +83,9 @@ export async function* openaiStream(
 
     // A 200 that turns into an error object partway through.
     if (chunk.error) {
-      throw new GatewayError(
-        "upstream_error",
-        `openai stream error: ${chunk.error.message ?? "unknown"}`,
-        { provider: "openai" }
-      );
+      throw new GatewayError("upstream_error", `openai stream error: ${chunk.error.message ?? "unknown"}`, {
+        provider: "openai"
+      });
     }
 
     yield chunk;

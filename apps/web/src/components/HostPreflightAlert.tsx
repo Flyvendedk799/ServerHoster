@@ -83,8 +83,8 @@ export function HostPreflightAlert({ serviceId }: { serviceId: string }) {
           {missing.length} host requirement{missing.length === 1 ? "" : "s"} missing on this server
         </div>
         <p className="host-preflight-lead">
-          This service runs directly on the host. Until these are installed it will build but is
-          likely to fail on start.
+          This service runs directly on the host. Until these are installed it will build but is likely to
+          fail on start.
         </p>
 
         <ul className="host-preflight-list">

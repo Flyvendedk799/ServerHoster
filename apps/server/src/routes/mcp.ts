@@ -232,9 +232,7 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
       const db = getDatabase(ctx, String(databaseId));
       if (!db || db.project_id !== service.project_id)
         throw new Error("Database not found in this service project");
-      const logs = await runTimedTool("database_logs", () =>
-        getContainerLogs(ctx, db, Number(tail ?? 120))
-      );
+      const logs = await runTimedTool("database_logs", () => getContainerLogs(ctx, db, Number(tail ?? 120)));
       auditTool(ctx, auth, "database_logs", 200, `database=${databaseId}`);
       return text(logs.slice(-8000));
     }
@@ -304,21 +302,32 @@ function createServiceMcpServer(ctx: AppContext, auth: McpAuth): McpServer {
   return server;
 }
 
-
-
-function resolveService(ctx: AppContext, identifier: string): { id: string; project_id: string; [key: string]: unknown } {
-  const row = ctx.db.prepare("SELECT * FROM services WHERE id = ? OR name = ?").get(identifier, identifier) as any;
+function resolveService(
+  ctx: AppContext,
+  identifier: string
+): { id: string; project_id: string; [key: string]: unknown } {
+  const row = ctx.db
+    .prepare("SELECT * FROM services WHERE id = ? OR name = ?")
+    .get(identifier, identifier) as any;
   if (!row) throw new Error(`Service not found: ${identifier}`);
   return row;
 }
 
 function resolveDatabase(ctx: AppContext, identifier: string): DatabaseRow {
-  const row = ctx.db.prepare("SELECT * FROM databases WHERE id = ? OR name = ?").get(identifier, identifier) as DatabaseRow | undefined;
+  const row = ctx.db
+    .prepare("SELECT * FROM databases WHERE id = ? OR name = ?")
+    .get(identifier, identifier) as DatabaseRow | undefined;
   if (!row) throw new Error(`Database not found: ${identifier}`);
   return row;
 }
 
-function auditGlobalTool(ctx: AppContext, actor: string, tool: string, statusCode: number, details?: string): void {
+function auditGlobalTool(
+  ctx: AppContext,
+  actor: string,
+  tool: string,
+  statusCode: number,
+  details?: string
+): void {
   writeAuditLog(ctx, {
     actor,
     action: `MCP Global ${tool}`,
@@ -335,37 +344,52 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
     version: "1.0.0"
   });
 
-  server.registerTool("get_system_health", {
-    title: "Get system health",
-    description: "Get ServerHoster host health, Docker status, CPU count, memory usage, disk metrics, and system warnings.",
-    inputSchema: {}
-  }, async () => {
-    try {
-      const health = await runTimedTool("get_system_health", () => collectSystemHealth(ctx));
-      auditGlobalTool(ctx, actor, "get_system_health", 200);
-      return text(health);
-    } catch (error) {
-      auditGlobalTool(ctx, actor, "get_system_health", 500, serializeError(error));
-      throw error;
+  server.registerTool(
+    "get_system_health",
+    {
+      title: "Get system health",
+      description:
+        "Get ServerHoster host health, Docker status, CPU count, memory usage, disk metrics, and system warnings.",
+      inputSchema: {}
+    },
+    async () => {
+      try {
+        const health = await runTimedTool("get_system_health", () => collectSystemHealth(ctx));
+        auditGlobalTool(ctx, actor, "get_system_health", 200);
+        return text(health);
+      } catch (error) {
+        auditGlobalTool(ctx, actor, "get_system_health", 500, serializeError(error));
+        throw error;
+      }
     }
-  });
+  );
 
-  server.registerTool("list_projects", {
-    title: "List projects",
-    description: "List all projects in ServerHoster with their descriptions and created dates.",
-    inputSchema: {}
-  }, async () => {
-    const rows = ctx.db.prepare("SELECT id, name, description, created_at FROM projects ORDER BY created_at DESC").all();
-    auditGlobalTool(ctx, actor, "list_projects", 200);
-    return text(rows);
-  });
+  server.registerTool(
+    "list_projects",
+    {
+      title: "List projects",
+      description: "List all projects in ServerHoster with their descriptions and created dates.",
+      inputSchema: {}
+    },
+    async () => {
+      const rows = ctx.db
+        .prepare("SELECT id, name, description, created_at FROM projects ORDER BY created_at DESC")
+        .all();
+      auditGlobalTool(ctx, actor, "list_projects", 200);
+      return text(rows);
+    }
+  );
 
-  server.registerTool("list_services", {
-    title: "List services",
-    description: "List all services configured in ServerHoster, including their running status, type, ports, domains, latest commit, and project ID.",
-    inputSchema: { projectId: z.string().optional() }
-  }, async ({ projectId }) => {
-    let query = `
+  server.registerTool(
+    "list_services",
+    {
+      title: "List services",
+      description:
+        "List all services configured in ServerHoster, including their running status, type, ports, domains, latest commit, and project ID.",
+      inputSchema: { projectId: z.string().optional() }
+    },
+    async ({ projectId }) => {
+      let query = `
       SELECT s.id, s.project_id, s.name, s.type, s.status, s.port, s.github_repo_url, s.github_branch,
              p.domain, p.domains, s.created_at, s.updated_at
       FROM services s
@@ -381,170 +405,222 @@ function createGlobalMcpServer(ctx: AppContext, actor: string): McpServer {
         GROUP BY service_id
       ) p ON p.service_id = s.id
     `;
-    const params: string[] = [];
-    if (projectId) {
-      query += " WHERE s.project_id = ?";
-      params.push(String(projectId));
-    }
-    query += " ORDER BY s.created_at DESC";
-    
-    const rows = ctx.db.prepare(query).all(...params);
-    auditGlobalTool(ctx, actor, "list_services", 200);
-    return text(rows);
-  });
-
-  server.registerTool("get_service_status", {
-    title: "Get service status",
-    description: "Get detailed runtime status, proxy routes, environment requirements, and latest deployments for a specific service by ID or name.",
-    inputSchema: { service: z.string().describe("Service ID or exact service name") }
-  }, async ({ service }) => {
-    try {
-      const result = await runTimedTool("get_service_status", async () => {
-        const srv = resolveService(ctx, String(service));
-        const proxy = ctx.db.prepare("SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC").all(srv.id);
-        const reqs = await listServiceEnvRequirements(ctx);
-        const envReqs = reqs.find((r) => r.service_id === srv.id) ?? { requirements: [] };
-        return { service: srv, proxy, envRequirements: envReqs };
-      });
-      auditGlobalTool(ctx, actor, "get_service_status", 200, `service=${(result.service as { id: string }).id}`);
-      return text(result);
-    } catch (error) {
-      auditGlobalTool(ctx, actor, "get_service_status", 500, serializeError(error));
-      throw error;
-    }
-  });
-
-  server.registerTool("get_service_logs", {
-    title: "Get service logs",
-    description: "Fetch the most recent stdout/stderr log lines for a specific service by ID or name.",
-    inputSchema: {
-      service: z.string().describe("Service ID or exact service name"),
-      limit: z.number().int().min(1).max(1000).default(100)
-    }
-  }, async ({ service, limit }) => {
-    const srv = resolveService(ctx, String(service));
-    const logs = recentLogs(ctx, srv.id, Number(limit ?? 100)).reverse();
-    auditGlobalTool(ctx, actor, "get_service_logs", 200, `service=${srv.id} limit=${limit}`);
-    return text(logs);
-  });
-
-  server.registerTool("search_service_logs", {
-    title: "Search service logs",
-    description: "Search stdout/stderr logs of a specific service for a case-insensitive query string.",
-    inputSchema: {
-      service: z.string().describe("Service ID or exact service name"),
-      query: z.string().min(1),
-      limit: z.number().int().min(1).max(500).default(50)
-    }
-  }, async ({ service, query, limit }) => {
-    const srv = resolveService(ctx, String(service));
-    const rows = ctx.db.prepare("SELECT level, message, timestamp FROM logs WHERE service_id = ? AND LOWER(message) LIKE ? ORDER BY timestamp DESC LIMIT ?")
-      .all(srv.id, `%${String(query).toLowerCase()}%`, Math.max(1, Math.min(500, Number(limit ?? 50))));
-    auditGlobalTool(ctx, actor, "search_service_logs", 200, `service=${srv.id} query=${query}`);
-    return text(rows);
-  });
-
-  server.registerTool("start_service", {
-    title: "Start service",
-    description: "Start a service by ID or name (resolves service dependencies automatically).",
-    inputSchema: { service: z.string().describe("Service ID or exact service name") }
-  }, async ({ service }) => {
-    const srv = resolveService(ctx, String(service));
-    await runTimedTool("start_service", () => startService(ctx, srv.id));
-    auditGlobalTool(ctx, actor, "start_service", 200, `service=${srv.id}`);
-    return text({ ok: true });
-  });
-
-  server.registerTool("stop_service", {
-    title: "Stop service",
-    description: "Stop a running service by ID or name.",
-    inputSchema: { service: z.string().describe("Service ID or exact service name") }
-  }, async ({ service }) => {
-    const srv = resolveService(ctx, String(service));
-    await runTimedTool("stop_service", () => stopService(ctx, srv.id));
-    auditGlobalTool(ctx, actor, "stop_service", 200, `service=${srv.id}`);
-    return text({ ok: true });
-  });
-
-  server.registerTool("restart_service", {
-    title: "Restart service",
-    description: "Restart a service by ID or name.",
-    inputSchema: { service: z.string().describe("Service ID or exact service name") }
-  }, async ({ service }) => {
-    const srv = resolveService(ctx, String(service));
-    await runTimedTool("restart_service", () => restartService(ctx, srv.id));
-    auditGlobalTool(ctx, actor, "restart_service", 200, `service=${srv.id}`);
-    return text({ ok: true });
-  });
-
-  server.registerTool("redeploy_service", {
-    title: "Redeploy service",
-    description: "Trigger a fresh git pull and rebuild/redeploy for a service with a configured GitHub repo.",
-    inputSchema: { service: z.string().describe("Service ID or exact service name") }
-  }, async ({ service }) => {
-    const srv = resolveService(ctx, String(service));
-    if (!srv.github_repo_url) throw new Error("Service has no github_repo_url — cannot redeploy");
-    const branch = String(srv.github_branch || "main");
-    const deployment = await runTimedTool(
-      "redeploy_service",
-      async () => {
-        const d = await deployFromGit(ctx, srv.id, String(srv.github_repo_url), branch, "manual");
-        await applyPostDeployServiceState(ctx, srv.id, d, { startAfterDeploy: true });
-        return d;
-      },
-      120_000
-    );
-    auditGlobalTool(ctx, actor, "redeploy_service", 200, `service=${srv.id}`);
-    return text(deployment);
-  });
-
-  server.registerTool("list_databases", {
-    title: "List databases",
-    description: "List all managed databases (Postgres, MySQL, Mongo, Redis), their container status, engine, and linked project.",
-    inputSchema: { projectId: z.string().optional() }
-  }, async ({ projectId }) => {
-    const enriched = await runTimedTool("list_databases", async () => {
-      let query = "SELECT id, project_id, name, engine, port, created_at FROM databases";
       const params: string[] = [];
       if (projectId) {
-        query += " WHERE project_id = ?";
+        query += " WHERE s.project_id = ?";
         params.push(String(projectId));
       }
-      query += " ORDER BY created_at DESC";
-      const rows = ctx.db.prepare(query).all(...params) as DatabaseRow[];
-      return Promise.all(
-        rows.map(async (row) => ({
-          ...row,
-          container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
-        }))
-      );
-    });
-    auditGlobalTool(ctx, actor, "list_databases", 200);
-    return text(enriched);
-  });
+      query += " ORDER BY s.created_at DESC";
 
-  server.registerTool("get_database_logs", {
-    title: "Get database logs",
-    description: "Fetch recent container logs for a managed database by ID or name.",
-    inputSchema: {
-      database: z.string().describe("Database ID or exact database name"),
-      tail: z.number().int().min(1).max(500).default(120)
+      const rows = ctx.db.prepare(query).all(...params);
+      auditGlobalTool(ctx, actor, "list_services", 200);
+      return text(rows);
     }
-  }, async ({ database, tail }) => {
-    const db = resolveDatabase(ctx, String(database));
-    const logs = await runTimedTool("get_database_logs", () =>
-      getContainerLogs(ctx, db, Number(tail ?? 120))
-    );
-    auditGlobalTool(ctx, actor, "get_database_logs", 200, `database=${db.id} tail=${tail}`);
-    return text(logs.slice(-8000));
-  });
+  );
+
+  server.registerTool(
+    "get_service_status",
+    {
+      title: "Get service status",
+      description:
+        "Get detailed runtime status, proxy routes, environment requirements, and latest deployments for a specific service by ID or name.",
+      inputSchema: { service: z.string().describe("Service ID or exact service name") }
+    },
+    async ({ service }) => {
+      try {
+        const result = await runTimedTool("get_service_status", async () => {
+          const srv = resolveService(ctx, String(service));
+          const proxy = ctx.db
+            .prepare(
+              "SELECT domain, target_port FROM proxy_routes WHERE service_id = ? ORDER BY created_at DESC"
+            )
+            .all(srv.id);
+          const reqs = await listServiceEnvRequirements(ctx);
+          const envReqs = reqs.find((r) => r.service_id === srv.id) ?? { requirements: [] };
+          return { service: srv, proxy, envRequirements: envReqs };
+        });
+        auditGlobalTool(
+          ctx,
+          actor,
+          "get_service_status",
+          200,
+          `service=${(result.service as { id: string }).id}`
+        );
+        return text(result);
+      } catch (error) {
+        auditGlobalTool(ctx, actor, "get_service_status", 500, serializeError(error));
+        throw error;
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_service_logs",
+    {
+      title: "Get service logs",
+      description: "Fetch the most recent stdout/stderr log lines for a specific service by ID or name.",
+      inputSchema: {
+        service: z.string().describe("Service ID or exact service name"),
+        limit: z.number().int().min(1).max(1000).default(100)
+      }
+    },
+    async ({ service, limit }) => {
+      const srv = resolveService(ctx, String(service));
+      const logs = recentLogs(ctx, srv.id, Number(limit ?? 100)).reverse();
+      auditGlobalTool(ctx, actor, "get_service_logs", 200, `service=${srv.id} limit=${limit}`);
+      return text(logs);
+    }
+  );
+
+  server.registerTool(
+    "search_service_logs",
+    {
+      title: "Search service logs",
+      description: "Search stdout/stderr logs of a specific service for a case-insensitive query string.",
+      inputSchema: {
+        service: z.string().describe("Service ID or exact service name"),
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(500).default(50)
+      }
+    },
+    async ({ service, query, limit }) => {
+      const srv = resolveService(ctx, String(service));
+      const rows = ctx.db
+        .prepare(
+          "SELECT level, message, timestamp FROM logs WHERE service_id = ? AND LOWER(message) LIKE ? ORDER BY timestamp DESC LIMIT ?"
+        )
+        .all(srv.id, `%${String(query).toLowerCase()}%`, Math.max(1, Math.min(500, Number(limit ?? 50))));
+      auditGlobalTool(ctx, actor, "search_service_logs", 200, `service=${srv.id} query=${query}`);
+      return text(rows);
+    }
+  );
+
+  server.registerTool(
+    "start_service",
+    {
+      title: "Start service",
+      description: "Start a service by ID or name (resolves service dependencies automatically).",
+      inputSchema: { service: z.string().describe("Service ID or exact service name") }
+    },
+    async ({ service }) => {
+      const srv = resolveService(ctx, String(service));
+      await runTimedTool("start_service", () => startService(ctx, srv.id));
+      auditGlobalTool(ctx, actor, "start_service", 200, `service=${srv.id}`);
+      return text({ ok: true });
+    }
+  );
+
+  server.registerTool(
+    "stop_service",
+    {
+      title: "Stop service",
+      description: "Stop a running service by ID or name.",
+      inputSchema: { service: z.string().describe("Service ID or exact service name") }
+    },
+    async ({ service }) => {
+      const srv = resolveService(ctx, String(service));
+      await runTimedTool("stop_service", () => stopService(ctx, srv.id));
+      auditGlobalTool(ctx, actor, "stop_service", 200, `service=${srv.id}`);
+      return text({ ok: true });
+    }
+  );
+
+  server.registerTool(
+    "restart_service",
+    {
+      title: "Restart service",
+      description: "Restart a service by ID or name.",
+      inputSchema: { service: z.string().describe("Service ID or exact service name") }
+    },
+    async ({ service }) => {
+      const srv = resolveService(ctx, String(service));
+      await runTimedTool("restart_service", () => restartService(ctx, srv.id));
+      auditGlobalTool(ctx, actor, "restart_service", 200, `service=${srv.id}`);
+      return text({ ok: true });
+    }
+  );
+
+  server.registerTool(
+    "redeploy_service",
+    {
+      title: "Redeploy service",
+      description:
+        "Trigger a fresh git pull and rebuild/redeploy for a service with a configured GitHub repo.",
+      inputSchema: { service: z.string().describe("Service ID or exact service name") }
+    },
+    async ({ service }) => {
+      const srv = resolveService(ctx, String(service));
+      if (!srv.github_repo_url) throw new Error("Service has no github_repo_url — cannot redeploy");
+      const branch = String(srv.github_branch || "main");
+      const deployment = await runTimedTool(
+        "redeploy_service",
+        async () => {
+          const d = await deployFromGit(ctx, srv.id, String(srv.github_repo_url), branch, "manual");
+          await applyPostDeployServiceState(ctx, srv.id, d, { startAfterDeploy: true });
+          return d;
+        },
+        120_000
+      );
+      auditGlobalTool(ctx, actor, "redeploy_service", 200, `service=${srv.id}`);
+      return text(deployment);
+    }
+  );
+
+  server.registerTool(
+    "list_databases",
+    {
+      title: "List databases",
+      description:
+        "List all managed databases (Postgres, MySQL, Mongo, Redis), their container status, engine, and linked project.",
+      inputSchema: { projectId: z.string().optional() }
+    },
+    async ({ projectId }) => {
+      const enriched = await runTimedTool("list_databases", async () => {
+        let query = "SELECT id, project_id, name, engine, port, created_at FROM databases";
+        const params: string[] = [];
+        if (projectId) {
+          query += " WHERE project_id = ?";
+          params.push(String(projectId));
+        }
+        query += " ORDER BY created_at DESC";
+        const rows = ctx.db.prepare(query).all(...params) as DatabaseRow[];
+        return Promise.all(
+          rows.map(async (row) => ({
+            ...row,
+            container_status: await getContainerStatus(ctx, row).catch(() => ({ state: "unknown" }))
+          }))
+        );
+      });
+      auditGlobalTool(ctx, actor, "list_databases", 200);
+      return text(enriched);
+    }
+  );
+
+  server.registerTool(
+    "get_database_logs",
+    {
+      title: "Get database logs",
+      description: "Fetch recent container logs for a managed database by ID or name.",
+      inputSchema: {
+        database: z.string().describe("Database ID or exact database name"),
+        tail: z.number().int().min(1).max(500).default(120)
+      }
+    },
+    async ({ database, tail }) => {
+      const db = resolveDatabase(ctx, String(database));
+      const logs = await runTimedTool("get_database_logs", () =>
+        getContainerLogs(ctx, db, Number(tail ?? 120))
+      );
+      auditGlobalTool(ctx, actor, "get_database_logs", 200, `database=${db.id} tail=${tail}`);
+      return text(logs.slice(-8000));
+    }
+  );
 
   // Operator-only: Stripe key status, setup helpers and app wiring (never keys).
   registerStripeMcpTools(ctx, server, actor);
 
   return server;
 }
-
 
 function extractBearer(headers: Record<string, string | string[] | undefined>): string {
   const raw = headers.authorization;
@@ -590,7 +666,8 @@ async function handleStatelessMcpRequest(
   });
   try {
     await mcpServer.connect(transport);
-    const protocol = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim() || "http";
+    const protocol =
+      (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim() || "http";
     const host = (req.headers.host as string | undefined) || "localhost";
     const webRequest = new Request(`${protocol}://${host}${req.url}`, {
       method: "POST",
@@ -674,13 +751,7 @@ export function registerMcpRoutes(ctx: AppContext): void {
       return;
     }
 
-    await handleStatelessMcpRequest(
-      ctx,
-      req,
-      reply,
-      () => createServiceMcpServer(ctx, auth),
-      "MCP request"
-    );
+    await handleStatelessMcpRequest(ctx, req, reply, () => createServiceMcpServer(ctx, auth), "MCP request");
   });
 
   ctx.app.get("/mcp/:tokenId", async (_req, reply) => {

@@ -233,7 +233,10 @@ export function ServiceLogsPage() {
             )}
             {!loading &&
               filtered.map((log, i) => (
-                <div key={log.id ?? `${log.timestamp}-${i}`} className={`log-line level-${log.level ?? "info"}`}>
+                <div
+                  key={log.id ?? `${log.timestamp}-${i}`}
+                  className={`log-line level-${log.level ?? "info"}`}
+                >
                   <span className="log-time">
                     {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : ""}
                   </span>{" "}
@@ -247,9 +250,7 @@ export function ServiceLogsPage() {
           </div>
           {!autoScroll && (
             <button className="log-jump-pill" onClick={jumpToLive}>
-              {newSinceScroll > 0
-                ? `${newSinceScroll} new ↓`
-                : "Jump to live ↓"}
+              {newSinceScroll > 0 ? `${newSinceScroll} new ↓` : "Jump to live ↓"}
             </button>
           )}
         </div>

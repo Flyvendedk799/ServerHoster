@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Mail, Server, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Send, RotateCw, Inbox, ArrowRight } from "lucide-react";
+import {
+  Mail,
+  Server,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Plus,
+  Trash2,
+  Send,
+  RotateCw,
+  Inbox,
+  ArrowRight
+} from "lucide-react";
 
 import { api } from "../lib/api";
 import { toast } from "../lib/toast";
@@ -281,7 +293,9 @@ export function EmailPage() {
 
   async function loadReceiving() {
     try {
-      const r = await api<{ configured: boolean; zones: ZoneRow[] }>("/email/receiving/zones", { silent: true });
+      const r = await api<{ configured: boolean; zones: ZoneRow[] }>("/email/receiving/zones", {
+        silent: true
+      });
       setRcvConfigured(r.configured);
       setZones(r.zones);
       if (r.configured && r.zones.length && !rcvZone) {
@@ -353,7 +367,9 @@ export function EmailPage() {
       <header className="page-header">
         <div className="title-group">
           <h2>Email</h2>
-          <p className="muted">Shared SMTP transport for your apps — branding (From + name) is set per app.</p>
+          <p className="muted">
+            Shared SMTP transport for your apps — branding (From + name) is set per app.
+          </p>
         </div>
       </header>
 
@@ -373,24 +389,37 @@ export function EmailPage() {
               <h3>SMTP credentials</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Shared outbound SMTP transport (e.g. Cloudflare Email Service). Host, port, user, and password are reused by every app; each app sets its own From branding below.
+              Shared outbound SMTP transport (e.g. Cloudflare Email Service). Host, port, user, and password
+              are reused by every app; each app sets its own From branding below.
             </p>
 
             <div className="form-row">
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Host</label>
-                <input value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="smtp.mx.cloudflare.net" />
+                <input
+                  value={form.host}
+                  onChange={(e) => setForm({ ...form, host: e.target.value })}
+                  placeholder="smtp.mx.cloudflare.net"
+                />
               </div>
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Port</label>
-                <input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} placeholder="465" />
+                <input
+                  value={form.port}
+                  onChange={(e) => setForm({ ...form, port: e.target.value })}
+                  placeholder="465"
+                />
               </div>
             </div>
 
             <div className="form-row">
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Username</label>
-                <input value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} placeholder="api_token" />
+                <input
+                  value={form.user}
+                  onChange={(e) => setForm({ ...form, user: e.target.value })}
+                  placeholder="api_token"
+                />
               </div>
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Password / API token</label>
@@ -406,15 +435,30 @@ export function EmailPage() {
             <div className="form-row">
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Default From (fallback)</label>
-                <input value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} placeholder="noreply@yourdomain.com" title="Used for the SMTP test and as the seed when enabling an app that has no From yet" />
+                <input
+                  value={form.from}
+                  onChange={(e) => setForm({ ...form, from: e.target.value })}
+                  placeholder="noreply@yourdomain.com"
+                  title="Used for the SMTP test and as the seed when enabling an app that has no From yet"
+                />
               </div>
               <div className="form-group">
                 <label className="tiny uppercase font-bold muted">Default From name (fallback)</label>
-                <input value={form.fromName} onChange={(e) => setForm({ ...form, fromName: e.target.value })} placeholder="Your App" title="Fallback display name for new apps and the SMTP test — each enabled app keeps its own" />
+                <input
+                  value={form.fromName}
+                  onChange={(e) => setForm({ ...form, fromName: e.target.value })}
+                  placeholder="Your App"
+                  title="Fallback display name for new apps and the SMTP test — each enabled app keeps its own"
+                />
               </div>
             </div>
 
-            <button className="primary" style={{ marginTop: "1rem" }} onClick={saveSettings} disabled={busy === "save"}>
+            <button
+              className="primary"
+              style={{ marginTop: "1rem" }}
+              onClick={saveSettings}
+              disabled={busy === "save"}
+            >
               {busy === "save" && <Loader2 size={16} className="spin" />} Save credentials
             </button>
 
@@ -428,11 +472,20 @@ export function EmailPage() {
                   placeholder="you@example.com"
                   disabled={!configured}
                 />
-                <button className="button small" onClick={sendTest} disabled={!configured || busy === "test"} title={!configured ? "Save SMTP credentials first" : undefined}>
+                <button
+                  className="button small"
+                  onClick={sendTest}
+                  disabled={!configured || busy === "test"}
+                  title={!configured ? "Save SMTP credentials first" : undefined}
+                >
                   {busy === "test" ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send test
                 </button>
               </div>
-              {!configured && <span className="muted tiny">Save SMTP credentials (incl. a Default From) to enable the test.</span>}
+              {!configured && (
+                <span className="muted tiny">
+                  Save SMTP credentials (incl. a Default From) to enable the test.
+                </span>
+              )}
             </div>
           </div>
 
@@ -442,7 +495,9 @@ export function EmailPage() {
               <h3>Apps</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Enable email on an app to inject the SMTP env vars into it. Set each app's From address and From name (branding) here — they are stored per app, not shared. New apps seed from the defaults above. Redeploy/restart the app's services to apply.
+              Enable email on an app to inject the SMTP env vars into it. Set each app's From address and From
+              name (branding) here — they are stored per app, not shared. New apps seed from the defaults
+              above. Redeploy/restart the app's services to apply.
             </p>
 
             {!configured && (
@@ -463,7 +518,10 @@ export function EmailPage() {
                       </span>
                     )}
                   </div>
-                  <div className="row" style={{ gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <div
+                    className="row"
+                    style={{ gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}
+                  >
                     <input
                       className="email-from-input"
                       value={appFrom[pr.id] ?? ""}
@@ -488,7 +546,8 @@ export function EmailPage() {
                       disabled={!configured || busy === `app-${pr.id}`}
                       title={!configured ? "Save SMTP credentials first" : undefined}
                     >
-                      {busy === `app-${pr.id}` ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} {pr.applied ? "Update" : "Enable"}
+                      {busy === `app-${pr.id}` ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}{" "}
+                      {pr.applied ? "Update" : "Enable"}
                     </button>
                     {pr.applied && (
                       <button
@@ -497,11 +556,20 @@ export function EmailPage() {
                         disabled={busy === `restart-${pr.id}`}
                         title="Restart this app's services so the email env takes effect"
                       >
-                        {busy === `restart-${pr.id}` ? <Loader2 size={14} className="spin" /> : <RotateCw size={14} />} Restart to apply
+                        {busy === `restart-${pr.id}` ? (
+                          <Loader2 size={14} className="spin" />
+                        ) : (
+                          <RotateCw size={14} />
+                        )}{" "}
+                        Restart to apply
                       </button>
                     )}
                     {pr.applied && (
-                      <button className="ghost text-danger small" onClick={() => removeApp(pr.id)} disabled={busy === `app-${pr.id}`}>
+                      <button
+                        className="ghost text-danger small"
+                        onClick={() => removeApp(pr.id)}
+                        disabled={busy === `app-${pr.id}`}
+                      >
                         <Trash2 size={14} /> Remove
                       </button>
                     )}
@@ -514,7 +582,10 @@ export function EmailPage() {
                             <span className="small">Signup confirmation email</span>
                             <span className="muted tiny">{st.name}</span>
                             {st.enable_confirmations === false && st.smtp_configured === false && (
-                              <span className="badge-warn" title="Turning this on without SMTP leaves new users unable to confirm.">
+                              <span
+                                className="badge-warn"
+                                title="Turning this on without SMTP leaves new users unable to confirm."
+                              >
                                 needs SMTP
                               </span>
                             )}
@@ -552,8 +623,8 @@ export function EmailPage() {
               <h3>Receiving (forwarding)</h3>
             </div>
             <p className="muted small" style={{ margin: "0.75rem 0 1rem" }}>
-              Forward inbound mail for your domains to an inbox — via Cloudflare Email Routing. To read and answer mail
-              per service inside LocalSURV instead, use the{" "}
+              Forward inbound mail for your domains to an inbox — via Cloudflare Email Routing. To read and
+              answer mail per service inside LocalSURV instead, use the{" "}
               <Link className="link" to="/emailer?view=setup">
                 Emailer
               </Link>
@@ -563,7 +634,9 @@ export function EmailPage() {
             {!rcvConfigured ? (
               <div className="row small">
                 <AlertCircle size={14} className="text-warning" />
-                <span className="muted">Add a Cloudflare token with Email Routing access to enable receiving.</span>
+                <span className="muted">
+                  Add a Cloudflare token with Email Routing access to enable receiving.
+                </span>
               </div>
             ) : (
               <>
@@ -597,9 +670,9 @@ export function EmailPage() {
                             <span className="font-bold">All mail</span>
                             <ArrowRight size={13} className="muted" />
                             <span className="mono">{rcvData.catch_all.dest}</span>
-                            {rcvData.destinations.some((d) => d.email === rcvData.catch_all.dest && !d.verified) && (
-                              <span className="badge-warn">pending verification</span>
-                            )}
+                            {rcvData.destinations.some(
+                              (d) => d.email === rcvData.catch_all.dest && !d.verified
+                            ) && <span className="badge-warn">pending verification</span>}
                           </div>
                           <button
                             className="ghost text-danger small"
@@ -636,21 +709,50 @@ export function EmailPage() {
 
                     <div className="email-test">
                       <label className="tiny uppercase font-bold muted">Add a forward</label>
-                      <div className="row" style={{ gap: "0.5rem", marginTop: "0.35rem", flexWrap: "wrap", alignItems: "center" }}>
-                        <select value={fwMode} onChange={(e) => setFwMode(e.target.value as "all" | "specific")} style={{ flex: "0 0 auto" }}>
+                      <div
+                        className="row"
+                        style={{
+                          gap: "0.5rem",
+                          marginTop: "0.35rem",
+                          flexWrap: "wrap",
+                          alignItems: "center"
+                        }}
+                      >
+                        <select
+                          value={fwMode}
+                          onChange={(e) => setFwMode(e.target.value as "all" | "specific")}
+                          style={{ flex: "0 0 auto" }}
+                        >
                           <option value="all">All mail (catch-all)</option>
                           <option value="specific">Specific address</option>
                         </select>
                         {fwMode === "specific" && (
                           <span className="row" style={{ gap: 0, alignItems: "center" }}>
-                            <input style={{ width: 110 }} value={fwLocal} onChange={(e) => setFwLocal(e.target.value)} placeholder="hello" />
-                            <span className="mono muted" style={{ padding: "0 0.25rem" }}>@{rcvDomain}</span>
+                            <input
+                              style={{ width: 110 }}
+                              value={fwLocal}
+                              onChange={(e) => setFwLocal(e.target.value)}
+                              placeholder="hello"
+                            />
+                            <span className="mono muted" style={{ padding: "0 0.25rem" }}>
+                              @{rcvDomain}
+                            </span>
                           </span>
                         )}
                         <ArrowRight size={14} className="muted" />
-                        <input style={{ flex: "1 1 200px" }} value={fwTo} onChange={(e) => setFwTo(e.target.value)} placeholder="your@inbox.com" />
-                        <button className="button small" onClick={addForward} disabled={busy === "forward" || !fwTo.trim()}>
-                          {busy === "forward" ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Add forward
+                        <input
+                          style={{ flex: "1 1 200px" }}
+                          value={fwTo}
+                          onChange={(e) => setFwTo(e.target.value)}
+                          placeholder="your@inbox.com"
+                        />
+                        <button
+                          className="button small"
+                          onClick={addForward}
+                          disabled={busy === "forward" || !fwTo.trim()}
+                        >
+                          {busy === "forward" ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}{" "}
+                          Add forward
                         </button>
                       </div>
                     </div>

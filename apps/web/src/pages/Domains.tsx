@@ -64,9 +64,11 @@ const STATUS_META: Record<string, { label: string; icon: typeof Clock; cls: stri
 };
 
 const MISSING_HINTS: Record<string, string> = {
-  cloudflare_api_token: "Add a Cloudflare API token (Zone DNS Edit + SSL and Certificates Edit) under Settings → Cloudflare.",
+  cloudflare_api_token:
+    "Add a Cloudflare API token (Zone DNS Edit + SSL and Certificates Edit) under Settings → Cloudflare.",
   cloudflare_zone_id: "Set your Cloudflare Zone ID under Settings → Cloudflare.",
-  cloudflare_tunnel: "Connect Cloudflare (browser login) or configure a named tunnel so traffic can reach this machine."
+  cloudflare_tunnel:
+    "Connect Cloudflare (browser login) or configure a named tunnel so traffic can reach this machine."
 };
 
 export function DomainsPage() {
@@ -74,7 +76,9 @@ export function DomainsPage() {
   const [services, setServices] = useState<Service[]>([]);
   const [domains, setDomains] = useState<SaasDomain[]>([]);
   const [loading, setLoading] = useState(true);
-  const [serviceId, setServiceId] = useState<string>(() => localStorage.getItem("survhub_saas_service") ?? "");
+  const [serviceId, setServiceId] = useState<string>(
+    () => localStorage.getItem("survhub_saas_service") ?? ""
+  );
   const [newHostname, setNewHostname] = useState("");
   const [adding, setAdding] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
@@ -261,11 +265,10 @@ export function DomainsPage() {
 
       <section className="card" style={{ marginBottom: "1rem" }}>
         <p className="muted small" style={{ margin: 0 }}>
-          Need a public hostname for <strong>n8n</strong> or the{" "}
-          <strong>License validate</strong> API? Point Edge Ingress / a tunnel hostname at this
-          control plane (or n8n&apos;s port 5678), then set the Public URL on the{" "}
-          <Link to="/n8n">n8n</Link> or <Link to="/license">License</Link> tab. SaaS Domains below
-          are for tenant-owned custom hostnames on your hosted apps.
+          Need a public hostname for <strong>n8n</strong> or the <strong>License validate</strong> API? Point
+          Edge Ingress / a tunnel hostname at this control plane (or n8n&apos;s port 5678), then set the
+          Public URL on the <Link to="/n8n">n8n</Link> or <Link to="/license">License</Link> tab. SaaS Domains
+          below are for tenant-owned custom hostnames on your hosted apps.
         </p>
       </section>
 
@@ -299,10 +302,9 @@ export function DomainsPage() {
         )}
         {config?.ready && !config.tenantDomainsReady && (
           <p className="tiny muted" style={{ marginTop: "0.75rem" }}>
-            Connected via browser login — domains in your own Cloudflare zones bind instantly.
-            To accept <strong>tenant-owned</strong> custom domains (Cloudflare for SaaS), also save a
-            Cloudflare API token (Zone DNS Edit + SSL and Certificates Edit) and the Zone ID under
-            Settings → Cloudflare.
+            Connected via browser login — domains in your own Cloudflare zones bind instantly. To accept{" "}
+            <strong>tenant-owned</strong> custom domains (Cloudflare for SaaS), also save a Cloudflare API
+            token (Zone DNS Edit + SSL and Certificates Edit) and the Zone ID under Settings → Cloudflare.
           </p>
         )}
 
@@ -339,12 +341,16 @@ export function DomainsPage() {
               onChange={(e) => setApiHostnameInput(e.target.value)}
             />
             <span className="field-hint">
-              Exposes this control plane's /saas API through the tunnel so external edge functions can call it.
+              Exposes this control plane's /saas API through the tunnel so external edge functions can call
+              it.
             </span>
           </div>
         </div>
 
-        <div className="row" style={{ marginTop: "1rem", justifyContent: "space-between", flexWrap: "wrap", gap: "0.75rem" }}>
+        <div
+          className="row"
+          style={{ marginTop: "1rem", justifyContent: "space-between", flexWrap: "wrap", gap: "0.75rem" }}
+        >
           <div className="row" style={{ gap: "0.5rem" }}>
             <button className="ghost" onClick={() => void rotateToken()}>
               <KeyRound size={16} />
@@ -425,7 +431,11 @@ export function DomainsPage() {
       <div className="grid">
         <AnimatePresence>
           {domains.length === 0 ? (
-            <motion.div key="empty" className="card text-center empty-state-card" style={{ gridColumn: "1 / -1" }}>
+            <motion.div
+              key="empty"
+              className="card text-center empty-state-card"
+              style={{ gridColumn: "1 / -1" }}
+            >
               <Globe size={60} className="muted" style={{ margin: "0 auto 1.5rem", opacity: 0.2 }} />
               <p className="muted font-bold">No tenant domains connected yet.</p>
               <p className="tiny muted" style={{ maxWidth: "460px", margin: "1rem auto" }}>
@@ -507,7 +517,11 @@ export function DomainsPage() {
 
                   <div
                     className="service-footer"
-                    style={{ marginTop: "1rem", borderTop: "1px solid var(--border-subtle)", paddingTop: "0.75rem" }}
+                    style={{
+                      marginTop: "1rem",
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "0.75rem"
+                    }}
                   >
                     {domain.status !== "active" || domain.mode === "custom_hostname" ? (
                       <button
@@ -515,7 +529,8 @@ export function DomainsPage() {
                         disabled={verifyingId === domain.id}
                         onClick={() => void verifyDomain(domain)}
                       >
-                        <RefreshCw size={14} className={verifyingId === domain.id ? "dom-spin" : ""} /> Check status
+                        <RefreshCw size={14} className={verifyingId === domain.id ? "dom-spin" : ""} /> Check
+                        status
                       </button>
                     ) : null}
                     <a

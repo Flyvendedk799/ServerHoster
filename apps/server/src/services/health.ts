@@ -6,11 +6,7 @@ import type { AppContext } from "../types.js";
 import { createNotification } from "./notifications.js";
 import { getSetting, getSecretSetting } from "./settings.js";
 import { serializeError, withTimeout } from "../lib/core.js";
-import {
-  getHostMemoryBreakdown,
-  readHostMemory,
-  type HostMemoryBreakdown
-} from "./metrics.js";
+import { getHostMemoryBreakdown, readHostMemory, type HostMemoryBreakdown } from "./metrics.js";
 
 const exec = promisify(execFile);
 
@@ -84,9 +80,7 @@ export async function collectSystemHealth(ctx: AppContext): Promise<SystemHealth
   const [disk, docker, memoryBreakdown] = await Promise.all([
     checkDisk(fs.existsSync(dataDir) ? dataDir : os.homedir()),
     checkDocker(ctx),
-    withTimeout(getHostMemoryBreakdown(), HEALTH_PROBE_TIMEOUT_MS, "host memory breakdown").catch(
-      () => null
-    )
+    withTimeout(getHostMemoryBreakdown(), HEALTH_PROBE_TIMEOUT_MS, "host memory breakdown").catch(() => null)
   ]);
   const hostMem = memoryBreakdown
     ? {
@@ -217,7 +211,11 @@ export function startSystemHealthLoop(ctx: AppContext): () => void {
       const warnIntervalMs = 60 * 60 * 1000; // once per hour per issue
 
       const diskThreshold = Number(getSetting(ctx, "disk_warn_percent") ?? DEFAULT_DISK_WARN_PERCENT);
-      if (health.disk && health.disk.usedPercent >= diskThreshold && now - lastDiskWarnedAt > warnIntervalMs) {
+      if (
+        health.disk &&
+        health.disk.usedPercent >= diskThreshold &&
+        now - lastDiskWarnedAt > warnIntervalMs
+      ) {
         lastDiskWarnedAt = now;
         createNotification(ctx, {
           kind: "disk",

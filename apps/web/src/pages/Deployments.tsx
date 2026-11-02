@@ -87,17 +87,13 @@ function computeBuildSteps(
   }
   if (status === "failed") {
     const failedIdx = FAILURE_STAGE_TO_STEP[failureStage ?? ""] ?? 0;
-    return BUILD_STEPS.map((_, i) =>
-      i < failedIdx ? "done" : i === failedIdx ? "error" : "pending"
-    );
+    return BUILD_STEPS.map((_, i) => (i < failedIdx ? "done" : i === failedIdx ? "error" : "pending"));
   }
   // running / pending: terminal phases (done/failed) handled above via status.
   const activeIdx = BUILD_STEPS.findIndex((s) => s.phase === phase);
   // Before the first phase tick (queued / undefined) the first step is active.
   const current = activeIdx === -1 ? 0 : activeIdx;
-  return BUILD_STEPS.map((_, i) =>
-    i < current ? "done" : i === current ? "active" : "pending"
-  );
+  return BUILD_STEPS.map((_, i) => (i < current ? "done" : i === current ? "active" : "pending"));
 }
 
 export function DeploymentsPage() {

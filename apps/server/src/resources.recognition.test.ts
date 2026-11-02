@@ -74,16 +74,16 @@ function seedDatabase(ctx: Ctx, engine: "postgres" | "mysql" | "redis" | "mongo"
   return id;
 }
 
-function setServiceEnv(
-  ctx: Ctx,
-  serviceId: string,
-  key: string,
-  value: string,
-  isSecret = false
-): void {
+function setServiceEnv(ctx: Ctx, serviceId: string, key: string, value: string, isSecret = false): void {
   ctx.db
     .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
-    .run(nanoid(), serviceId, key, isSecret ? encryptSecret(value, ctx.config.secretKey) : value, isSecret ? 1 : 0);
+    .run(
+      nanoid(),
+      serviceId,
+      key,
+      isSecret ? encryptSecret(value, ctx.config.secretKey) : value,
+      isSecret ? 1 : 0
+    );
 }
 
 async function loginToken(ctx: Ctx): Promise<string> {
@@ -195,21 +195,23 @@ test("recognition: linked legacy database is satisfied and can be adopted withou
   try {
     const databaseId = seedDatabase(ctx, "postgres");
     const serviceId = seedService(ctx, { workingDir: dir, linkedDatabaseId: databaseId });
-    const databaseCountBeforeAdopt = ctx.db
-      .prepare("SELECT COUNT(*) AS count FROM databases")
-      .get() as { count: number };
+    const databaseCountBeforeAdopt = ctx.db.prepare("SELECT COUNT(*) AS count FROM databases").get() as {
+      count: number;
+    };
 
     const before = await recognizeService(ctx, serviceId);
     assert.equal(before.state, "satisfied");
     assert.equal(before.current_provider.kind, "legacy-database");
-    assert.ok(before.actions.some((action) => action.id === "adopt-legacy" && action.database_id === databaseId));
+    assert.ok(
+      before.actions.some((action) => action.id === "adopt-legacy" && action.database_id === databaseId)
+    );
 
     const resource = await adoptDatabaseAsResource(ctx, { databaseId, serviceId });
     assert.equal(resource.profile, "postgres");
     assert.equal(JSON.parse(resource.config_json).database_id, databaseId);
-    const databaseCountAfterAdopt = ctx.db
-      .prepare("SELECT COUNT(*) AS count FROM databases")
-      .get() as { count: number };
+    const databaseCountAfterAdopt = ctx.db.prepare("SELECT COUNT(*) AS count FROM databases").get() as {
+      count: number;
+    };
     assert.equal(databaseCountAfterAdopt.count, databaseCountBeforeAdopt.count);
 
     const after = await recognizeService(ctx, serviceId);
@@ -293,7 +295,10 @@ test("recognition routes: auth, rescan, preference, and adoption", async () => {
     assert.equal(body.ok, true);
     assert.equal(body.resource.profile, "mongo");
     assert.equal(body.recognition.service_id, serviceId);
-    assert.ok(!adopt.body.includes("pass"), "raw database password should not be returned by adoption response");
+    assert.ok(
+      !adopt.body.includes("pass"),
+      "raw database password should not be returned by adoption response"
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     await gracefulShutdown(ctx);

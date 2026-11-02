@@ -175,68 +175,69 @@ export type N8nEventStarter = {
 };
 
 /** LocalSURV events that can fan out into n8n webhook workflows. */
-export const N8N_EVENT_STARTERS: Array<{ event: string; label: string; description: string; group: string }> = [
-  {
-    event: "deployment.succeeded",
-    label: "Deployment succeeded",
-    description: "Fires when a service deploy finishes successfully.",
-    group: "Deployments"
-  },
-  {
-    event: "deployment.failed",
-    label: "Deployment failed",
-    description: "Fires when a service deploy fails.",
-    group: "Deployments"
-  },
-  {
-    event: "service.crashed",
-    label: "Service crashed",
-    description: "Fires when a watched service exits unexpectedly.",
-    group: "Services"
-  },
-  {
-    event: "email.received",
-    label: "Email received",
-    description: "Fires when the Emailer receives an inbound message (includes thread + body).",
-    group: "Emailer"
-  },
-  {
-    event: "email.sent",
-    label: "Email sent",
-    description: "Fires when the Emailer successfully sends a message.",
-    group: "Emailer"
-  },
-  {
-    event: "license.issued",
-    label: "License issued",
-    description: "Fires when a new license key is generated.",
-    group: "License"
-  },
-  {
-    event: "license.revoked",
-    label: "License revoked",
-    description: "Fires when a license key is revoked.",
-    group: "License"
-  },
-  {
-    event: "license.extended",
-    label: "License extended",
-    description: "Fires when a license expiry is extended.",
-    group: "License"
-  },
-  {
-    event: "license.validated",
-    label: "License validated",
-    description: "Fires on each successful public license validation.",
-    group: "License"
-  },
-  {
-    event: "license.activation",
-    label: "License activation",
-    description: "Fires when a new device fingerprint activates a key.",
-    group: "License"
-  }
-];
+export const N8N_EVENT_STARTERS: Array<{ event: string; label: string; description: string; group: string }> =
+  [
+    {
+      event: "deployment.succeeded",
+      label: "Deployment succeeded",
+      description: "Fires when a service deploy finishes successfully.",
+      group: "Deployments"
+    },
+    {
+      event: "deployment.failed",
+      label: "Deployment failed",
+      description: "Fires when a service deploy fails.",
+      group: "Deployments"
+    },
+    {
+      event: "service.crashed",
+      label: "Service crashed",
+      description: "Fires when a watched service exits unexpectedly.",
+      group: "Services"
+    },
+    {
+      event: "email.received",
+      label: "Email received",
+      description: "Fires when the Emailer receives an inbound message (includes thread + body).",
+      group: "Emailer"
+    },
+    {
+      event: "email.sent",
+      label: "Email sent",
+      description: "Fires when the Emailer successfully sends a message.",
+      group: "Emailer"
+    },
+    {
+      event: "license.issued",
+      label: "License issued",
+      description: "Fires when a new license key is generated.",
+      group: "License"
+    },
+    {
+      event: "license.revoked",
+      label: "License revoked",
+      description: "Fires when a license key is revoked.",
+      group: "License"
+    },
+    {
+      event: "license.extended",
+      label: "License extended",
+      description: "Fires when a license expiry is extended.",
+      group: "License"
+    },
+    {
+      event: "license.validated",
+      label: "License validated",
+      description: "Fires on each successful public license validation.",
+      group: "License"
+    },
+    {
+      event: "license.activation",
+      label: "License activation",
+      description: "Fires when a new device fingerprint activates a key.",
+      group: "License"
+    }
+  ];
 
 // ---------------------------------------------------------------------------
 // Settings helpers
@@ -376,7 +377,8 @@ export function buildN8nEnv(ctx: AppContext): string[] {
     env.push(`TZ=${config.timezone}`);
   }
   env.push(`EXECUTIONS_DATA_PRUNE=${config.pruneEnabled ? "true" : "false"}`);
-  if (config.pruneEnabled) env.push(`EXECUTIONS_DATA_MAX_AGE=${Math.max(1, Math.round(config.pruneMaxAgeHours))}`);
+  if (config.pruneEnabled)
+    env.push(`EXECUTIONS_DATA_MAX_AGE=${Math.max(1, Math.round(config.pruneMaxAgeHours))}`);
   if (config.runnersEnabled) env.push(`N8N_RUNNERS_ENABLED=true`);
 
   if (config.useSharedSmtp) {
@@ -440,7 +442,10 @@ function envOf(info: ContainerInspectInfo | null, key: string): string | null {
 }
 
 function envHash(env: string[]): string {
-  return crypto.createHash("sha256").update([...env].sort().join("\n")).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update([...env].sort().join("\n"))
+    .digest("hex");
 }
 
 /**
@@ -481,7 +486,9 @@ export async function getN8nStatus(ctx: AppContext): Promise<N8nStatus> {
   const [reachable, ready] = running
     ? await Promise.all([probe(`${LOCAL_BASE}/healthz`), probe(`${LOCAL_BASE}/healthz/readiness`)])
     : [false, false];
-  const api = reachable ? await checkApi(ctx, running) : { ok: false, error: running ? "n8n is starting" : "n8n is stopped" };
+  const api = reachable
+    ? await checkApi(ctx, running)
+    : { ok: false, error: running ? "n8n is starting" : "n8n is stopped" };
   const aiToken = getSecretSetting(ctx, SETTING_AI_TOKEN);
   const aiBase = resolveAiBaseUrl(ctx);
   const gw = getGatewayConfig(ctx);
@@ -496,7 +503,7 @@ export async function getN8nStatus(ctx: AppContext): Promise<N8nStatus> {
     ready: ready || reachable,
     version,
     image: info?.Config?.Image ?? configuredImage,
-    startedAt: running ? info?.State?.StartedAt ?? null : null,
+    startedAt: running ? (info?.State?.StartedAt ?? null) : null,
     port: N8N_PORT,
     dataDir: dataDirOf(ctx),
     publicUrl: publicUrlOf(ctx),
@@ -537,7 +544,8 @@ export async function getN8nMetrics(ctx: AppContext): Promise<N8nMetrics> {
   if (!info?.State?.Running) return empty;
   try {
     const s = (await ctx.docker.getContainer(N8N_CONTAINER).stats({ stream: false })) as any;
-    const cpuDelta = (s.cpu_stats?.cpu_usage?.total_usage ?? 0) - (s.precpu_stats?.cpu_usage?.total_usage ?? 0);
+    const cpuDelta =
+      (s.cpu_stats?.cpu_usage?.total_usage ?? 0) - (s.precpu_stats?.cpu_usage?.total_usage ?? 0);
     const sysDelta = (s.cpu_stats?.system_cpu_usage ?? 0) - (s.precpu_stats?.system_cpu_usage ?? 0);
     const cpus = s.cpu_stats?.online_cpus ?? s.cpu_stats?.cpu_usage?.percpu_usage?.length ?? 1;
     const cpuPercent = sysDelta > 0 && cpuDelta >= 0 ? (cpuDelta / sysDelta) * cpus * 100 : 0;
@@ -595,9 +603,7 @@ async function createAndStartN8n(ctx: AppContext): Promise<void> {
   const dataDir = dataDirOf(ctx);
   await mkdir(dataDir, { recursive: true, mode: 0o777 });
 
-  const restart = autostartEnabled(ctx)
-    ? { Name: "unless-stopped" as const }
-    : { Name: "no" as const };
+  const restart = autostartEnabled(ctx) ? { Name: "unless-stopped" as const } : { Name: "no" as const };
 
   const env = buildN8nEnv(ctx);
   const container = await ctx.docker.createContainer({
@@ -666,7 +672,10 @@ export async function setN8nPower(ctx: AppContext, action: N8nPowerAction): Prom
 }
 
 /** Pull the configured image tag again and recreate if anything changed. */
-export async function updateN8nImage(ctx: AppContext, actor = "system"): Promise<N8nStatus & { updated: boolean }> {
+export async function updateN8nImage(
+  ctx: AppContext,
+  actor = "system"
+): Promise<N8nStatus & { updated: boolean }> {
   const image = imageOf(getN8nConfig(ctx));
   const before = await ctx.docker
     .getImage(image)
@@ -749,7 +758,8 @@ export function validateN8nConfig(patch: Partial<N8nConfig>): Partial<N8nConfig>
   const out: Partial<N8nConfig> = {};
   if (patch.imageTag !== undefined) {
     const tag = patch.imageTag.trim() || "latest";
-    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(tag)) throw httpError("Image tag may only contain letters, digits, . _ -", 400);
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(tag))
+      throw httpError("Image tag may only contain letters, digits, . _ -", 400);
     out.imageTag = tag;
   }
   if (patch.timezone !== undefined) {
@@ -777,7 +787,8 @@ export function validateN8nConfig(patch: Partial<N8nConfig>): Partial<N8nConfig>
       const key = k.trim();
       if (!key) continue;
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw httpError(`Invalid env key "${key}"`, 400);
-      if (MANAGED_ENV.has(key)) throw httpError(`${key} is managed by LocalSURV and can't be overridden`, 400);
+      if (MANAGED_ENV.has(key))
+        throw httpError(`${key} is managed by LocalSURV and can't be overridden`, 400);
       env[key] = String(v ?? "");
     }
     out.extraEnv = env;
@@ -1021,8 +1032,9 @@ async function apiJson<T>(ctx: AppContext, apiPath: string, init?: RequestInit):
   }
   if (!res.ok) {
     const msg =
-      (body && typeof body === "object" && "message" in body ? String((body as { message: unknown }).message) : null) ??
-      `n8n API returned ${res.status}`;
+      (body && typeof body === "object" && "message" in body
+        ? String((body as { message: unknown }).message)
+        : null) ?? `n8n API returned ${res.status}`;
     throw httpError(
       res.status === 401 ? "n8n rejected the API key — paste a fresh one" : `n8n: ${msg}`,
       res.status === 404 ? 404 : res.status >= 500 ? 502 : 400
@@ -1065,7 +1077,13 @@ function summarizeWorkflow(ctx: AppContext, w: RawWorkflow, editorBase: string |
     const type = node.type ?? "";
     if (node.disabled) continue;
     if (TRIGGER_LABELS[type]) triggers.add(TRIGGER_LABELS[type]);
-    else if (/trigger$/i.test(type)) triggers.add(type.split(".").pop()!.replace(/Trigger$/i, "") || "Trigger");
+    else if (/trigger$/i.test(type))
+      triggers.add(
+        type
+          .split(".")
+          .pop()!
+          .replace(/Trigger$/i, "") || "Trigger"
+      );
     if (type === "n8n-nodes-base.webhook") {
       const p = String(node.parameters?.path ?? "").replace(/^\/+/, "");
       if (p) {
@@ -1096,7 +1114,10 @@ async function fetchAllWorkflows(ctx: AppContext): Promise<RawWorkflow[]> {
   let cursor: string | null = null;
   for (let page = 0; page < 10; page++) {
     const qs = `limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const body: { data?: RawWorkflow[]; nextCursor?: string | null } = await apiJson(ctx, `/api/v1/workflows?${qs}`);
+    const body: { data?: RawWorkflow[]; nextCursor?: string | null } = await apiJson(
+      ctx,
+      `/api/v1/workflows?${qs}`
+    );
     out.push(...(body.data ?? []));
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
@@ -1149,7 +1170,9 @@ export async function setN8nWorkflowActive(
 }
 
 export async function deleteN8nWorkflow(ctx: AppContext, id: string, actor = "system"): Promise<void> {
-  const w = await apiJson<RawWorkflow>(ctx, `/api/v1/workflows/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const w = await apiJson<RawWorkflow>(ctx, `/api/v1/workflows/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  });
   writeAuditLog(ctx, {
     actor,
     action: "n8n.workflow.delete",
@@ -1165,7 +1188,9 @@ export async function getN8nWorkflowJson(ctx: AppContext, id: string): Promise<R
 }
 
 /** Every workflow, full definitions — a portable backup bundle. */
-export async function exportN8nWorkflows(ctx: AppContext): Promise<{ exportedAt: string; workflows: RawWorkflow[] }> {
+export async function exportN8nWorkflows(
+  ctx: AppContext
+): Promise<{ exportedAt: string; workflows: RawWorkflow[] }> {
   return { exportedAt: nowIso(), workflows: await fetchAllWorkflows(ctx) };
 }
 
@@ -1224,9 +1249,13 @@ export async function importN8nWorkflow(
     body: JSON.stringify(body)
   });
   if (opts.activate) {
-    created = await apiJson<RawWorkflow>(ctx, `/api/v1/workflows/${encodeURIComponent(String(created.id))}/activate`, {
-      method: "POST"
-    });
+    created = await apiJson<RawWorkflow>(
+      ctx,
+      `/api/v1/workflows/${encodeURIComponent(String(created.id))}/activate`,
+      {
+        method: "POST"
+      }
+    );
   }
   writeAuditLog(ctx, {
     actor: opts.actor ?? "system",
@@ -1256,7 +1285,8 @@ export async function listN8nExecutions(
   opts: { workflowId?: string; status?: string; limit?: number; cursor?: string } = {}
 ): Promise<{ available: boolean; items: N8nExecution[]; nextCursor: string | null; error?: string }> {
   const info = await containerInspect(ctx);
-  if (!info?.State?.Running) return { available: false, items: [], nextCursor: null, error: "n8n is stopped" };
+  if (!info?.State?.Running)
+    return { available: false, items: [], nextCursor: null, error: "n8n is stopped" };
   if (!getSecretSetting(ctx, SETTING_API_KEY)) {
     return { available: false, items: [], nextCursor: null, error: "Add an n8n API key to see executions" };
   }
@@ -1279,7 +1309,7 @@ export async function listN8nExecutions(
       return {
         id: String(e.id),
         workflowId: e.workflowId != null ? String(e.workflowId) : null,
-        workflowName: e.workflowId != null ? names.get(String(e.workflowId)) ?? null : null,
+        workflowName: e.workflowId != null ? (names.get(String(e.workflowId)) ?? null) : null,
         status,
         mode: e.mode ?? null,
         startedAt: e.startedAt ?? null,
@@ -1294,13 +1324,20 @@ export async function listN8nExecutions(
   }
 }
 
-export async function retryN8nExecution(ctx: AppContext, id: string, actor = "system"): Promise<{ id: string | null }> {
+export async function retryN8nExecution(
+  ctx: AppContext,
+  id: string,
+  actor = "system"
+): Promise<{ id: string | null }> {
   const res = await apiJson<RawExecution | null>(ctx, `/api/v1/executions/${encodeURIComponent(id)}/retry`, {
     method: "POST",
     body: JSON.stringify({ loadWorkflow: true })
   }).catch((err: HttpError) => {
     if (err.statusCode === 404) {
-      throw httpError("This n8n version can't retry executions over the API — update n8n or retry in the editor", 400);
+      throw httpError(
+        "This n8n version can't retry executions over the API — update n8n or retry in the editor",
+        400
+      );
     }
     throw err;
   });
@@ -1468,9 +1505,13 @@ export async function autoInstallN8nEventStarter(
   if (existing) {
     workflow = existing.active
       ? existing
-      : await apiJson<RawWorkflow>(ctx, `/api/v1/workflows/${encodeURIComponent(String(existing.id))}/activate`, {
-          method: "POST"
-        });
+      : await apiJson<RawWorkflow>(
+          ctx,
+          `/api/v1/workflows/${encodeURIComponent(String(existing.id))}/activate`,
+          {
+            method: "POST"
+          }
+        );
   } else {
     const body = sanitizeWorkflowForImport(n8nStarterWorkflowJson(event));
     const created = await apiJson<RawWorkflow>(ctx, "/api/v1/workflows", {

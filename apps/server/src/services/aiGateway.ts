@@ -175,9 +175,9 @@ function readProviderKey(ctx: AppContext, provider: ProviderId): string | null {
 }
 
 function readProviderBaseUrl(ctx: AppContext, provider: ProviderId): string | undefined {
-  const row = ctx.db
-    .prepare("SELECT value FROM settings WHERE key = ?")
-    .get(settingsBaseUrlFor(provider)) as { value?: string } | undefined;
+  const row = ctx.db.prepare("SELECT value FROM settings WHERE key = ?").get(settingsBaseUrlFor(provider)) as
+    | { value?: string }
+    | undefined;
   return row?.value || undefined;
 }
 
@@ -352,9 +352,9 @@ export function revokeConsumerToken(ctx: AppContext, id: string, actor = "system
 export function authenticateConsumerToken(ctx: AppContext, presented: string): ConsumerTokenRow | null {
   const token = presented.trim();
   if (!token.startsWith(TOKEN_PREFIX)) return null;
-  const row = ctx.db
-    .prepare("SELECT * FROM ai_gateway_tokens WHERE token_hash = ?")
-    .get(hashToken(token)) as ConsumerTokenRow | undefined;
+  const row = ctx.db.prepare("SELECT * FROM ai_gateway_tokens WHERE token_hash = ?").get(hashToken(token)) as
+    | ConsumerTokenRow
+    | undefined;
   if (!row || row.revoked_at) return null;
   return row;
 }
@@ -521,7 +521,12 @@ export function getUsageSummary(ctx: AppContext, sinceHours = 24): UsageSummary 
               COALESCE(SUM(completion_tokens), 0) AS completion_tokens
        FROM ai_gateway_usage WHERE created_at >= ?`
     )
-    .get(since) as { requests: number; errors: number | null; prompt_tokens: number; completion_tokens: number };
+    .get(since) as {
+    requests: number;
+    errors: number | null;
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
 
   const byConsumer = ctx.db
     .prepare(

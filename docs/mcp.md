@@ -24,6 +24,7 @@ ServerHoster provides a durable API/MCP token that persists across restarts and 
 The token is permanent until you explicitly rotate it. If you need to invalidate an old token, click **Rotate** to generate a new one.
 
 **Token Format:**
+
 ```
 Authorization: Bearer <your-40-character-token>
 ```

@@ -37,7 +37,24 @@ function seedService(ctx: Awaited<ReturnType<typeof buildApp>>, name: string, po
         auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, "p1", name, "process", "node x.js", "/tmp", "", "", port, "stopped", 1, 0, 5, "manual", nowIso(), nowIso());
+    .run(
+      id,
+      "p1",
+      name,
+      "process",
+      "node x.js",
+      "/tmp",
+      "",
+      "",
+      port,
+      "stopped",
+      1,
+      0,
+      5,
+      "manual",
+      nowIso(),
+      nowIso()
+    );
   return id;
 }
 
@@ -130,7 +147,11 @@ test("assertWithinServiceDir: confines working_dir to the service's own clone", 
       () => assertWithinServiceDir(ctx, id, path.join(ctx.config.projectsDir, id + "X")),
       /inside the service/
     );
-    assert.throws(() => assertWithinServiceDir(ctx, id, "/etc"), /inside the service/, "a host path is rejected");
+    assert.throws(
+      () => assertWithinServiceDir(ctx, id, "/etc"),
+      /inside the service/,
+      "a host path is rejected"
+    );
   } finally {
     await gracefulShutdown(ctx);
   }

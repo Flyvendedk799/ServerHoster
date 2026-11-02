@@ -14,7 +14,24 @@ function seedService(ctx: Awaited<ReturnType<typeof buildApp>>, name: string, po
         auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, "p1", name, "process", "node x.js", "/tmp", "", "", port, "running", 1, 0, 5, "manual", nowIso(), nowIso());
+    .run(
+      id,
+      "p1",
+      name,
+      "process",
+      "node x.js",
+      "/tmp",
+      "",
+      "",
+      port,
+      "running",
+      1,
+      0,
+      5,
+      "manual",
+      nowIso(),
+      nowIso()
+    );
   return id;
 }
 
@@ -23,7 +40,11 @@ async function tokenFor(ctx: Awaited<ReturnType<typeof buildApp>>): Promise<stri
   ctx.db
     .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('dashboard_password', 'test-pass')")
     .run();
-  const login = await ctx.app.inject({ method: "POST", url: "/auth/login", payload: { password: "test-pass" } });
+  const login = await ctx.app.inject({
+    method: "POST",
+    url: "/auth/login",
+    payload: { password: "test-pass" }
+  });
   return login.json().token as string;
 }
 
@@ -36,7 +57,9 @@ test("expose/domain: a domain already bound to another service is rejected with 
     const other = seedService(ctx, "FM_ECOM", 3333);
     // owner already owns the domain
     ctx.db
-      .prepare("INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)")
+      .prepare(
+        "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
       .run(nanoid(), owner, "mast3kmedia.dk", 8000, nowIso());
 
     const resp = await ctx.app.inject({
@@ -69,7 +92,9 @@ test("expose/domain: a different domain passes the guard (fails later, not on co
     const owner = seedService(ctx, "Mast3kMedia", 8000);
     const other = seedService(ctx, "FM_ECOM", 3333);
     ctx.db
-      .prepare("INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)")
+      .prepare(
+        "INSERT INTO proxy_routes (id, service_id, domain, target_port, created_at) VALUES (?, ?, ?, ?, ?)"
+      )
       .run(nanoid(), owner, "mast3kmedia.dk", 8000, nowIso());
 
     const resp = await ctx.app.inject({

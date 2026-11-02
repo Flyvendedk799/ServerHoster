@@ -99,14 +99,8 @@ test("compose detector rewrites service hostnames to the published localhost por
 
     assert.ok(detected);
     assert.equal(detected.env_key, "DATABASE_URL");
-    assert.equal(
-      detected.connection_url,
-      "postgresql://leader:leader@localhost:5433/leader?schema=public"
-    );
-    assert.equal(
-      detected.connection_preview,
-      "postgresql://leader:****@localhost:5433/leader?schema=public"
-    );
+    assert.equal(detected.connection_url, "postgresql://leader:leader@localhost:5433/leader?schema=public");
+    assert.equal(detected.connection_preview, "postgresql://leader:****@localhost:5433/leader?schema=public");
     assert.equal(detected.running, true);
     assert.equal(detected.available, true);
   } finally {
