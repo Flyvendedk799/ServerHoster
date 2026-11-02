@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test, { afterEach, beforeEach, describe } from "node:test";
@@ -14,6 +15,7 @@ import {
   stripGitCredentials
 } from "./services/ciConfig.js";
 import {
+  checkoutCiWorkspace,
   enqueueCiRun,
   ensureCiSchema,
   executeCiRun,
@@ -23,7 +25,8 @@ import {
   startCiLoop,
   type CiRunDeps
 } from "./services/ci.js";
-import { ciContainerUser, type CiSandbox } from "./services/ciDocker.js";
+import { ciContainerUser, dockerCiSandbox, type CiSandbox } from "./services/ciDocker.js";
+import type Docker from "dockerode";
 
 // node:sqlite needs Node 22.5+. CI still runs Node 20, where the db tests skip
 // instead of failing to load. The config tests below do not need it.
@@ -541,5 +544,344 @@ describe("CI runner", { skip }, () => {
       status: string;
     };
     assert.equal(run.status, "queued");
+  });
+});
+
+function runRow(id: string) {
+  return ctx.db
+    .prepare("SELECT status, error, commit_hash, deploy_status FROM ci_runs WHERE id = ?")
+    .get(id) as {
+    status: string;
+    error: string | null;
+    commit_hash: string | null;
+    deploy_status: string | null;
+  };
+}
+
+/** Resolve with how long `work` took, failing if it outlives `limitMs`. */
+async function within<T>(limitMs: number, work: Promise<T>): Promise<number> {
+  const begin = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    work,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`still running after ${limitMs}ms`)), limitMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+  return Date.now() - begin;
+}
+
+describe("CI stop and timeout", { skip }, () => {
+  test("cancel stops a checkout that never returns, and removes the workspace", async () => {
+    seedService();
+    seedPipeline();
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "a".repeat(40),
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    let workspace = "";
+    let sawSignal = false;
+    const running = runQueued(queued.id, {
+      checkout: (input) => {
+        workspace = input.dir;
+        fs.mkdirSync(input.dir, { recursive: true });
+        fs.writeFileSync(path.join(input.dir, "partial"), "x");
+        input.signal?.addEventListener("abort", () => {
+          sawSignal = true;
+        });
+        return new Promise<void>(() => undefined); // a stalled git server
+      }
+    });
+    setTimeout(() => requestCancelCiRun(ctx, queued.id), 100);
+    await within(3000, running);
+    assert.equal(sawSignal, true);
+    assert.equal(runRow(queued.id).status, "cancelled");
+    assert.equal(fs.existsSync(workspace), false);
+  });
+
+  test("the run deadline covers checkout, so a stalled clone times out", async () => {
+    seedService();
+    seedPipeline();
+    // 0.005 minutes = 300 ms. The column has INTEGER affinity but keeps a REAL.
+    ctx.db.prepare("UPDATE ci_pipelines SET timeout_minutes = 0.005 WHERE id = 'pipe'").run();
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "b".repeat(40),
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    let sandboxed = false;
+    await within(
+      3000,
+      runQueued(queued.id, {
+        checkout: () => new Promise<void>(() => undefined),
+        sandbox: {
+          async run() {
+            sandboxed = true;
+            return { failedStep: null, cancelled: false, timedOut: false };
+          }
+        }
+      })
+    );
+    assert.equal(sandboxed, false);
+    const run = runRow(queued.id);
+    assert.equal(run.status, "failed");
+    assert.match(run.error ?? "", /Timed out/);
+  });
+
+  test("cancel frees the run even when the sandbox ignores the signal", async () => {
+    seedService();
+    seedPipeline();
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: "c".repeat(40),
+      branch: "main",
+      trigger: "manual",
+      deployAfter: false
+    });
+    const running = runQueued(queued.id, {
+      sandbox: { run: () => new Promise(() => undefined) }
+    });
+    setTimeout(() => requestCancelCiRun(ctx, queued.id), 100);
+    await within(3000, running);
+    assert.equal(runRow(queued.id).status, "cancelled");
+  });
+});
+
+describe("CI commit handling", { skip }, () => {
+  test("a commit that could be read as a git option is refused", () => {
+    seedService();
+    seedPipeline();
+    assert.throws(
+      () =>
+        enqueueCiRun(ctx, {
+          serviceId: "svc",
+          commit: "--upload-pack=touch /tmp/pwned",
+          branch: "main",
+          trigger: "manual",
+          deployAfter: false
+        }),
+      /Not a commit id/
+    );
+  });
+
+  test("with the gate off a bad commit still deploys and still queues a run", () => {
+    seedService();
+    seedPipeline();
+    const plan = handleIncomingCommit(ctx, {
+      serviceId: "svc",
+      repoUrl: "https://github.com/flyvende/awaire.git",
+      branch: "main",
+      commit: "--upload-pack=x",
+      trigger: "webhook"
+    });
+    assert.equal(plan, "deploy-and-ci");
+    const rows = ctx.db.prepare("SELECT commit_hash, status FROM ci_runs").all() as Array<{
+      commit_hash: string | null;
+      status: string;
+    }>;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].commit_hash, null);
+    assert.equal(rows[0].status, "queued");
+  });
+
+  test("a run queued without a commit deploys the commit it actually tested", async () => {
+    seedService();
+    seedPipeline({ gate: true });
+    const tested = "d".repeat(40);
+    const queued = enqueueCiRun(ctx, {
+      serviceId: "svc",
+      commit: null,
+      branch: "main",
+      trigger: "webhook",
+      deployAfter: true
+    });
+    const deployed: Array<string | null> = [];
+    await runQueued(queued.id, {
+      checkout: async () => tested,
+      remoteHead: async () => "e".repeat(40),
+      deploy: async (input) => {
+        deployed.push(input.commit);
+        return { status: "success" };
+      }
+    });
+    // The branch moved past the tested commit, so nothing ships.
+    assert.deepEqual(deployed, []);
+    const run = runRow(queued.id);
+    assert.equal(run.commit_hash, tested);
+    assert.equal(run.deploy_status, "skipped");
+  });
+
+  test(
+    "a repo ci.yml that links outside the checkout is not read",
+    { skip: process.platform === "win32" ? "symlinks need privileges on Windows" : false },
+    async () => {
+      seedService();
+      seedPipeline({ source: "repo", inline: null });
+      const secret = path.join(dir, "host-secret.txt");
+      fs.writeFileSync(secret, "HOST_SECRET_VALUE: [");
+      const queued = enqueueCiRun(ctx, {
+        serviceId: "svc",
+        commit: "f".repeat(40),
+        branch: "main",
+        trigger: "manual",
+        deployAfter: false
+      });
+      await runQueued(queued.id, {
+        checkout: async (input) => {
+          fs.mkdirSync(path.join(input.dir, ".survhub"), { recursive: true });
+          fs.symlinkSync(secret, path.join(input.dir, ".survhub", "ci.yml"));
+        }
+      });
+      const run = runRow(queued.id);
+      assert.equal(run.status, "failed");
+      assert.match(run.error ?? "", /regular file/);
+      assert.equal((run.error ?? "").includes("HOST_SECRET_VALUE"), false);
+    }
+  );
+});
+
+describe("CI setup stops", () => {
+  test("git is killed when the run stops during a stalled clone", async () => {
+    // A server that accepts the connection and never answers: git waits forever.
+    const sockets = new Set<net.Socket>();
+    const closed = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("error", () => undefined);
+      socket.on("close", () => closed.add(socket));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-ci-git-"));
+    const abort = new AbortController();
+    try {
+      const checkout = checkoutCiWorkspace({
+        dir: path.join(work, "run"),
+        repoUrl: `http://127.0.0.1:${port}/stalled.git`,
+        branch: "main",
+        commit: null,
+        gitEnv: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        redactions: [],
+        signal: abort.signal
+      });
+      const outcome = checkout.then(
+        () => "resolved",
+        (error: Error) => error.name
+      );
+      // Wait until git has actually connected before stopping it.
+      const connectedBy = Date.now() + 10_000;
+      while (sockets.size === 0 && Date.now() < connectedBy) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(sockets.size > 0, "git never connected");
+      abort.abort();
+      await within(3000, outcome);
+      assert.equal(await outcome, "CiAbortError");
+      // The killed process group drops its connection.
+      const closedBy = Date.now() + 3000;
+      while (closed.size < sockets.size && Date.now() < closedBy) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(closed.size, sockets.size, "git still holds its connection");
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  test("an image pull that never answers is stopped by the run signal", async () => {
+    const abort = new AbortController();
+    let pullOptions: { abortSignal?: AbortSignal } | undefined;
+    let created = false;
+    const docker = {
+      getImage: () => ({ inspect: () => Promise.reject(new Error("no such image")) }),
+      pull: (_image: string, options: { abortSignal?: AbortSignal }) => {
+        pullOptions = options;
+        return new Promise(() => undefined); // registry never sends a byte
+      },
+      getContainer: () => ({ remove: () => Promise.resolve() }),
+      createContainer: () => {
+        created = true;
+        return Promise.reject(new Error("must not be reached"));
+      },
+      modem: {}
+    } as unknown as Docker;
+    const running = dockerCiSandbox(docker).run({
+      runId: "r1",
+      image: "node:22-bookworm",
+      workspace: os.tmpdir(),
+      env: {},
+      timeoutMs: 60_000,
+      memoryMb: 512,
+      cpus: 1,
+      steps: [{ name: "Test", run: "true" }],
+      onSetupLog: () => undefined,
+      onLog: () => undefined,
+      onStep: () => undefined,
+      isCancelled: () => false,
+      signal: abort.signal
+    });
+    setTimeout(() => abort.abort(), 50);
+    let result: Awaited<typeof running> | undefined;
+    await within(
+      2000,
+      running.then((value) => {
+        result = value;
+      })
+    );
+    assert.deepEqual(result, { failedStep: null, cancelled: false, timedOut: true });
+    assert.equal(pullOptions?.abortSignal, abort.signal);
+    assert.equal(created, false);
+  });
+
+  test("a container Docker creates after the stop is removed", async () => {
+    const abort = new AbortController();
+    let removed = false;
+    let stopped = false;
+    let land: (value: unknown) => void = () => undefined;
+    const docker = {
+      getImage: () => ({ inspect: () => Promise.resolve({}) }),
+      getContainer: () => ({ remove: () => Promise.reject(new Error("no such container")) }),
+      createContainer: () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+      modem: {}
+    } as unknown as Docker;
+    const running = dockerCiSandbox(docker).run({
+      runId: "r2",
+      image: "node:22-bookworm",
+      workspace: os.tmpdir(),
+      env: {},
+      timeoutMs: 60_000,
+      memoryMb: 512,
+      cpus: 1,
+      steps: [{ name: "Test", run: "true" }],
+      onSetupLog: () => undefined,
+      onLog: () => undefined,
+      onStep: () => undefined,
+      isCancelled: () => stopped,
+      signal: abort.signal
+    });
+    setTimeout(() => {
+      stopped = true;
+      abort.abort();
+    }, 50);
+    const result = await running;
+    assert.equal(result.cancelled, true);
+    land({
+      remove: async () => {
+        removed = true;
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(removed, true);
   });
 });

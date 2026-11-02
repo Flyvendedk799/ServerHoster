@@ -21,7 +21,7 @@ import { getServiceEnvWithLinks, startService, stopService, withLock } from "./r
 import { resolveComposeConfig, writeComposeEnvFile } from "./compose.js";
 import { composeBuild } from "./composeRuntime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
-import { commitsMatch } from "./ciConfig.js";
+import { commitsMatch, isCommitSha } from "./ciConfig.js";
 import { createNotification } from "./notifications.js";
 import { runHostPreflight, type HostRequirementResult } from "./hostRequirements.js";
 import { transition, markFailed } from "./deployStateMachine.js";
@@ -1670,6 +1670,9 @@ async function deployFromGitLocked(
       ctx.db.prepare("UPDATE deployments SET branch = ? WHERE id = ?").run(effectiveBranch, deploymentId);
     }
     const pinnedCommit = options?.commit?.trim() || "";
+    if (pinnedCommit && !isCommitSha(pinnedCommit)) {
+      throw new Error("Refusing to deploy: the pinned commit is not a commit id.");
+    }
     if (pinnedCommit) {
       await ensurePinnedCommit(git, targetPath, authedUrl, effectiveBranch, pinnedCommit);
     }

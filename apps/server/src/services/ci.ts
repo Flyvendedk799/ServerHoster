@@ -24,6 +24,7 @@ import {
   capLog,
   commitsMatch,
   createLogRedactor,
+  isCommitSha,
   parseCiConfig,
   planForPipeline,
   redactSecrets,
@@ -151,7 +152,8 @@ export type CiDeployInput = {
 
 export type CiRunDeps = {
   sandbox?: DockerSandbox;
-  checkout?: (input: CheckoutInput) => Promise<void>;
+  /** Resolves to the commit that was checked out, when it knows it. */
+  checkout?: (input: CheckoutInput) => Promise<string | void>;
   remoteHead?: (repoUrl: string, branch: string) => Promise<string | null>;
   deploy?: (input: CiDeployInput) => Promise<{ status: string } | void>;
 };
@@ -380,6 +382,7 @@ export function enqueueCiRun(
     | undefined;
   if (!pipeline || !pipeline.enabled) throw httpError(409, "CI is not enabled for this service.");
   const commit = input.commit?.trim() ? input.commit.trim() : null;
+  if (commit && !isCommitSha(commit)) throw httpError(400, "Not a commit id.");
   if (commit) {
     const existing = ctx.db
       .prepare(
@@ -446,13 +449,20 @@ export function handleIncomingCommit(
     .get(input.serviceId) as { enabled: number; gate_deploy: number } | undefined;
   const plan = planForPipeline(pipeline);
   if (plan === "deploy-only") return plan;
-  enqueueCiRun(ctx, {
-    serviceId: input.serviceId,
-    commit: input.commit,
-    branch: input.branch,
-    trigger: input.trigger,
-    deployAfter: plan === "ci-then-deploy"
-  });
+  try {
+    enqueueCiRun(ctx, {
+      serviceId: input.serviceId,
+      commit: isCommitSha(input.commit) ? input.commit : null,
+      branch: input.branch,
+      trigger: input.trigger,
+      deployAfter: plan === "ci-then-deploy"
+    });
+  } catch (error) {
+    // With the gate off the caller still deploys; a CI queue error must not stop it.
+    // With the gate on, nothing deploys untested, so the error goes up.
+    if (plan === "ci-then-deploy") throw error;
+    serviceLog(ctx, input.serviceId, "warn", `CI: could not queue a run: ${serializeError(error)}`);
+  }
   return plan;
 }
 
@@ -472,6 +482,7 @@ export async function queueManualCiRun(ctx: AppContext, pipelineId: string): Pro
   let commit: string | null = null;
   try {
     commit = await remoteHead(ctx, service.github_repo_url, branch);
+    if (!isCommitSha(commit)) commit = null;
   } catch {
     commit = null;
   }
@@ -556,10 +567,13 @@ function runGit(
       reject(new CiAbortError());
       return;
     }
+    // Own process group, so a stop also kills git-remote-https and ssh, which
+    // hold the pipes open and would keep "close" from ever firing.
     const child = spawn("git", args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     let stdout = "";
     let stderr = "";
@@ -570,7 +584,9 @@ function runGit(
       stderr += buf.toString("utf8");
     });
     const kill = () => {
-      child.kill();
+      killProcessTree(child.pid, () => child.kill("SIGKILL"));
+      // Do not wait for "close": a stuck descendant can keep the pipes open.
+      reject(new CiAbortError());
     };
     options.signal?.addEventListener("abort", kill, { once: true });
     child.on("error", (error) => {
@@ -589,7 +605,60 @@ function runGit(
   });
 }
 
-export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
+function killProcessTree(pid: number | undefined, fallback: () => void): void {
+  if (pid && process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL");
+      return;
+    } catch {
+      /* group already gone; fall through */
+    }
+  }
+  if (pid && process.platform === "win32") {
+    try {
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on(
+        "error",
+        () => undefined
+      );
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    fallback();
+  } catch {
+    /* already exited */
+  }
+}
+
+/**
+ * Settle as soon as the signal fires, even if `work` ignores it. The caller
+ * keeps one deadline across checkout, image pull and the job, and its slot
+ * is not held by a step that never returns.
+ */
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(new CiAbortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new CiAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+/** Returns the commit that is checked out. */
+export async function checkoutCiWorkspace(input: CheckoutInput): Promise<string> {
   if (input.signal?.aborted) throw new CiAbortError();
   await fs.promises.rm(input.dir, { recursive: true, force: true });
   if (input.signal?.aborted) throw new CiAbortError();
@@ -601,14 +670,20 @@ export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
   };
   try {
     await runGit(
-      ["clone", "--branch", input.branch, "--single-branch", "--depth", "1", input.repoUrl, input.dir],
+      ["clone", "--branch", input.branch, "--single-branch", "--depth", "1", "--", input.repoUrl, input.dir],
       { env, signal: input.signal }
     );
   } catch (error) {
     throw gitError(error);
   }
+  if (input.commit && !isCommitSha(input.commit)) throw new Error("Not a commit id.");
+  let head = "";
+  try {
+    head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
+  } catch (error) {
+    throw gitError(error);
+  }
   if (input.commit) {
-    const head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
     if (!commitsMatch(head, input.commit)) {
       try {
         await runGit(["fetch", "--depth", "1", "origin", input.commit], {
@@ -617,8 +692,12 @@ export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
           signal: input.signal
         });
         await runGit(["checkout", "--detach", input.commit], { cwd: input.dir, env, signal: input.signal });
+        head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
       } catch (error) {
         throw gitError(error);
+      }
+      if (!commitsMatch(head, input.commit)) {
+        throw new Error(`Checked out ${head.slice(0, 7)}, expected ${input.commit.slice(0, 7)}.`);
       }
     }
   }
@@ -628,6 +707,7 @@ export async function checkoutCiWorkspace(input: CheckoutInput): Promise<void> {
   } catch (error) {
     throw gitError(error);
   }
+  return head;
 }
 
 function safeRemoveWorkspace(ctx: AppContext, dir: string): void {
@@ -774,24 +854,34 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       `CI: checking out ${branch}${run.commit_hash ? ` @ ${run.commit_hash.slice(0, 7)}` : ""}.`
     );
     const checkout = deps.checkout ?? checkoutCiWorkspace;
-    await checkout({
-      dir: workspace,
-      repoUrl: authedUrl,
-      branch,
-      commit: run.commit_hash,
-      gitEnv: buildGitEnv(ctx),
-      redactions,
-      signal: abort.signal
-    });
+    const checkedOut = await untilAborted(
+      checkout({
+        dir: workspace,
+        repoUrl: authedUrl,
+        branch,
+        commit: run.commit_hash,
+        gitEnv: buildGitEnv(ctx),
+        redactions,
+        signal: abort.signal
+      }),
+      abort.signal
+    );
+    // A run queued without a commit (a webhook with no `after`, or a manual run
+    // whose ls-remote failed) tests whatever the branch head was at checkout.
+    // Record that commit, so the gate deploys exactly it and the head check runs.
+    if (!run.commit_hash && isCommitSha(checkedOut)) {
+      run.commit_hash = checkedOut;
+      ctx.db.prepare("UPDATE ci_runs SET commit_hash = ? WHERE id = ?").run(checkedOut, runId);
+    }
 
     let source = pipeline.inline_config ?? "";
     if (pipeline.config_source !== "inline") {
-      const filePath = path.join(workspace, CI_CONFIG_PATH);
-      if (!fs.existsSync(filePath)) {
-        fail(`No ${CI_CONFIG_PATH} in this commit. Add that file, or switch the pipeline to inline config.`);
+      const read = readRepoCiConfig(workspace);
+      if ("error" in read) {
+        fail(read.error);
         return;
       }
-      source = fs.readFileSync(filePath, "utf8");
+      source = read.source;
     }
     const config = parseCiConfig(source, defaultsOf(pipeline));
     timeoutMinutes = config.timeoutMinutes;
@@ -882,31 +972,45 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
 
     const sandbox = deps.sandbox ?? (await defaultSandbox(ctx));
     const remaining = Math.max(1_000, timeoutMinutes * 60_000 - (Date.now() - started));
-    const result = await sandbox.run({
-      runId,
-      image: config.image,
-      workspace,
-      env: built.env,
-      timeoutMs: remaining,
-      signal: abort.signal,
-      memoryMb: config.memoryMb,
-      cpus: config.cpus,
-      steps: config.steps,
-      onSetupLog: (chunk) => write(-1, chunk),
-      onLog: (index, chunk) => write(index, chunk),
-      onStep: (index, status, exitCode) => {
-        const stamp = nowIso();
-        ctx.db
-          .prepare(
-            `UPDATE ci_run_steps SET status = ?, exit_code = ?,
+    // The sandbox watches the signal itself; the race makes sure a Docker call
+    // that never answers cannot keep the run, its slot or its workspace alive.
+    if (!deps.sandbox) {
+      abort.signal.addEventListener(
+        "abort",
+        () => {
+          void removeRunContainers(ctx, runId);
+        },
+        { once: true }
+      );
+    }
+    const result = await untilAborted(
+      sandbox.run({
+        runId,
+        image: config.image,
+        workspace,
+        env: built.env,
+        timeoutMs: remaining,
+        signal: abort.signal,
+        memoryMb: config.memoryMb,
+        cpus: config.cpus,
+        steps: config.steps,
+        onSetupLog: (chunk) => write(-1, chunk),
+        onLog: (index, chunk) => write(index, chunk),
+        onStep: (index, status, exitCode) => {
+          const stamp = nowIso();
+          ctx.db
+            .prepare(
+              `UPDATE ci_run_steps SET status = ?, exit_code = ?,
                started_at = COALESCE(started_at, ?),
                finished_at = CASE WHEN ? IN ('passed', 'failed', 'skipped') THEN ? ELSE finished_at END
              WHERE run_id = ? AND position = ?`
-          )
-          .run(status, exitCode, stamp, status, stamp, runId, index);
-      },
-      isCancelled: () => isCancelled(ctx, runId)
-    });
+            )
+            .run(status, exitCode, stamp, status, stamp, runId, index);
+        },
+        isCancelled: () => isCancelled(ctx, runId)
+      }),
+      abort.signal
+    );
     finishLogs();
 
     if (result.cancelled || isCancelled(ctx, runId)) {
@@ -963,6 +1067,42 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     if (stopWatch) clearInterval(stopWatch);
     finishLogs();
     safeRemoveWorkspace(ctx, workspace);
+  }
+}
+
+/**
+ * Read `.survhub/ci.yml` from the checkout without following a symlink out of
+ * it. A repo could otherwise point the file at a host path and get its
+ * contents echoed back in the parse error.
+ */
+function readRepoCiConfig(workspace: string): { source: string } | { error: string } {
+  const missing = `No ${CI_CONFIG_PATH} in this commit. Add that file, or switch the pipeline to inline config.`;
+  const filePath = path.join(workspace, CI_CONFIG_PATH);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    return { error: missing };
+  }
+  if (!stat.isFile()) return { error: `${CI_CONFIG_PATH} must be a regular file, not a link or directory.` };
+  try {
+    const root = fs.realpathSync(workspace);
+    const real = fs.realpathSync(filePath);
+    if (!real.startsWith(root + path.sep)) {
+      return { error: `${CI_CONFIG_PATH} must be inside the repository.` };
+    }
+    return { source: fs.readFileSync(real, "utf8") };
+  } catch {
+    return { error: missing };
+  }
+}
+
+async function removeRunContainers(ctx: AppContext, runId: string): Promise<void> {
+  try {
+    const { removeCiRunContainers } = await import("./ciDocker.js");
+    await removeCiRunContainers(ctx.docker, runId);
+  } catch (error) {
+    ctx.app.log.warn({ err: error, runId }, "CI: could not remove the run container");
   }
 }
 

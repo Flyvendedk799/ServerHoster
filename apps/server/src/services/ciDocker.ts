@@ -62,7 +62,14 @@ async function pullImage(
   signal?: AbortSignal
 ): Promise<void> {
   if (signal?.aborted) throw new Error("aborted");
-  const stream = (await docker.pull(image)) as NodeJS.ReadableStream & { destroy?: (error?: Error) => void };
+  // The signal also cancels the request itself, so a registry that never
+  // answers the first byte does not hang here.
+  const stream = (await docker.pull(
+    image,
+    signal ? { abortSignal: signal } : {}
+  )) as NodeJS.ReadableStream & {
+    destroy?: (error?: Error) => void;
+  };
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error | null) => {
@@ -84,6 +91,34 @@ async function pullImage(
       (event: { status?: string; id?: string }) => {
         if (event?.status) onLog(`${event.id ? `${event.id} ` : ""}${event.status}\n`);
       }
+    );
+  });
+}
+
+/**
+ * Reject when the run is stopped or out of time, even if Docker never answers.
+ * The caller then reports the stop instead of waiting on the daemon.
+ */
+function guarded<T>(work: Promise<T>, signal: AbortSignal | undefined, deadline: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const settle = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => settle(() => reject(new Error("aborted")));
+    const timer = setTimeout(
+      () => settle(() => reject(new Error("timed out"))),
+      Math.max(0, deadline - Date.now())
+    );
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error))
     );
   });
 }
@@ -121,14 +156,17 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
       };
       const before = halted();
       if (before) return before;
+      const guard = <T>(work: Promise<T>) => guarded(work, input.signal, deadline);
 
       try {
-        await docker.getImage(input.image).inspect();
+        await guard(docker.getImage(input.image).inspect());
         noteSetup(`Using local image ${input.image}.\n`);
       } catch {
+        const stopped = halted();
+        if (stopped) return stopped;
         noteSetup(`Pulling ${input.image}…\n`);
         try {
-          await pullImage(docker, input.image, noteSetup, input.signal);
+          await guard(pullImage(docker, input.image, noteSetup, input.signal));
         } catch (error) {
           const stop = halted();
           if (stop) return stop;
@@ -140,7 +178,7 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
 
       const name = `survhub-ci-${input.runId.replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40)}`;
       try {
-        await docker.getContainer(name).remove({ force: true });
+        await guard(docker.getContainer(name).remove({ force: true }));
       } catch {
         /* no previous container with this name */
       }
@@ -149,7 +187,7 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
       const user = ciContainerUser();
       const env = Object.entries(input.env).map(([key, value]) => `${key}=${value}`);
       if (user && !Object.prototype.hasOwnProperty.call(input.env, "HOME")) env.push("HOME=/tmp");
-      const container = await docker.createContainer({
+      const creating = docker.createContainer({
         name,
         Image: input.image,
         // Replace the image entrypoint so `sleep` is actually pid 1.
@@ -173,6 +211,16 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
           Init: true
         }
       });
+      let container: Docker.Container;
+      try {
+        container = await guard(creating);
+      } catch (error) {
+        // Docker may still create it after we gave up; remove it when it lands.
+        void creating.then((late) => late.remove({ force: true })).catch(() => undefined);
+        const stop = halted();
+        if (stop) return stop;
+        throw error;
+      }
 
       const stop = async () => {
         try {
@@ -198,9 +246,11 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
       };
       input.signal?.addEventListener("abort", onAbort);
 
+      let current = 0;
       try {
-        await container.start();
+        await guard(container.start());
         for (let index = 0; index < input.steps.length; index += 1) {
+          current = index;
           if (input.isCancelled() || cancelled) {
             for (let rest = index; rest < input.steps.length; rest += 1) input.onStep(rest, "skipped", null);
             return { failedStep: null, cancelled: true, timedOut: false };
@@ -212,13 +262,15 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
           const step = input.steps[index];
           input.onStep(index, "running", null);
           input.onLog(index, `$ ${step.run}\n`);
-          const exec = await container.exec({
-            Cmd: ["sh", "-c", step.run],
-            AttachStdout: true,
-            AttachStderr: true,
-            WorkingDir: "/workspace"
-          });
-          const stream = await exec.start({ hijack: true, stdin: false });
+          const exec = await guard(
+            container.exec({
+              Cmd: ["sh", "-c", step.run],
+              AttachStdout: true,
+              AttachStderr: true,
+              WorkingDir: "/workspace"
+            })
+          );
+          const stream = await guard(exec.start({ hijack: true, stdin: false }));
           try {
             await collectExec(docker, stream, (chunk) => input.onLog(index, chunk));
           } catch (error) {
@@ -233,7 +285,7 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
             }
             throw error;
           }
-          const info = await exec.inspect();
+          const info = await guard(exec.inspect());
           const exitCode = typeof info.ExitCode === "number" ? info.ExitCode : 1;
           if (timedOut || Date.now() > deadline) {
             input.onStep(index, "skipped", exitCode);
@@ -257,13 +309,19 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
           input.onStep(index, "passed", 0);
         }
         return { failedStep: null, cancelled: false, timedOut: false };
+      } catch (error) {
+        const stop = halted() ?? (timedOut ? { failedStep: null, cancelled: false, timedOut: true } : null);
+        if (!stop) throw error;
+        for (let rest = current; rest < input.steps.length; rest += 1) input.onStep(rest, "skipped", null);
+        return stop;
       } finally {
         clearInterval(watch);
         input.signal?.removeEventListener("abort", onAbort);
         try {
-          await container.remove({ force: true });
+          // Bounded: a hung daemon must not keep the run (and its slot) open.
+          await guarded(container.remove({ force: true }), undefined, Date.now() + 30_000);
         } catch {
-          /* already gone */
+          /* already gone, or removed by the run's own cleanup */
         }
       }
     }
@@ -271,11 +329,20 @@ export function dockerCiSandbox(docker: Docker): CiSandbox {
 }
 
 export async function removeCiContainers(docker: Docker): Promise<void> {
+  await removeLabelled(docker, "survhub.ci=1");
+}
+
+/** Remove the container of one run, wherever its setup got to. */
+export async function removeCiRunContainers(docker: Docker, runId: string): Promise<void> {
+  await removeLabelled(docker, `survhub.ci.run=${runId}`);
+}
+
+async function removeLabelled(docker: Docker, label: string): Promise<void> {
   let listed: Array<{ Id: string }> = [];
   try {
     listed = (await docker.listContainers({
       all: true,
-      filters: { label: ["survhub.ci=1"] }
+      filters: { label: [label] }
     })) as Array<{ Id: string }>;
   } catch {
     return;

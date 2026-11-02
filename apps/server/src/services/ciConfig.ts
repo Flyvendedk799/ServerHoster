@@ -165,6 +165,14 @@ export function planForPipeline(
   return "deploy-and-ci";
 }
 
+/**
+ * A commit id from a webhook, the poller or the database. Anything else could
+ * reach git as an option (`--upload-pack=...`) instead of a revision.
+ */
+export function isCommitSha(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{7,64}$/i.test(value);
+}
+
 export function commitsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
   return a === b || a.startsWith(b) || b.startsWith(a);

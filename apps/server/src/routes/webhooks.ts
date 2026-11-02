@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState } from "../services/deploy.js";
 import { handleIncomingCommit } from "../services/ci.js";
+import { isCommitSha } from "../services/ciConfig.js";
 import { parseRepoFullName } from "../services/github.js";
 import { writeAuditLog } from "../services/audit.js";
 
@@ -215,7 +216,7 @@ export function registerWebhookRoutes(ctx: AppContext): void {
               serviceId: service.id,
               repoUrl: service.github_repo_url,
               branch,
-              commit: after && !/^0+$/.test(after) ? after : "",
+              commit: isCommitSha(after) && !/^0+$/.test(after) ? after : "",
               trigger: "webhook"
             });
             if (plan === "ci-then-deploy") return;
