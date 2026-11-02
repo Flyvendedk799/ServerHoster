@@ -22,23 +22,23 @@ isn't on your Wi-Fi.
 
 ## Where the app is served
 
-| | |
-| --- | --- |
-| **Path** | `/m` on the control plane's own origin. Short on purpose — it goes inside the QR, and fewer characters is a code a phone reads across a desk. |
-| **Built by** | `npm run build` (via `npm run build:companion` → `scripts/build-companion.mjs`), which installs `companion/`'s own dependencies if they are missing. |
-| **Found at** | `companion/dist`, or `companion-dist` next to the server's compiled output when packaged. |
+|                        |                                                                                                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Path**               | `/m` on the control plane's own origin. Short on purpose — it goes inside the QR, and fewer characters is a code a phone reads across a desk.                                                                |
+| **Built by**           | `npm run build` (via `npm run build:companion` → `scripts/build-companion.mjs`), which installs `companion/`'s own dependencies if they are missing.                                                         |
+| **Found at**           | `companion/dist`, or `companion-dist` next to the server's compiled output when packaged.                                                                                                                    |
 | **If it wasn't built** | `/m` 404s and the QR falls back to the raw payload, exactly as before. The control-plane build never fails because the companion build did — pass `--strict` to `build-companion.mjs` in CI to make it hard. |
-| **Overridden by** | `SURVHUB_COMPANION_APP_URL`, which still wins when you genuinely host the app elsewhere. |
+| **Overridden by**      | `SURVHUB_COMPANION_APP_URL`, which still wins when you genuinely host the app elsewhere.                                                                                                                     |
 
 The served `index.html` carries one extra tag:
 
 ```html
-<meta name="survhub-server" content="https://hoster.example.com">
+<meta name="survhub-server" content="https://hoster.example.com" />
 ```
 
 That is the exact origin the phone reached the machine on, which is by definition an address
 that works from that phone — better than anything the server could infer about itself. The
-app uses it to prefill the server field, so pairing by hand is *just the code*. The bundle is
+app uses it to prefill the server field, so pairing by hand is _just the code_. The bundle is
 host-agnostic without it: on Cloudflare Pages the tag is absent and the app asks for an
 address, because there its own origin is not a control plane.
 

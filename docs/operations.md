@@ -35,6 +35,7 @@ ServerHoster uses a **durable API token** for MCP and REST API authentication. T
 - Remains valid indefinitely unless explicitly rotated
 
 **To use the token:**
+
 1. Copy it from the Settings UI (Dev Tools tab)
 2. Send it in API requests: `Authorization: Bearer <your-token>`
 3. Configure MCP clients (Grok Bot, Claude Desktop) with this same token
@@ -80,6 +81,15 @@ External agents (e.g. Grok Bot via `mcp-remote` → `POST http://<host>:8787/mcp
 1. Use the **Settings → Dev Tools → API / MCP Token** value as `Authorization: Bearer …` (same token as REST).
 2. Set a **client timeout of ≥ 30s** (60s is comfortable for health/log tools; raise further for `redeploy_service`).
 3. Treat client `-32001 Request timed out` as “no response in time” — not as an auth error. Auth failures return **401** with JSON-RPC `-32000` immediately. See [docs/mcp.md](./mcp.md).
+
+## CI
+
+The CI tab runs test jobs on this machine, in Docker, instead of GitHub Actions. Private repositories therefore do not spend Actions minutes. A pipeline is attached to a service that already deploys from GitHub.
+
+- Put the job in `.survhub/ci.yml` (`steps`, optional `image`, `timeoutMinutes`, `memoryMb`, `secrets`) or paste that YAML into the pipeline.
+- Only names listed under `secrets` are copied from the service or project env. Production `DATABASE_URL` is not injected on its own.
+- **Hold deploy until CI passes** makes GitOps and the GitHub push webhook wait. A green run deploys only if the branch still points at the tested commit. The Run button checks the commit and does not deploy.
+- One job runs at a time. The container is not privileged, drops all capabilities, and does not mount the Docker socket.
 
 ## Backups
 

@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 import type { AppContext } from "./types.js";
 import { buildN8nEnv, getN8nConfig, sanitizeWorkflowForImport, validateN8nConfig } from "./services/n8n.js";
@@ -92,7 +92,10 @@ describe("n8n env", () => {
     assert.throws(() => validateN8nConfig({ imageTag: "latest; rm -rf" }), /Image tag/);
     assert.throws(() => validateN8nConfig({ extraEnv: { N8N_ENCRYPTION_KEY: "x" } }), /managed/);
     assert.throws(() => validateN8nConfig({ pruneMaxAgeHours: 0 }), /Prune age/);
-    assert.deepEqual(validateN8nConfig({ imageTag: " ", timezone: "UTC" }), { imageTag: "latest", timezone: "UTC" });
+    assert.deepEqual(validateN8nConfig({ imageTag: " ", timezone: "UTC" }), {
+      imageTag: "latest",
+      timezone: "UTC"
+    });
     assert.equal(getN8nConfig(ctx).imageTag, "latest");
   });
 });

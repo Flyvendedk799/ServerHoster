@@ -115,18 +115,18 @@ export async function createManagedDatabase(
   const username =
     input.engine === "redis"
       ? null
-      : input.username ??
-        (input.engine === "postgres" ? "postgres" : input.engine === "mysql" ? "root" : "admin");
+      : (input.username ??
+        (input.engine === "postgres" ? "postgres" : input.engine === "mysql" ? "root" : "admin"));
   const password = input.password ?? "survhub";
   const databaseName =
     input.engine === "redis"
       ? null
-      : input.databaseName ??
+      : (input.databaseName ??
         (input.engine === "postgres"
           ? "postgres"
           : input.engine === "mysql"
             ? input.name.replace(/-/g, "_")
-            : "admin");
+            : "admin"));
 
   const envMap: Record<DatabaseRow["engine"], string[]> = {
     postgres: [`POSTGRES_PASSWORD=${password}`, `POSTGRES_USER=${username}`, `POSTGRES_DB=${databaseName}`],
@@ -221,7 +221,9 @@ export function buildConnectionString(db: DatabaseRow, host = "localhost"): stri
     case "mongo":
       return `mongodb://${user}:${pass}@${host}:${db.port}/${dbName}?authSource=admin`;
     case "redis":
-      return pass ? `redis://:${pass}@${host === "localhost" ? "127.0.0.1" : host}:${db.port}` : `redis://${host}:${db.port}`;
+      return pass
+        ? `redis://:${pass}@${host === "localhost" ? "127.0.0.1" : host}:${db.port}`
+        : `redis://${host}:${db.port}`;
   }
 }
 

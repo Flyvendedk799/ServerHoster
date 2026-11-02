@@ -65,8 +65,18 @@ let ctx: AppContext;
 function makeContext(): AppContext {
   const db = new sqlite!.DatabaseSync(":memory:");
   db.exec(SCHEMA);
-  db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run("svc-coach", "p1", "Coach", "docker");
-  db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run("svc-web", "p1", "Web", "process");
+  db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run(
+    "svc-coach",
+    "p1",
+    "Coach",
+    "docker"
+  );
+  db.prepare("INSERT INTO services (id, project_id, name, type) VALUES (?, ?, ?, ?)").run(
+    "svc-web",
+    "p1",
+    "Web",
+    "process"
+  );
   return {
     db,
     config: { secretKey: "test-secret-key-32-bytes-not-for-prod", apiPort: 8787, publicUrl: "" },
@@ -92,8 +102,24 @@ const sonnet = (extra: Record<string, unknown> = {}) => ({
 describe("pricing", { skip }, () => {
   test("cost is tokens x USD-per-million, including cache tokens", () => {
     // 1000 in * $2 + 100 out * $10 = 2000 + 1000 micro-USD
-    assert.equal(computeCostMicro(DEFAULT_PRICES["claude-sonnet-5-5"], { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 }), 3000);
-    assert.equal(computeCostMicro(DEFAULT_PRICES["claude-sonnet-5-5"], { input: 0, output: 0, cacheRead: 10_000, cacheWrite: 1000 }), 2000 + 2500);
+    assert.equal(
+      computeCostMicro(DEFAULT_PRICES["claude-sonnet-5-5"], {
+        input: 1000,
+        output: 100,
+        cacheRead: 0,
+        cacheWrite: 0
+      }),
+      3000
+    );
+    assert.equal(
+      computeCostMicro(DEFAULT_PRICES["claude-sonnet-5-5"], {
+        input: 0,
+        output: 0,
+        cacheRead: 10_000,
+        cacheWrite: 1000
+      }),
+      2000 + 2500
+    );
   });
 
   test("dated ids resolve, unknown models do not, overrides win", () => {
@@ -106,7 +132,10 @@ describe("pricing", { skip }, () => {
   });
 
   test("invalid overrides are rejected", () => {
-    assert.throws(() => setPriceOverrides(ctx, { x: { input: -1, output: 1, cacheRead: 1, cacheWrite: 1 } }), /Invalid price/);
+    assert.throws(
+      () => setPriceOverrides(ctx, { x: { input: -1, output: 1, cacheRead: 1, cacheWrite: 1 } }),
+      /Invalid price/
+    );
   });
 
   test("model list marks unpriced models seen in events", () => {
@@ -123,20 +152,29 @@ describe("connecting an app", { skip }, () => {
     const env = getServiceEnv(ctx, "svc-coach");
     assert.equal(env.SURVHUB_AI_USAGE_URL, "http://host.docker.internal:8787/api/ai-usage/report");
     assert.match(env.SURVHUB_AI_USAGE_TOKEN, /^sau_/);
-    const raw = ctx.db.prepare("SELECT value, is_secret, system FROM env_vars WHERE key = 'SURVHUB_AI_USAGE_TOKEN'").get() as {
-      value: string; is_secret: number; system: number;
+    const raw = ctx.db
+      .prepare("SELECT value, is_secret, system FROM env_vars WHERE key = 'SURVHUB_AI_USAGE_TOKEN'")
+      .get() as {
+      value: string;
+      is_secret: number;
+      system: number;
     };
     assert.equal(raw.is_secret, 1);
     assert.equal(raw.system, 1);
     assert.ok(!raw.value.includes(env.SURVHUB_AI_USAGE_TOKEN), "token is encrypted at rest");
-    const stored = ctx.db.prepare("SELECT token_hash FROM ai_usage_tokens WHERE service_id = 'svc-coach'").get() as { token_hash: string };
+    const stored = ctx.db
+      .prepare("SELECT token_hash FROM ai_usage_tokens WHERE service_id = 'svc-coach'")
+      .get() as { token_hash: string };
     assert.ok(!stored.token_hash.includes(env.SURVHUB_AI_USAGE_TOKEN));
     assert.deepEqual(serviceForToken(ctx, env.SURVHUB_AI_USAGE_TOKEN), { service_id: "svc-coach" });
   });
 
   test("process services get a loopback URL; rotation invalidates the old token", () => {
     connectService(ctx, "svc-web");
-    assert.equal(getServiceEnv(ctx, "svc-web").SURVHUB_AI_USAGE_URL, "http://127.0.0.1:8787/api/ai-usage/report");
+    assert.equal(
+      getServiceEnv(ctx, "svc-web").SURVHUB_AI_USAGE_URL,
+      "http://127.0.0.1:8787/api/ai-usage/report"
+    );
     const first = getServiceEnv(ctx, "svc-web").SURVHUB_AI_USAGE_TOKEN;
     connectService(ctx, "svc-web");
     const second = getServiceEnv(ctx, "svc-web").SURVHUB_AI_USAGE_TOKEN;
@@ -150,7 +188,8 @@ describe("connecting an app", { skip }, () => {
     connectService(ctx, "svc-web");
     const web = getServiceEnv(ctx, "svc-web").SURVHUB_AI_USAGE_TOKEN;
     assert.equal(serviceForToken(ctx, web)?.service_id, "svc-web");
-    for (const bad of ["", "nope", "sau_" + "x".repeat(200), "emk_whatever"]) assert.equal(serviceForToken(ctx, bad), null);
+    for (const bad of ["", "nope", "sau_" + "x".repeat(200), "emk_whatever"])
+      assert.equal(serviceForToken(ctx, bad), null);
   });
 
   test("disconnect revokes the token and removes the env", () => {
@@ -162,7 +201,10 @@ describe("connecting an app", { skip }, () => {
   });
 
   test("unknown service is a 404", () => {
-    assert.throws(() => connectService(ctx, "nope"), (e: Error & { statusCode?: number }) => e.statusCode === 404);
+    assert.throws(
+      () => connectService(ctx, "nope"),
+      (e: Error & { statusCode?: number }) => e.statusCode === 404
+    );
   });
 
   test("listApps shows connection state", () => {
@@ -207,8 +249,25 @@ describe("summary", { skip }, () => {
   test("aggregates totals, per app, per model, latency, errors and cache hits", () => {
     recordUsage(ctx, "svc-coach", sonnet({ duration_ms: 1000 }));
     recordUsage(ctx, "svc-coach", sonnet({ duration_ms: 3000, cache_read_tokens: 3000 }));
-    recordUsage(ctx, "svc-coach", sonnet({ status: "error", error_code: "provider_unavailable", input_tokens: 0, output_tokens: 0, duration_ms: 0 }));
-    recordUsage(ctx, "svc-web", { provider: "anthropic", model: "claude-haiku-4-5", input_tokens: 500, output_tokens: 50, status: "ok", duration_ms: 500 });
+    recordUsage(
+      ctx,
+      "svc-coach",
+      sonnet({
+        status: "error",
+        error_code: "provider_unavailable",
+        input_tokens: 0,
+        output_tokens: 0,
+        duration_ms: 0
+      })
+    );
+    recordUsage(ctx, "svc-web", {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
+      input_tokens: 500,
+      output_tokens: 50,
+      status: "ok",
+      duration_ms: 500
+    });
     const s = usageSummary(ctx, "7d");
     assert.equal(s.totals.requests, 4);
     assert.equal(s.totals.errors, 1);
@@ -229,11 +288,18 @@ describe("summary", { skip }, () => {
 });
 
 describe("budgets and alerts", { skip }, () => {
-  const notifications = () => ctx.db.prepare("SELECT severity, title FROM notifications ORDER BY created_at").all() as Array<{ severity: string; title: string }>;
+  const notifications = () =>
+    ctx.db.prepare("SELECT severity, title FROM notifications ORDER BY created_at").all() as Array<{
+      severity: string;
+      title: string;
+    }>;
 
   test("alerts once at 80% and once at 100%, not on every call", () => {
     // each call costs $0.003; daily budget $0.01 -> 80% at 3 calls (0.009 >= 0.008), 100% at 4 (0.012)
-    setBudgets(ctx, { global_daily_usd: null, per_service: { "svc-coach": { daily_usd: 0.01, monthly_usd: null } } });
+    setBudgets(ctx, {
+      global_daily_usd: null,
+      per_service: { "svc-coach": { daily_usd: 0.01, monthly_usd: null } }
+    });
     recordUsage(ctx, "svc-coach", sonnet());
     recordUsage(ctx, "svc-coach", sonnet());
     assert.equal(notifications().length, 0);

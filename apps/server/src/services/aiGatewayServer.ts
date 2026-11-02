@@ -329,10 +329,7 @@ async function streamOpenAI(
       error.statusCode,
       error.code
     );
-    ctx.app.log.warn(
-      { err: redact(error), wroteAny },
-      "ai-gateway: openai stream ended in error"
-    );
+    ctx.app.log.warn({ err: redact(error), wroteAny }, "ai-gateway: openai stream ended in error");
   } finally {
     stop.clear();
     reply.raw.end();
@@ -358,16 +355,7 @@ async function streamAnthropic(
         await once(reply.raw, "drain");
       }
     }
-    recordStreamUsage(
-      ctx,
-      request,
-      "anthropic",
-      resolved.requestedId,
-      resolved.provider,
-      sink,
-      started,
-      200
-    );
+    recordStreamUsage(ctx, request, "anthropic", resolved.requestedId, resolved.provider, sink, started, 200);
   } catch (err) {
     const error = toGatewayError(err);
     if (error.code !== "cancelled") {

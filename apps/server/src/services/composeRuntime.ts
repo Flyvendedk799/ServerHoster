@@ -68,10 +68,15 @@ export async function runComposeCommand(
   const command = `${composeCommandPrefix(cfg, envFile)} ${subcommand}`;
   // `cfg.dir` as cwd keeps relative build contexts and bind mounts declared in
   // the compose file resolving exactly as they do when run there by hand.
-  const result = await runCommand(command, cfg.dir, { ...process.env, ...opts.env }, {
-    timeoutMs: opts.timeoutMs ?? COMPOSE_LIFECYCLE_TIMEOUT_MS,
-    onChunk: opts.onChunk
-  });
+  const result = await runCommand(
+    command,
+    cfg.dir,
+    { ...process.env, ...opts.env },
+    {
+      timeoutMs: opts.timeoutMs ?? COMPOSE_LIFECYCLE_TIMEOUT_MS,
+      onChunk: opts.onChunk
+    }
+  );
   return { ...result, command };
 }
 

@@ -219,7 +219,12 @@ export function registerAiGatewayRoutes(ctx: AppContext): void {
   ctx.app.post("/api/ai-gateway/providers/:id/refresh", async (req) => {
     // In external mode the container validates its own key; surface that.
     if (isExternalMode(ctx)) {
-      const result = (await externalTest(ctx)) as { ok?: boolean; provider?: string; error?: string; code?: string };
+      const result = (await externalTest(ctx)) as {
+        ok?: boolean;
+        provider?: string;
+        error?: string;
+        code?: string;
+      };
       return {
         ok: Boolean(result.ok),
         provider: result.provider ?? "external",

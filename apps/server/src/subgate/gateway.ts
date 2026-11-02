@@ -61,8 +61,8 @@ function requireCredentials(deps: GatewayDeps, provider: ProviderId): ProviderCr
 
 /** Which providers currently have a usable key. Drives /v1/models and routing. */
 export function availableProviders(deps: GatewayDeps): ProviderId[] {
-  return (["anthropic", "openai"] as ProviderId[]).filter(
-    (provider) => Boolean(deps.credentialsFor(provider)?.apiKey)
+  return (["anthropic", "openai"] as ProviderId[]).filter((provider) =>
+    Boolean(deps.credentialsFor(provider)?.apiKey)
   );
 }
 

@@ -105,7 +105,10 @@ test("readNitroBuildOutput tolerates absent and malformed metadata", () => {
   fs.writeFileSync(path.join(dir, ".output", "nitro.json"), "{ not json");
   assert.equal(readNitroBuildOutput(dir), null);
 
-  fs.writeFileSync(path.join(dir, ".output", "nitro.json"), JSON.stringify({ serverEntry: "server/index.mjs" }));
+  fs.writeFileSync(
+    path.join(dir, ".output", "nitro.json"),
+    JSON.stringify({ serverEntry: "server/index.mjs" })
+  );
   assert.equal(readNitroBuildOutput(dir), null, "a preset-less nitro.json says nothing useful");
 
   fs.writeFileSync(path.join(dir, ".output", "nitro.json"), JSON.stringify({ preset: "node-server" }));

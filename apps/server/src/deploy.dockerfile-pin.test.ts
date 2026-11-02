@@ -40,10 +40,7 @@ test("a docker service pinned to a subdirectory Dockerfile builds with docker", 
 test("a stale pin falls back to detection instead of failing the deploy", () => {
   withRoot("stale", (root) => {
     monorepoWithWorkerDockerfile(root);
-    assert.equal(
-      reconcileBuildType("node", { type: "docker", dockerfile: "gone/Dockerfile" }, root),
-      "node"
-    );
+    assert.equal(reconcileBuildType("node", { type: "docker", dockerfile: "gone/Dockerfile" }, root), "node");
   });
 });
 
@@ -75,10 +72,7 @@ test("a process service with a run command still overrides a root Dockerfile", (
       path.join(root, "package.json"),
       JSON.stringify({ name: "app", scripts: { start: "node ." } })
     );
-    assert.equal(
-      reconcileBuildType("docker", { type: "process", command: "npm start" }, root),
-      "node"
-    );
+    assert.equal(reconcileBuildType("docker", { type: "process", command: "npm start" }, root), "node");
   });
 });
 

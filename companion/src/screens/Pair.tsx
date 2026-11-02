@@ -98,8 +98,8 @@ export function PairScreen() {
         </p>
         {servedBy && (
           <p className="muted small">
-            Connecting to <strong>{servedBy.replace(/^https?:\/\//, "")}</strong> — the machine this app
-            was opened from.
+            Connecting to <strong>{servedBy.replace(/^https?:\/\//, "")}</strong> — the machine this app was
+            opened from.
           </p>
         )}
       </header>

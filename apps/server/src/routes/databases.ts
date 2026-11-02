@@ -216,9 +216,9 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
   ctx.app.post("/databases/compose/:serviceId/adopt", async (req) => {
     const { serviceId } = req.params as { serviceId: string };
     const p = adoptComposeSchema.parse(req.body);
-    const service = ctx.db
-      .prepare("SELECT id, name FROM services WHERE id = ?")
-      .get(serviceId) as { id: string; name: string } | undefined;
+    const service = ctx.db.prepare("SELECT id, name FROM services WHERE id = ?").get(serviceId) as
+      | { id: string; name: string }
+      | undefined;
     if (!service) throw new Error("Service not found");
 
     const candidate = await getComposeDatabaseConnectionForService(ctx, serviceId);
@@ -230,7 +230,13 @@ export function registerDatabaseRoutes(ctx: AppContext): void {
     ctx.db.prepare("DELETE FROM env_vars WHERE service_id = ? AND key = ?").run(serviceId, candidate.env_key);
     ctx.db
       .prepare("INSERT INTO env_vars (id, service_id, key, value, is_secret) VALUES (?, ?, ?, ?, ?)")
-      .run(nanoid(), serviceId, candidate.env_key, encryptSecret(candidate.connection_url, ctx.config.secretKey), 1);
+      .run(
+        nanoid(),
+        serviceId,
+        candidate.env_key,
+        encryptSecret(candidate.connection_url, ctx.config.secretKey),
+        1
+      );
 
     if (p.restart) {
       try {

@@ -67,7 +67,6 @@ export function registerPlexRoutes(ctx: AppContext): void {
     }
   );
 
-
   /** Lifecycle + claim state. Safe to poll; never returns the Plex token. */
   ctx.app.get("/plex/status", async () => getPlexStatus());
 

@@ -15,7 +15,10 @@ test("reconcile re-materialises the port block and JWT secret a git reset stripp
     portOffset: 1500,
     email: null
   });
-  assert.ok(applied.some((a) => /ports \+1500/.test(a)), applied.join());
+  assert.ok(
+    applied.some((a) => /ports \+1500/.test(a)),
+    applied.join()
+  );
   assert.ok(applied.includes("jwt secret"), applied.join());
   assert.match(toml, /port = 55821/, "api port carries the +1500 offset");
   assert.match(toml, /jwt_secret = "env\(SUPABASE_AUTH_JWT_SECRET\)"/);

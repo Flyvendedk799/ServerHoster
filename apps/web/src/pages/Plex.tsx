@@ -242,9 +242,7 @@ export function PlexPage() {
   const [subtitleFor, setSubtitleFor] = useState<string | null>(null);
   const [subtitleLang, setSubtitleLang] = useState("da");
   const subtitleInputRef = useRef<HTMLInputElement>(null);
-  const uploadQueue = useRef<
-    Array<{ id: string; file: File; library: MediaLibrary; folder: string }>
-  >([]);
+  const uploadQueue = useRef<Array<{ id: string; file: File; library: MediaLibrary; folder: string }>>([]);
   const activeUploads = useRef(0);
 
   const loadStatus = useCallback(async (): Promise<PlexStatus | null> => {
@@ -370,9 +368,7 @@ export function PlexPage() {
       const { promise, abort } = uploadMedia(task.file, task.library, task.folder, (sent) => {
         setUploads((prev) => prev.map((j) => (j.id === task.id ? { ...j, sent } : j)));
       });
-      setUploads((prev) =>
-        prev.map((j) => (j.id === task.id ? { ...j, status: "uploading", abort } : j))
-      );
+      setUploads((prev) => prev.map((j) => (j.id === task.id ? { ...j, status: "uploading", abort } : j)));
 
       void promise
         .then(() => {
@@ -387,9 +383,7 @@ export function PlexPage() {
         })
         .catch((error: Error) => {
           setUploads((prev) =>
-            prev.map((j) =>
-              j.id === task.id ? { ...j, status: "error", error: error.message } : j
-            )
+            prev.map((j) => (j.id === task.id ? { ...j, status: "error", error: error.message } : j))
           );
           toast.error(`${task.file.name}: ${error.message}`);
         })
@@ -461,10 +455,9 @@ export function PlexPage() {
     });
     if (!ok) return;
     try {
-      await api(
-        `/plex/media?library=${mediaLibrary}&path=${encodeURIComponent(item.relativePath)}`,
-        { method: "DELETE" }
-      );
+      await api(`/plex/media?library=${mediaLibrary}&path=${encodeURIComponent(item.relativePath)}`, {
+        method: "DELETE"
+      });
       toast.success(`Deleted ${item.name}`);
       await loadMedia(mediaLibrary);
     } catch {
@@ -524,7 +517,13 @@ export function PlexPage() {
   }
 
   const running = Boolean(status?.running);
-  const badge = !status ? "none" : status.running ? "running" : status.state === "failed" ? "crashed" : "stopped";
+  const badge = !status
+    ? "none"
+    : status.running
+      ? "running"
+      : status.state === "failed"
+        ? "crashed"
+        : "stopped";
 
   return (
     <div className="plex-page">
@@ -564,8 +563,7 @@ export function PlexPage() {
               disabled={!running || busy !== null}
               onClick={() => void power("restart")}
             >
-              {busy === "restart" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}{" "}
-              Restart
+              {busy === "restart" ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Restart
             </button>
             <button
               className="ghost small danger"
@@ -586,7 +584,7 @@ export function PlexPage() {
             <span className="muted tiny uppercase">Plex Account</span>
             <span>
               {status?.claimed ? (
-                status.account ?? "claimed"
+                (status.account ?? "claimed")
               ) : (
                 <span className="text-warning">unclaimed</span>
               )}
@@ -595,22 +593,14 @@ export function PlexPage() {
           <div>
             <span className="muted tiny uppercase">API</span>
             <span>
-              {status?.reachable ? (
-                `127.0.0.1:${status.port}`
-              ) : (
-                <span className="muted">not responding</span>
-              )}
+              {status?.reachable ? `127.0.0.1:${status.port}` : <span className="muted">not responding</span>}
             </span>
           </div>
           <div>
             <span className="muted tiny uppercase">Start On Boot</span>
             <span className="row" style={{ gap: "0.5rem" }}>
               {status?.enabled ? "Enabled" : "Disabled"}
-              <button
-                className="ghost tiny"
-                disabled={busy !== null}
-                onClick={() => void toggleAutostart()}
-              >
+              <button className="ghost tiny" disabled={busy !== null} onClick={() => void toggleAutostart()}>
                 {busy === "autostart" ? <Loader2 size={12} className="spin" /> : <Power size={12} />}
                 {status?.enabled ? "Disable" : "Enable"}
               </button>
@@ -620,8 +610,8 @@ export function PlexPage() {
 
         {status && !status.claimed && (
           <p className="muted small plex-note">
-            This server isn&apos;t linked to a Plex account yet. Claim it from the Plex web app to
-            enable remote access and sharing.
+            This server isn&apos;t linked to a Plex account yet. Claim it from the Plex web app to enable
+            remote access and sharing.
           </p>
         )}
       </section>
@@ -692,9 +682,7 @@ export function PlexPage() {
                   </span>
                   <span className="muted tiny plex-paths">{lib.locations.join(", ") || "—"}</span>
                 </div>
-                <span className="muted tiny">
-                  {lib.itemCount == null ? "—" : `${lib.itemCount} items`}
-                </span>
+                <span className="muted tiny">{lib.itemCount == null ? "—" : `${lib.itemCount} items`}</span>
                 <button
                   className="ghost tiny"
                   disabled={busy !== null}
@@ -754,8 +742,8 @@ export function PlexPage() {
         {mediaLibrary === "tv" && (
           <p className="muted tiny plex-tv-hint">
             Plex needs episodes under <code>Show Name/Season 01/</code>, named like{" "}
-            <code>Show Name - s01e03.mkv</code>. Set the folder above once, then drop the whole
-            season — files upload {MAX_CONCURRENT_UPLOADS} at a time.
+            <code>Show Name - s01e03.mkv</code>. Set the folder above once, then drop the whole season — files
+            upload {MAX_CONCURRENT_UPLOADS} at a time.
           </p>
         )}
 
@@ -787,8 +775,8 @@ export function PlexPage() {
             {folder.trim() ? `/${folder.trim()}` : ""} and triggers a scan
           </span>
           <span className="muted tiny">
-            For subtitles use the <strong>Subtitles</strong> button on a movie below — it names the
-            file so Plex pairs it automatically.
+            For subtitles use the <strong>Subtitles</strong> button on a movie below — it names the file so
+            Plex pairs it automatically.
           </span>
           <input
             ref={fileInputRef}
@@ -814,14 +802,11 @@ export function PlexPage() {
                       <div
                         className={`plex-bar-fill ${job.status}`}
                         style={{
-                          width:
-                            job.status === "done" ? "100%" : job.status === "queued" ? "100%" : `${pct}%`
+                          width: job.status === "done" ? "100%" : job.status === "queued" ? "100%" : `${pct}%`
                         }}
                       />
                     </div>
-                    {job.status === "error" && (
-                      <span className="tiny text-danger">{job.error}</span>
-                    )}
+                    {job.status === "error" && <span className="tiny text-danger">{job.error}</span>}
                   </div>
                   <span className="muted tiny">
                     {job.status === "queued"
@@ -881,11 +866,7 @@ export function PlexPage() {
                       <Captions size={12} /> Subtitles
                     </button>
                   )}
-                  <button
-                    className="ghost tiny"
-                    onClick={() => void deleteMedia(item)}
-                    title="Delete file"
-                  >
+                  <button className="ghost tiny" onClick={() => void deleteMedia(item)} title="Delete file">
                     <Trash2 size={12} />
                   </button>
                 </div>
@@ -934,7 +915,10 @@ export function PlexPage() {
                       Choose .srt file
                     </button>
                     <span className="muted tiny">
-                      Saved as <code>{item.name.replace(/\.[^.]+$/, "")}.{subtitleLang}.srt</code>
+                      Saved as{" "}
+                      <code>
+                        {item.name.replace(/\.[^.]+$/, "")}.{subtitleLang}.srt
+                      </code>
                     </span>
                     <input
                       ref={subtitleInputRef}
@@ -965,8 +949,7 @@ export function PlexPage() {
               </button>
             )}
             <button className="ghost small" disabled={busy !== null} onClick={() => void loadLog()}>
-              {busy === "log" ? <Loader2 size={14} className="spin" /> : <RotateCw size={14} />} Load
-              Log
+              {busy === "log" ? <Loader2 size={14} className="spin" /> : <RotateCw size={14} />} Load Log
             </button>
           </div>
         </div>

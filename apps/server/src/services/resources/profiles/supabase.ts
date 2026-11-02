@@ -390,7 +390,7 @@ export async function persistSupabaseStackInfo(
     // browser-facing public origin is layered on per service by
     // publicOriginForLinkedResource (see this profile's env()).
     const localApiUrl = localApiPort ? `http://127.0.0.1:${localApiPort}` : null;
-    config.api_url = statusInfo.ports.api ? statusInfo.api_url : localApiUrl ?? config.api_url;
+    config.api_url = statusInfo.ports.api ? statusInfo.api_url : (localApiUrl ?? config.api_url);
   }
   if (statusInfo.graphql_url) config.graphql_url = statusInfo.graphql_url;
   if (statusInfo.studio_url) config.studio_url = statusInfo.studio_url;
@@ -572,8 +572,7 @@ async function provisionSupabase(ctx: AppContext, input: ProvisionInput): Promis
     // The offset is stored on the resource, so a re-provision reuses the same
     // ports instead of churning them.
     const priorConfig = resourceConfig(resource);
-    const storedOffset =
-      typeof priorConfig.port_offset === "number" ? priorConfig.port_offset : undefined;
+    const storedOffset = typeof priorConfig.port_offset === "number" ? priorConfig.port_offset : undefined;
     const portOffset = await allocatePortOffset(ctx, resource.id, storedOffset);
     try {
       const tomlBefore = fs.readFileSync(configToml, "utf8");

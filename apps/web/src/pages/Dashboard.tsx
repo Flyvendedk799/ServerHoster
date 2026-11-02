@@ -234,7 +234,9 @@ export function DashboardPage() {
             <span className="unit">%</span>
           </div>
           <div className="metric-sub">
-            {metrics ? `${fmtBytes(metrics.totalMemory - metrics.freeMemory)} of ${fmtBytes(metrics.totalMemory)}` : "-"}
+            {metrics
+              ? `${fmtBytes(metrics.totalMemory - metrics.freeMemory)} of ${fmtBytes(metrics.totalMemory)}`
+              : "-"}
           </div>
           <Progress value={memoryPct} />
         </div>
@@ -257,7 +259,9 @@ export function DashboardPage() {
           // Resolve the warning to a concrete service so "View Logs" is a real
           // drill-down instead of a no-op toast. Match a service name appearing
           // in the warning text; otherwise fall back to the services list.
-          const affected = services.find((service) => warning.toLowerCase().includes(service.name.toLowerCase()));
+          const affected = services.find((service) =>
+            warning.toLowerCase().includes(service.name.toLowerCase())
+          );
           return (
             <div className="alert alert-amber">
               <AlertTriangle size={15} style={{ color: "var(--amber)", flexShrink: 0, marginTop: 1 }} />

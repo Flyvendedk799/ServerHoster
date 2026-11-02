@@ -9,10 +9,7 @@ import {
 
 test("portsForOffset: shifts the whole default block by the offset", () => {
   assert.deepEqual(portsForOffset(0), [54321, 54322, 54320, 54329, 54323, 54324, 54327]);
-  assert.deepEqual(
-    portsForOffset(100),
-    [54421, 54422, 54420, 54429, 54423, 54424, 54427]
-  );
+  assert.deepEqual(portsForOffset(100), [54421, 54422, 54420, 54429, 54423, 54424, 54427]);
 });
 
 test("applyPortOffsetToToml: a minimal config (only project_id) gains every port section", () => {
@@ -31,7 +28,17 @@ test("applyPortOffsetToToml: a minimal config (only project_id) gains every port
 });
 
 test("applyPortOffsetToToml: existing port lines are replaced in place, not duplicated", () => {
-  const toml = ["project_id = \"x\"", "", "[api]", "enabled = true", "port = 54321", "", "[db]", "port = 54322", "shadow_port = 54320"].join("\n");
+  const toml = [
+    'project_id = "x"',
+    "",
+    "[api]",
+    "enabled = true",
+    "port = 54321",
+    "",
+    "[db]",
+    "port = 54322",
+    "shadow_port = 54320"
+  ].join("\n");
   const out = applyPortOffsetToToml(toml, 1100);
   assert.ok(out.includes("port = 55421"), "api port shifted to +1100");
   assert.ok(out.includes("enabled = true"), "sibling keys preserved");
@@ -52,7 +59,15 @@ test("applyPortOffsetToToml: offset 0 writes the canonical defaults", () => {
 });
 
 test("setTomlPorts: unrelated sections and keys are left untouched", () => {
-  const toml = ["project_id = \"x\"", "", "[auth]", "site_url = \"http://localhost:3000\"", "", "[functions.foo]", "verify_jwt = false"].join("\n");
+  const toml = [
+    'project_id = "x"',
+    "",
+    "[auth]",
+    'site_url = "http://localhost:3000"',
+    "",
+    "[functions.foo]",
+    "verify_jwt = false"
+  ].join("\n");
   const out = setTomlPorts(toml, [{ section: "api", key: "port", value: 54421 }]);
   assert.ok(out.includes('site_url = "http://localhost:3000"'), "auth untouched");
   assert.ok(out.includes("[functions.foo]"), "functions untouched");

@@ -25,7 +25,8 @@ import {
   Inbox,
   Wallet,
   CreditCard,
-  Workflow
+  Workflow,
+  Cpu
 } from "lucide-react";
 
 import { DashboardPage } from "./pages/Dashboard";
@@ -39,6 +40,7 @@ import { AiGatewayPage } from "./pages/AiGateway";
 import { AiUsagePage } from "./pages/AiUsage";
 import { StripePage } from "./pages/Stripe";
 import { DeploymentsPage } from "./pages/Deployments";
+import { CiPage } from "./pages/Ci";
 import { ProjectsPage } from "./pages/Projects";
 import { ProxyPage } from "./pages/Proxy";
 import { DomainsPage } from "./pages/Domains";
@@ -178,6 +180,7 @@ const routeLabels: Record<string, string> = {
   proxy: "Edge Ingress",
   domains: "SaaS Domains",
   deployments: "Deployments",
+  ci: "CI",
   plex: "Plex",
   n8n: "n8n",
   license: "License",
@@ -302,7 +305,10 @@ export function App() {
   }
 
   return (
-    <div className={`app ${collapsed ? "collapsed" : ""}`} data-sidebar={collapsed ? "collapsed" : "expanded"}>
+    <div
+      className={`app ${collapsed ? "collapsed" : ""}`}
+      data-sidebar={collapsed ? "collapsed" : "expanded"}
+    >
       <PhoneHandoff />
       <CommandPalette
         theme={theme}
@@ -448,6 +454,15 @@ export function App() {
           >
             <Terminal size={16} />
             {!collapsed && <span>Deployments</span>}
+          </NavLink>
+          <NavLink
+            to="/ci"
+            aria-label="CI"
+            title={collapsed ? "CI" : undefined}
+            className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+          >
+            <Cpu size={16} />
+            {!collapsed && <span>CI</span>}
           </NavLink>
           <NavLink
             to="/plex"
@@ -657,6 +672,14 @@ export function App() {
                   element={
                     <ProtectedRoute>
                       <DeploymentsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ci"
+                  element={
+                    <ProtectedRoute>
+                      <CiPage />
                     </ProtectedRoute>
                   }
                 />

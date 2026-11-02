@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 import { nanoid } from "nanoid";
 import type { AppContext } from "./types.js";

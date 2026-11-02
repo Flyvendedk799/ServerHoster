@@ -39,12 +39,7 @@ test("parseDockerStatsLine splits name|cpu|mem", () => {
 
 test("parseDockerStatsOutput skips blank / bad lines", () => {
   const rows = parseDockerStatsOutput(
-    [
-      "survhub-abc|1.0%|10MiB / 100MiB",
-      "",
-      "job-desk-xyz|0.2%|220.5MiB / 1GiB",
-      "broken"
-    ].join("\n")
+    ["survhub-abc|1.0%|10MiB / 100MiB", "", "job-desk-xyz|0.2%|220.5MiB / 1GiB", "broken"].join("\n")
   );
   assert.equal(rows.length, 2);
   assert.equal(rows[0].name, "survhub-abc");
@@ -72,7 +67,10 @@ test("collectProcessTreePids walks descendants and includes the root", () => {
     { pid: 102, ppid: 101, cpu: 5, rssKb: 50000 }, // worker
     { pid: 200, ppid: 1, cpu: 1, rssKb: 9999 } // unrelated
   ];
-  assert.deepEqual(collectProcessTreePids(100, rows).sort((a, b) => a - b), [100, 101, 102]);
+  assert.deepEqual(
+    collectProcessTreePids(100, rows).sort((a, b) => a - b),
+    [100, 101, 102]
+  );
 });
 
 // ---------------------------------------------------------------------------

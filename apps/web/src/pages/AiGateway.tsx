@@ -343,8 +343,8 @@ export function AiGatewayPage() {
         <div>
           <div className="page-title">AI Gateway</div>
           <p className="muted">
-            One OpenAI-compatible endpoint in front of every model provider. Point an app at it with
-            two environment variables.
+            One OpenAI-compatible endpoint in front of every model provider. Point an app at it with two
+            environment variables.
           </p>
         </div>
         <div className="row">
@@ -374,9 +374,7 @@ export function AiGatewayPage() {
               <Activity size={12} />
               {status?.running ? "Running" : "Stopped"}
             </span>
-            <span className="small muted">
-              {status ? `${status.bound.host}:${status.bound.port}` : "—"}
-            </span>
+            <span className="small muted">{status ? `${status.bound.host}:${status.bound.port}` : "—"}</span>
           </div>
           <div className="ai-gw-stat">
             <span className="tiny uppercase font-bold muted">Providers</span>
@@ -405,9 +403,7 @@ export function AiGatewayPage() {
           <div className="ai-gw-stat">
             <span className="tiny uppercase font-bold muted">Tokens (24h)</span>
             <span className="stat-value">
-              {formatNumber(
-                (usage?.totals.prompt_tokens ?? 0) + (usage?.totals.completion_tokens ?? 0)
-              )}
+              {formatNumber((usage?.totals.prompt_tokens ?? 0) + (usage?.totals.completion_tokens ?? 0))}
             </span>
             <span className="small muted">
               {formatNumber(usage?.totals.prompt_tokens ?? 0)} in /{" "}
@@ -422,8 +418,8 @@ export function AiGatewayPage() {
             <div>
               <div className="alert-title">Enabled but not listening</div>
               <p className="small muted">
-                The listener failed to bind port {status.bound.port} — usually another process is
-                already on it. Check the server log, then toggle off and on.
+                The listener failed to bind port {status.bound.port} — usually another process is already on
+                it. Check the server log, then toggle off and on.
               </p>
             </div>
           </div>
@@ -466,9 +462,8 @@ export function AiGatewayPage() {
             </button>
           </div>
           <p className="tiny muted">
-            This tab manages a standalone SubGate container. The Anthropic/OpenAI key lives in the
-            container's environment (not here); the tab mints tokens, reads usage, and runs tests
-            against it.
+            This tab manages a standalone SubGate container. The Anthropic/OpenAI key lives in the container's
+            environment (not here); the tab mints tokens, reads usage, and runs tests against it.
           </p>
         </section>
       ) : (
@@ -480,9 +475,9 @@ export function AiGatewayPage() {
             </div>
           </div>
           <p className="small muted">
-            Optional. Point this tab at a standalone SubGate container (e.g. one reachable by other
-            Docker services) to manage its tokens and usage from here. Leave blank to run the
-            in-process gateway instead.
+            Optional. Point this tab at a standalone SubGate container (e.g. one reachable by other Docker
+            services) to manage its tokens and usage from here. Leave blank to run the in-process gateway
+            instead.
           </p>
           <form className="ai-gw-inline" onSubmit={(event) => void connectExternalGateway(event)}>
             <input
@@ -501,7 +496,9 @@ export function AiGatewayPage() {
             <button
               className="primary xsmall"
               type="submit"
-              disabled={busyKey === "external-connect" || !externalUrlDraft.trim() || !externalTokenDraft.trim()}
+              disabled={
+                busyKey === "external-connect" || !externalUrlDraft.trim() || !externalTokenDraft.trim()
+              }
             >
               {busyKey === "external-connect" ? (
                 <Loader2 size={14} className="animate-spin" />
@@ -633,11 +630,7 @@ export function AiGatewayPage() {
               disabled={busyKey === "test" || configuredProviders.length === 0}
               data-tooltip="Round-trips a real completion through the full translation path"
             >
-              {busyKey === "test" ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
+              {busyKey === "test" ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               Test
             </button>
           </div>
@@ -664,8 +657,8 @@ export function AiGatewayPage() {
               </button>
             </div>
             <span className="tiny muted">
-              The hostname you mapped to 127.0.0.1:{status?.bound.port ?? "—"} in Edge Ingress.
-              Supabase Edge Functions can only reach the gateway through this.
+              The hostname you mapped to 127.0.0.1:{status?.bound.port ?? "—"} in Edge Ingress. Supabase Edge
+              Functions can only reach the gateway through this.
             </span>
           </form>
 
@@ -685,9 +678,8 @@ export function AiGatewayPage() {
               )}
             </div>
             <span className="tiny muted">
-              Anthropic-format clients use{" "}
-              <code>{status?.anthropic_base_url ?? "https://<host>"}</code> and hit{" "}
-              <code>/v1/messages</code>.
+              Anthropic-format clients use <code>{status?.anthropic_base_url ?? "https://<host>"}</code> and
+              hit <code>/v1/messages</code>.
             </span>
           </div>
 
@@ -726,8 +718,8 @@ export function AiGatewayPage() {
           </div>
         </div>
         <p className="small muted">
-          One token per app. Revoking a token cannot affect the provider keys, so a leak in one
-          consumer never forces a key rotation.
+          One token per app. Revoking a token cannot affect the provider keys, so a leak in one consumer never
+          forces a key rotation.
         </p>
 
         <form className="ai-gw-inline" onSubmit={(event) => void createToken(event)}>
@@ -748,15 +740,10 @@ export function AiGatewayPage() {
             <AlertTriangle size={18} />
             <div>
               <div className="alert-title">Copy "{mintedToken.name}" now</div>
-              <p className="small muted">
-                This is the only time it is shown — only a hash is stored.
-              </p>
+              <p className="small muted">This is the only time it is shown — only a hash is stored.</p>
               <pre className="ai-gw-snippet">{mintedToken.token}</pre>
               <div className="row">
-                <button
-                  className="ghost xsmall"
-                  onClick={() => void copy(mintedToken.token, "token")}
-                >
+                <button className="ghost xsmall" onClick={() => void copy(mintedToken.token, "token")}>
                   {copied === "token" ? <Check size={14} /> : <Copy size={14} />}
                   Copy token
                 </button>
@@ -780,8 +767,7 @@ export function AiGatewayPage() {
                 <code className="tiny muted">{token.preview}</code>
               </div>
               <div className="small muted">
-                {formatNumber(token.request_count)} requests · last used{" "}
-                {relativeTime(token.last_used_at)}
+                {formatNumber(token.request_count)} requests · last used {relativeTime(token.last_used_at)}
               </div>
               <button
                 className="ghost xsmall danger"

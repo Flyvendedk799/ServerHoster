@@ -97,9 +97,9 @@ function shouldRestart(
   fallback: boolean
 ): boolean {
   if (requested !== undefined) return requested;
-  const service = ctx.db
-    .prepare("SELECT type, github_repo_url FROM services WHERE id = ?")
-    .get(serviceId) as { type?: string; github_repo_url?: string | null } | undefined;
+  const service = ctx.db.prepare("SELECT type, github_repo_url FROM services WHERE id = ?").get(serviceId) as
+    | { type?: string; github_repo_url?: string | null }
+    | undefined;
   // Static GitHub services need a rebuild to pick up VITE_/NEXT_PUBLIC env even
   // when they are not running yet; restartOrRedeployService preserves stopped
   // state for that redeploy path.
@@ -111,7 +111,9 @@ function primaryAutoAction(recognition: DatabaseRecognition): RecognitionAction 
   const safePriority: RecognitionAction["id"][] = ["link-existing", "adopt-legacy", "provision"];
   return (
     safePriority
-      .map((id) => recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled))
+      .map((id) =>
+        recognition.actions.find((action) => action.id === id && action.preferred && !action.disabled)
+      )
       .find(Boolean) ??
     safePriority
       .map((id) => recognition.actions.find((action) => action.id === id && !action.disabled))

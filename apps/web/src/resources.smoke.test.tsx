@@ -189,7 +189,8 @@ const hostedConflictRecognition = {
     {
       code: "env-override",
       severity: "error",
-      message: "Service-level env overrides the linked local provider, so the service may not use the local database.",
+      message:
+        "Service-level env overrides the linked local provider, so the service may not use the local database.",
       evidence: ["VITE_SUPABASE_URL", "learnai-supabase"],
       action_id: "fix-env"
     }

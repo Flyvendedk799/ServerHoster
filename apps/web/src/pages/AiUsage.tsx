@@ -54,9 +54,12 @@ function bucketKeys(from: string, bucket: "hour" | "day"): string[] {
   const out: string[] = [];
   const start = new Date(from);
   const step = bucket === "hour" ? 3600_000 : 86_400_000;
-  const cursor = bucket === "hour"
-    ? new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), start.getUTCHours()))
-    : new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const cursor =
+    bucket === "hour"
+      ? new Date(
+          Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), start.getUTCHours())
+        )
+      : new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
   const end = Date.now();
   for (let t = cursor.getTime(); t <= end && out.length < 400; t += step) {
     const iso = new Date(t).toISOString();
@@ -115,7 +118,8 @@ function SpendChart({ summary }: SpendChartProps) {
   if (total === 0) {
     return (
       <div className="ai-usage-empty small muted">
-        No priced spend in this period yet. Connect an app below, or send a request from one that is already connected.
+        No priced spend in this period yet. Connect an app below, or send a request from one that is already
+        connected.
       </div>
     );
   }
@@ -205,7 +209,10 @@ export function AiUsagePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [justConnected, setJustConnected] = useState<Set<string>>(new Set());
-  const [budgetDraft, setBudgetDraft] = useState<{ global: string; apps: Record<string, { daily: string; monthly: string }> }>({
+  const [budgetDraft, setBudgetDraft] = useState<{
+    global: string;
+    apps: Record<string, { daily: string; monthly: string }>;
+  }>({
     global: "",
     apps: {}
   });
@@ -273,7 +280,8 @@ export function AiUsagePage() {
   async function onDisconnect(app: UsageApp) {
     const ok = await confirmDialog({
       title: `Disconnect ${app.name}?`,
-      message: "Its usage token is revoked and removed from the app's environment. Past usage stays in the history. Restart the app afterwards.",
+      message:
+        "Its usage token is revoked and removed from the app's environment. Past usage stays in the history. Restart the app afterwards.",
       confirmLabel: "Disconnect",
       danger: true
     });
@@ -329,7 +337,8 @@ export function AiUsagePage() {
   }
 
   const setPriceField = (model: string, field: keyof Price, value: string) => {
-    const base = priceDraft[model] ?? prices.find((p) => p.model === model)?.price ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const base = priceDraft[model] ??
+      prices.find((p) => p.model === model)?.price ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     const n = Number(value.replace(",", "."));
     setPriceDraft({ ...priceDraft, [model]: { ...base, [field]: Number.isFinite(n) && n >= 0 ? n : 0 } });
   };
@@ -342,8 +351,8 @@ export function AiUsagePage() {
         <div>
           <div className="page-title">AI Usage</div>
           <p className="muted">
-            What your hosted apps spend on AI APIs: cost, tokens, errors and latency per app and model. Apps report each
-            call themselves; prompts and replies are never stored here.
+            What your hosted apps spend on AI APIs: cost, tokens, errors and latency per app and model. Apps
+            report each call themselves; prompts and replies are never stored here.
           </p>
         </div>
         <div className="row">
@@ -396,8 +405,9 @@ export function AiUsagePage() {
           <div>
             <div className="alert-title">{t.unpriced_requests} requests have no price</div>
             <p className="small muted">
-              These used {unpricedModels.map((m) => m.model).join(", ") || "models without a known price"} and are counted as
-              requests and tokens but not in spend, so the totals below are a lower bound. Set a price under “Model prices”.
+              These used {unpricedModels.map((m) => m.model).join(", ") || "models without a known price"} and
+              are counted as requests and tokens but not in spend, so the totals below are a lower bound. Set
+              a price under “Model prices”.
             </p>
           </div>
         </div>
@@ -408,7 +418,11 @@ export function AiUsagePage() {
           <Skeleton style={{ height: "4rem", width: "100%" }} />
         ) : (
           <>
-            <Stat label="Spend" value={formatUsd(t?.cost_micro_usd ?? 0)} sub={`avg ${formatUsd(t?.avg_cost_micro_usd ?? 0)} / request`} />
+            <Stat
+              label="Spend"
+              value={formatUsd(t?.cost_micro_usd ?? 0)}
+              sub={`avg ${formatUsd(t?.avg_cost_micro_usd ?? 0)} / request`}
+            />
             <Stat label="Today (UTC)" value={formatUsd(summary?.spend.today_micro_usd ?? 0)} sub="all apps" />
             <Stat label="This month" value={formatUsd(summary?.spend.month_micro_usd ?? 0)} sub="all apps" />
             <Stat
@@ -426,7 +440,11 @@ export function AiUsagePage() {
               value={formatMs(t?.p50_ms ?? null)}
               sub={`p95 ${formatMs(t?.p95_ms ?? null)}`}
             />
-            <Stat label="Cache hits" value={`${((t?.cache_hit_rate ?? 0) * 100).toFixed(0)}%`} sub="of input tokens" />
+            <Stat
+              label="Cache hits"
+              value={`${((t?.cache_hit_rate ?? 0) * 100).toFixed(0)}%`}
+              sub="of input tokens"
+            />
           </>
         )}
       </section>
@@ -462,7 +480,11 @@ export function AiUsagePage() {
                     <td>{s.app_name}</td>
                     <td className="num">
                       {formatUsd(s.cost_micro_usd)}
-                      {s.unpriced_requests > 0 && <span className="warn-chip chip xsmall" title="Some calls had no price">+ unpriced</span>}
+                      {s.unpriced_requests > 0 && (
+                        <span className="warn-chip chip xsmall" title="Some calls had no price">
+                          + unpriced
+                        </span>
+                      )}
                     </td>
                     <td className="num">{formatCount(s.requests)}</td>
                     <td className="num">{formatCount(s.input_tokens + s.output_tokens)}</td>
@@ -497,10 +519,15 @@ export function AiUsagePage() {
                 {summary.by_model.map((m) => (
                   <tr key={`${m.provider}:${m.model}`}>
                     <td>
-                      <code className="small">{m.model}</code> <span className="muted xsmall">{m.provider}</span>
+                      <code className="small">{m.model}</code>{" "}
+                      <span className="muted xsmall">{m.provider}</span>
                     </td>
                     <td className="num">
-                      {m.unpriced_requests === m.requests && m.requests > 0 ? <span className="warn-chip chip xsmall">no price</span> : formatUsd(m.cost_micro_usd)}
+                      {m.unpriced_requests === m.requests && m.requests > 0 ? (
+                        <span className="warn-chip chip xsmall">no price</span>
+                      ) : (
+                        formatUsd(m.cost_micro_usd)
+                      )}
                     </td>
                     <td className="num">{formatCount(m.requests)}</td>
                     <td className="num">{formatCount(m.input_tokens)}</td>
@@ -514,8 +541,7 @@ export function AiUsagePage() {
           )}
           {summary && summary.error_codes.length > 0 && (
             <p className="small muted ai-usage-errors">
-              Errors:{" "}
-              {summary.error_codes.map((c) => `${c.error_code} ×${c.n}`).join(", ")}
+              Errors: {summary.error_codes.map((c) => `${c.error_code} ×${c.n}`).join(", ")}
             </p>
           )}
         </section>
@@ -527,9 +553,9 @@ export function AiUsagePage() {
         </div>
         <p className="small muted">
           Connecting an app gives it a private usage token and two environment variables,{" "}
-          <code>SURVHUB_AI_USAGE_URL</code> and <code>SURVHUB_AI_USAGE_TOKEN</code>. The app then reports one event per
-          model call. Restart it after connecting. Apps that call a model API directly are supported; the AI Gateway
-          page covers traffic that goes through the gateway.
+          <code>SURVHUB_AI_USAGE_URL</code> and <code>SURVHUB_AI_USAGE_TOKEN</code>. The app then reports one
+          event per model call. Restart it after connecting. Apps that call a model API directly are
+          supported; the AI Gateway page covers traffic that goes through the gateway.
         </p>
         <table className="ai-usage-table">
           <thead>
@@ -555,23 +581,49 @@ export function AiUsagePage() {
                   ) : (
                     <span className="chip xsmall">Not connected</span>
                   )}
-                  {justConnected.has(a.service_id) && <span className="warn-chip chip xsmall">restart to apply</span>}
+                  {justConnected.has(a.service_id) && (
+                    <span className="warn-chip chip xsmall">restart to apply</span>
+                  )}
                 </td>
-                <td className="muted">{a.connected ? (a.last_used_at ? relativeTime(a.last_used_at) : "waiting for first call") : "—"}</td>
+                <td className="muted">
+                  {a.connected
+                    ? a.last_used_at
+                      ? relativeTime(a.last_used_at)
+                      : "waiting for first call"
+                    : "—"}
+                </td>
                 <td className="num">{formatCount(a.total_events)}</td>
                 <td className="num">
                   {a.connected ? (
                     <span className="row ai-usage-actions">
-                      <button className="ghost xsmall" disabled={busy === `connect:${a.service_id}`} onClick={() => void onConnect(a)} title="Replace the token">
+                      <button
+                        className="ghost xsmall"
+                        disabled={busy === `connect:${a.service_id}`}
+                        onClick={() => void onConnect(a)}
+                        title="Replace the token"
+                      >
                         <RefreshCw size={12} /> Rotate
                       </button>
-                      <button className="ghost xsmall danger" disabled={busy === `connect:${a.service_id}`} onClick={() => void onDisconnect(a)}>
+                      <button
+                        className="ghost xsmall danger"
+                        disabled={busy === `connect:${a.service_id}`}
+                        onClick={() => void onDisconnect(a)}
+                      >
                         <Unplug size={12} /> Disconnect
                       </button>
                     </span>
                   ) : (
-                    <button className="primary xsmall" disabled={busy === `connect:${a.service_id}`} onClick={() => void onConnect(a)}>
-                      {busy === `connect:${a.service_id}` ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />} Connect
+                    <button
+                      className="primary xsmall"
+                      disabled={busy === `connect:${a.service_id}`}
+                      onClick={() => void onConnect(a)}
+                    >
+                      {busy === `connect:${a.service_id}` ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Plug size={12} />
+                      )}{" "}
+                      Connect
                     </button>
                   )}
                 </td>
@@ -595,8 +647,8 @@ export function AiUsagePage() {
           </span>
         </div>
         <p className="small muted">
-          A notification is raised at 80% and again at 100% of each budget (once per day or month). Notifications are
-          forwarded to your external webhook if one is set under Settings.
+          A notification is raised at 80% and again at 100% of each budget (once per day or month).
+          Notifications are forwarded to your external webhook if one is set under Settings.
         </p>
         <div className="ai-usage-budgets">
           <label className="ai-usage-budget-row">
@@ -612,7 +664,10 @@ export function AiUsagePage() {
             />
             <span className="muted small">USD per day</span>
             {summary && summary.budgets.global_daily_usd ? (
-              <BudgetBar spent={summary.spend.today_micro_usd} limit={summary.budgets.global_daily_usd * 1_000_000} />
+              <BudgetBar
+                spent={summary.spend.today_micro_usd}
+                limit={summary.budgets.global_daily_usd * 1_000_000}
+              />
             ) : (
               <span />
             )}
@@ -630,7 +685,10 @@ export function AiUsagePage() {
                   value={v.daily}
                   onChange={(e) => {
                     setBudgetDirty(true);
-                    setBudgetDraft({ ...budgetDraft, apps: { ...budgetDraft.apps, [a.service_id]: { ...v, daily: e.target.value } } });
+                    setBudgetDraft({
+                      ...budgetDraft,
+                      apps: { ...budgetDraft.apps, [a.service_id]: { ...v, daily: e.target.value } }
+                    });
                   }}
                 />
                 <input
@@ -640,11 +698,17 @@ export function AiUsagePage() {
                   value={v.monthly}
                   onChange={(e) => {
                     setBudgetDirty(true);
-                    setBudgetDraft({ ...budgetDraft, apps: { ...budgetDraft.apps, [a.service_id]: { ...v, monthly: e.target.value } } });
+                    setBudgetDraft({
+                      ...budgetDraft,
+                      apps: { ...budgetDraft.apps, [a.service_id]: { ...v, monthly: e.target.value } }
+                    });
                   }}
                 />
                 {saved?.daily_usd ? (
-                  <BudgetBar spent={summary?.spend.per_service_today[a.service_id] ?? 0} limit={saved.daily_usd * 1_000_000} />
+                  <BudgetBar
+                    spent={summary?.spend.per_service_today[a.service_id] ?? 0}
+                    limit={saved.daily_usd * 1_000_000}
+                  />
                 ) : (
                   <span />
                 )}
@@ -653,8 +717,13 @@ export function AiUsagePage() {
           })}
         </div>
         <div className="row">
-          <button className="primary" disabled={!budgetDirty || busy === "budgets"} onClick={() => void onSaveBudgets()}>
-            {busy === "budgets" ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save budgets
+          <button
+            className="primary"
+            disabled={!budgetDirty || busy === "budgets"}
+            onClick={() => void onSaveBudgets()}
+          >
+            {busy === "budgets" ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save
+            budgets
           </button>
         </div>
       </section>
@@ -687,11 +756,24 @@ export function AiUsagePage() {
                     <code className="small">{e.model}</code>
                   </td>
                   <td className="num">
-                    {formatCount(e.input_tokens + e.cache_read_tokens + e.cache_write_tokens)} / {formatCount(e.output_tokens)}
+                    {formatCount(e.input_tokens + e.cache_read_tokens + e.cache_write_tokens)} /{" "}
+                    {formatCount(e.output_tokens)}
                   </td>
-                  <td className="num">{e.cost_micro_usd === null ? <span className="warn-chip chip xsmall">no price</span> : formatUsd(e.cost_micro_usd)}</td>
+                  <td className="num">
+                    {e.cost_micro_usd === null ? (
+                      <span className="warn-chip chip xsmall">no price</span>
+                    ) : (
+                      formatUsd(e.cost_micro_usd)
+                    )}
+                  </td>
                   <td className="num">{e.duration_ms ? formatMs(e.duration_ms) : "—"}</td>
-                  <td>{e.status === "ok" ? <span className="chip xsmall tag-green">ok</span> : <span className="chip xsmall tag-red">{e.error_code ?? "error"}</span>}</td>
+                  <td>
+                    {e.status === "ok" ? (
+                      <span className="chip xsmall tag-green">ok</span>
+                    ) : (
+                      <span className="chip xsmall tag-red">{e.error_code ?? "error"}</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -706,9 +788,9 @@ export function AiUsagePage() {
           <span className="card-title">Model prices</span>
         </div>
         <p className="small muted">
-          USD per million tokens. Defaults are Anthropic's list prices; cache writes are assumed to cost 1.25× input.
-          Edit a row to override it (for example for a negotiated rate), or fill in a model that has no price. Changes apply
-          to new calls only.
+          USD per million tokens. Defaults are Anthropic's list prices; cache writes are assumed to cost 1.25×
+          input. Edit a row to override it (for example for a negotiated rate), or fill in a model that has no
+          price. Changes apply to new calls only.
         </p>
         <table className="ai-usage-table">
           <thead>
@@ -749,8 +831,13 @@ export function AiUsagePage() {
           </tbody>
         </table>
         <div className="row">
-          <button className="primary" disabled={Object.keys(priceDraft).length === 0 || busy === "prices"} onClick={() => void onSavePrices()}>
-            {busy === "prices" ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save prices
+          <button
+            className="primary"
+            disabled={Object.keys(priceDraft).length === 0 || busy === "prices"}
+            onClick={() => void onSavePrices()}
+          >
+            {busy === "prices" ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Save
+            prices
           </button>
         </div>
       </section>
@@ -762,9 +849,9 @@ export function AiUsagePage() {
           </div>
           <p className="small muted">
             {formatCount(summary.gateway.requests)} requests through the gateway in this period (
-            {formatCount(summary.gateway.prompt_tokens)} in / {formatCount(summary.gateway.completion_tokens)} out tokens,{" "}
-            {summary.gateway.errors} errors). The gateway uses your provider subscription, so it has no per-token cost here.
-            See the AI Gateway page for per-token details.
+            {formatCount(summary.gateway.prompt_tokens)} in / {formatCount(summary.gateway.completion_tokens)}{" "}
+            out tokens, {summary.gateway.errors} errors). The gateway uses your provider subscription, so it
+            has no per-token cost here. See the AI Gateway page for per-token details.
           </p>
         </section>
       )}

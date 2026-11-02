@@ -197,9 +197,7 @@ export function detectedRequirements(root: string): HostRequirement[] {
   if (pkg) {
     const engines = pkg["engines"];
     const nodeRange =
-      engines && typeof engines === "object"
-        ? (engines as Record<string, unknown>)["node"]
-        : undefined;
+      engines && typeof engines === "object" ? (engines as Record<string, unknown>)["node"] : undefined;
     const minNode = typeof nodeRange === "string" ? nodeRange.match(/(\d+)/)?.[1] : undefined;
     out.push({
       id: "node",
@@ -229,7 +227,13 @@ export function detectedRequirements(root: string): HostRequirement[] {
       });
     }
     if (fs.existsSync(path.join(root, "yarn.lock"))) {
-      out.push({ id: "yarn", label: "Yarn", command: "yarn", install: "corepack enable", source: "detected" });
+      out.push({
+        id: "yarn",
+        label: "Yarn",
+        command: "yarn",
+        install: "corepack enable",
+        source: "detected"
+      });
     }
 
     // Playwright needs both the package AND a downloaded browser plus system
@@ -238,7 +242,9 @@ export function detectedRequirements(root: string): HostRequirement[] {
       ...((pkg["dependencies"] as Record<string, unknown>) ?? {}),
       ...((pkg["devDependencies"] as Record<string, unknown>) ?? {})
     };
-    const wantsPlaywright = Object.keys(deps).some((name) => name === "playwright" || name === "@playwright/test");
+    const wantsPlaywright = Object.keys(deps).some(
+      (name) => name === "playwright" || name === "@playwright/test"
+    );
     if (wantsPlaywright) {
       out.push({
         id: "playwright-chromium",
@@ -250,7 +256,10 @@ export function detectedRequirements(root: string): HostRequirement[] {
     }
   }
 
-  if (fs.existsSync(path.join(root, "requirements.txt")) || fs.existsSync(path.join(root, "pyproject.toml"))) {
+  if (
+    fs.existsSync(path.join(root, "requirements.txt")) ||
+    fs.existsSync(path.join(root, "pyproject.toml"))
+  ) {
     out.push({
       id: "python3",
       label: "Python 3",

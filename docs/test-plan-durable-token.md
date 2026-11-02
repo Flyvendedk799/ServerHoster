@@ -190,12 +190,7 @@ curl -H "Authorization: Bearer my-custom-bootstrap-token-123456789012" \
   "mcpServers": {
     "serverhoster": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/proxy",
-        "http://localhost:8787/mcp",
-        "YOUR_TOKEN_HERE"
-      ]
+      "args": ["-y", "@modelcontextprotocol/proxy", "http://localhost:8787/mcp", "YOUR_TOKEN_HERE"]
     }
   }
 }

@@ -93,7 +93,10 @@ test("database setup auto: connects an existing Docker Compose database before p
     assert.equal(result.status, "ready");
     assert.equal(result.action, "connect-compose");
     assert.equal(createRequests.length, 0, "existing compose DB should be connected, not recreated");
-    assert.equal(getServiceEnv(ctx, serviceId).DATABASE_URL, "postgresql://app:app-secret@localhost:15432/app");
+    assert.equal(
+      getServiceEnv(ctx, serviceId).DATABASE_URL,
+      "postgresql://app:app-secret@localhost:15432/app"
+    );
     const envRow = ctx.db
       .prepare("SELECT is_secret FROM env_vars WHERE service_id = ? AND key = 'DATABASE_URL'")
       .get(serviceId) as { is_secret: number } | undefined;
@@ -117,13 +120,13 @@ test("database setup auto: provisions the detected engine through the managed re
     assert.equal(result.action, "provision");
     assert.equal(result.profile, "mysql");
     assert.equal(createRequests.length, 1);
-    const service = ctx.db
-      .prepare("SELECT linked_database_id FROM services WHERE id = ?")
-      .get(serviceId) as { linked_database_id: string | null };
+    const service = ctx.db.prepare("SELECT linked_database_id FROM services WHERE id = ?").get(serviceId) as {
+      linked_database_id: string | null;
+    };
     assert.ok(service.linked_database_id);
-    const db = ctx.db
-      .prepare("SELECT engine FROM databases WHERE id = ?")
-      .get(service.linked_database_id) as { engine: string } | undefined;
+    const db = ctx.db.prepare("SELECT engine FROM databases WHERE id = ?").get(service.linked_database_id) as
+      | { engine: string }
+      | undefined;
     assert.equal(db?.engine, "mysql");
     const activeLink = ctx.db
       .prepare("SELECT 1 FROM service_resource_links WHERE service_id = ? AND active = 1")

@@ -87,11 +87,7 @@ export {
   type UsageSink
 } from "./translate/stream.js";
 
-export {
-  ANTHROPIC_DEFAULT_BASE_URL,
-  anthropicComplete,
-  anthropicStream
-} from "./upstream/anthropic.js";
+export { ANTHROPIC_DEFAULT_BASE_URL, anthropicComplete, anthropicStream } from "./upstream/anthropic.js";
 
 export { OPENAI_DEFAULT_BASE_URL, openaiComplete, openaiStream } from "./upstream/openai.js";
 

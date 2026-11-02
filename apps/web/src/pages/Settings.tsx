@@ -536,7 +536,8 @@ export function SettingsPage() {
                         <h3>API / MCP Token</h3>
                       </div>
                       <p className="muted small" style={{ margin: "1rem 0" }}>
-                        Durable Bearer token for MCP clients (Grok Bot, Claude Desktop) and REST API access. This token persists across restarts and redeploys.
+                        Durable Bearer token for MCP clients (Grok Bot, Claude Desktop) and REST API access.
+                        This token persists across restarts and redeploys.
                       </p>
                       <div className="form-group">
                         <label className="tiny uppercase font-bold muted">Bearer Token</label>
@@ -554,7 +555,13 @@ export function SettingsPage() {
                             title={showApiToken ? "Hide token" : "Reveal token"}
                             disabled={busy === "api-token-reveal"}
                           >
-                            {busy === "api-token-reveal" ? <Loader2 size={14} className="spin" /> : showApiToken ? "Hide" : "Reveal"}
+                            {busy === "api-token-reveal" ? (
+                              <Loader2 size={14} className="spin" />
+                            ) : showApiToken ? (
+                              "Hide"
+                            ) : (
+                              "Reveal"
+                            )}
                           </button>
                         </div>
                         <p className="muted tiny" style={{ marginTop: "0.5rem" }}>
@@ -580,7 +587,11 @@ export function SettingsPage() {
                         <button
                           className="ghost small text-warning font-bold"
                           onClick={() => {
-                            if (window.confirm("Rotate API token? This will invalidate the current token and break any MCP clients or scripts using it until updated.")) {
+                            if (
+                              window.confirm(
+                                "Rotate API token? This will invalidate the current token and break any MCP clients or scripts using it until updated."
+                              )
+                            ) {
                               rotateApiToken();
                             }
                           }}

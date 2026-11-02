@@ -1,11 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  DEFAULT_DEV_SECRET_KEY,
-  usingDefaultSecretKey,
-  encryptSecret,
-  decryptSecret
-} from "./security.js";
+import { DEFAULT_DEV_SECRET_KEY, usingDefaultSecretKey, encryptSecret, decryptSecret } from "./security.js";
 import { ensureLocalImagePresent, shouldRestoreServiceOnBoot } from "./services/runtime.js";
 
 test("usingDefaultSecretKey: true only when no real key is configured", () => {

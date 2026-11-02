@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 import type { AppContext } from "./types.js";
 import { parseMail, snippetOf, subjectKey } from "./lib/mime.js";
@@ -107,7 +107,7 @@ const MULTIPART = [
   "--inner--",
   "--outer",
   'Content-Type: application/pdf; name="faktura.pdf"',
-  "Content-Disposition: attachment; filename=\"faktura.pdf\"",
+  'Content-Disposition: attachment; filename="faktura.pdf"',
   "Content-Transfer-Encoding: base64",
   "",
   Buffer.from("%PDF-1.4 fake").toString("base64"),
@@ -229,7 +229,12 @@ describe("emailer threading", () => {
   });
 
   test("unassigned mail is adopted when its mailbox is created, and kept on delete", async () => {
-    const res = await ingestInbound(ctx, { from: "a@b.com", to: "sales@shop.dk", subject: "Quote", text: "?" });
+    const res = await ingestInbound(ctx, {
+      from: "a@b.com",
+      to: "sales@shop.dk",
+      subject: "Quote",
+      text: "?"
+    });
     assert.equal(res.thread.mailbox_id, null);
     assert.equal(listThreads(ctx, { unassigned: true }).total, 1);
 
@@ -248,7 +253,12 @@ describe("emailer threading", () => {
 
   test("folders, search and per-service summary", async () => {
     createMailbox(ctx, { address: "support@shop.dk", serviceId: "svc-shop" });
-    const a = await ingestInbound(ctx, { from: "a@x.com", to: "support@shop.dk", subject: "Refund", text: "please refund" });
+    const a = await ingestInbound(ctx, {
+      from: "a@x.com",
+      to: "support@shop.dk",
+      subject: "Refund",
+      text: "please refund"
+    });
     await ingestInbound(ctx, { from: "b@x.com", to: "support@shop.dk", subject: "Hello", text: "hi" });
 
     assert.equal(listThreads(ctx, { folder: "inbox" }).total, 2);
@@ -295,9 +305,11 @@ describe("emailer credentials", () => {
     const next = rotateIngestToken(ctx);
     assert.equal(verifyIngestToken(ctx, token), false);
     assert.equal(verifyIngestToken(ctx, next), true);
-    const stored = (ctx.db.prepare("SELECT value FROM settings WHERE key = 'emailer_ingest_token'").get() as {
-      value: string;
-    }).value;
+    const stored = (
+      ctx.db.prepare("SELECT value FROM settings WHERE key = 'emailer_ingest_token'").get() as {
+        value: string;
+      }
+    ).value;
     assert.ok(!stored.includes(next), "ingest token must be encrypted at rest");
   });
 
@@ -324,10 +336,7 @@ describe("emailer credentials", () => {
   test("mailbox validation", () => {
     assert.throws(() => createMailbox(ctx, { address: "not-an-email" }), /valid email/);
     assert.throws(() => createMailbox(ctx, { address: "a@b.co", serviceId: "missing" }), /Service not found/);
-    assert.throws(
-      () => createMailbox(ctx, { address: "a@b.co", forwardUrl: "ftp://x" }),
-      /Forward URL/
-    );
+    assert.throws(() => createMailbox(ctx, { address: "a@b.co", forwardUrl: "ftp://x" }), /Forward URL/);
     createMailbox(ctx, { address: "a@b.co" });
     assert.throws(() => createMailbox(ctx, { address: "A@B.co" }), /already exists/);
   });
