@@ -785,7 +785,7 @@ describe("CI setup stops", () => {
       await within(3000, outcome);
       assert.equal(await outcome, "CiAbortError");
       // The killed process group drops its connection.
-      const closedBy = Date.now() + 3000;
+      const closedBy = Date.now() + 10_000;
       while (closed.size < sockets.size && Date.now() < closedBy) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }

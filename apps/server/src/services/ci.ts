@@ -614,21 +614,31 @@ function killProcessTree(pid: number | undefined, fallback: () => void): void {
       /* group already gone; fall through */
     }
   }
-  if (pid && process.platform === "win32") {
+  const runFallback = (): void => {
     try {
-      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on(
-        "error",
-        () => undefined
-      );
+      fallback();
+    } catch {
+      /* already exited */
+    }
+  };
+  if (pid && process.platform === "win32") {
+    // taskkill /T walks the tree from this pid, so the parent must still be
+    // alive when it runs: only fall back to killing it directly if taskkill fails.
+    try {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+      killer.on("error", runFallback);
+      killer.on("exit", (code) => {
+        if (code !== 0) runFallback();
+      });
+      return;
     } catch {
       /* fall through */
     }
   }
-  try {
-    fallback();
-  } catch {
-    /* already exited */
-  }
+  runFallback();
 }
 
 /**
