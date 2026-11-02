@@ -28,16 +28,17 @@ import {
 import { ciContainerUser, dockerCiSandbox, type CiSandbox } from "./services/ciDocker.js";
 import type Docker from "dockerode";
 
-// node:sqlite needs Node 22.5+. CI still runs Node 20, where the db tests skip
-// instead of failing to load. The config tests below do not need it.
-type SqliteModule = typeof import("node:sqlite");
-let sqlite: SqliteModule | null = null;
+// The db tests use an in-memory better-sqlite3 database (the app's driver).
+// If its native module is missing they skip; the config tests do not need it.
+let sqlite: { DatabaseSync: typeof import("better-sqlite3") } | null = null;
 try {
-  sqlite = await import("node:sqlite");
+  const mod = await import("better-sqlite3");
+  new mod.default(":memory:").close();
+  sqlite = { DatabaseSync: mod.default };
 } catch {
-  /* not available on this Node version */
+  /* native module not built for this Node version */
 }
-const skip = sqlite ? false : "node:sqlite is not available on this Node version (needs 22.5+)";
+const skip = sqlite ? false : "better-sqlite3 is not available on this Node version";
 
 let ctx: AppContext;
 let dir = "";

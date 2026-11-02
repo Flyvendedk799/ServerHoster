@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 import type { AppContext } from "./types.js";
 import { buildN8nEnv, getN8nConfig, sanitizeWorkflowForImport, validateN8nConfig } from "./services/n8n.js";

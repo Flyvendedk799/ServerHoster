@@ -7,11 +7,12 @@
  * inherits that tier's CURRENT env at deploy time — so a rotated secret flows
  * through, and only the companion inherits (no leak to unrelated tiers).
  *
- * Uses node:sqlite (built in) so it needs no native build.
+ * Uses an in-memory better-sqlite3 database (the app's own driver), so it
+ * runs on every Node version CI uses.
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 
 import { getInheritedServiceEnv } from "./services/runtime.js";
@@ -30,7 +31,7 @@ CREATE TABLE env_vars (
 );
 `;
 
-let db: DatabaseSync;
+let db: DatabaseSync.Database;
 let ctx: AppContext;
 
 function makeCtx(): AppContext {
