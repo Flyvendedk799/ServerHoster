@@ -250,7 +250,8 @@ describe("CI container", () => {
     assert.deepEqual(host.LogConfig, { Type: "none", Config: {} });
     assert.equal(host.Ulimits?.[0]?.Name, "nofile");
     assert.match(String(host.Tmpfs?.["/tmp"]), /size=1024m/);
-    assert.ok(host.Binds?.includes("/data/ci-cache/abc:/cache:rw"));
+    // Windows prefixes the drive (/d/data/...), so match the tail only.
+    assert.ok(host.Binds?.some((bind) => bind.endsWith("/data/ci-cache/abc:/cache:rw")));
     assert.ok(!host.Binds?.some((bind) => bind.includes("docker.sock")));
     assert.equal(spec.User, "1000:1000");
     assert.ok(spec.Env?.includes("npm_config_cache=/cache/npm"));
