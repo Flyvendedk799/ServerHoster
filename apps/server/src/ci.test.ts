@@ -32,7 +32,7 @@ import {
 import { ciContainerUser, dockerCiSandbox, type CiSandbox } from "./services/ciDocker.js";
 import type Docker from "dockerode";
 import { flushCommitStatuses, setStatusFetchForTests } from "./services/ciStatus.js";
-import { setHostCapacityForTests } from "./services/ciCapacity.js";
+import { availableMemMb, setHostCapacityForTests } from "./services/ciCapacity.js";
 import { encryptSecret } from "./security.js";
 
 // The db tests use an in-memory better-sqlite3 database (the app's driver).
@@ -1183,5 +1183,76 @@ describe("CI scheduler", { skip }, () => {
       setCiExecutorForTests(null);
       setHostCapacityForTests(null);
     }
+  });
+
+  test("claimed runs waiting for capacity do not block each other", async () => {
+    seedService();
+    // Each claim reserves the pipeline default (128 MB), but ci.yml asks for
+    // nearly the whole budget. Counting a waiting run's reservation as load
+    // made both runs wait for each other forever.
+    seedPipeline({
+      inline: "memoryMb: 8100\ncpus: 1\nsteps:\n  - name: Test\n    run: npm test\n"
+    });
+    ctx.db.prepare("UPDATE ci_pipelines SET trigger_branches = '*', memory_mb = 128, cpus = 0.25").run();
+    ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ci_max_concurrent', '2')").run();
+    setHostCapacityForTests({ cpus: 8, totalMemMb: 16_384, freeMemMb: 12_000 });
+    let active = 0;
+    let peak = 0;
+    const sandbox: CiSandbox = {
+      async run(input) {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        for (let index = 0; index < input.steps.length; index += 1) {
+          input.onStep(index, "running", null);
+          input.onStep(index, "passed", 0);
+        }
+        active -= 1;
+        return { failedStep: null, cancelled: false, timedOut: false };
+      }
+    };
+    const jobs: Promise<void>[] = [];
+    setCiExecutorForTests((runCtx, runId) => {
+      const job = executeCiRun(runCtx, runId, { checkout: async () => undefined, sandbox });
+      jobs.push(job);
+      return job;
+    });
+    try {
+      const ids = ["a", "b"].map((branch, index) => {
+        const outcome = handleBranchPush(ctx, {
+          serviceId: "svc",
+          branch,
+          commit: String(index + 1).repeat(40)
+        });
+        assert.ok(outcome.queued);
+        return outcome.queued ? outcome.runId : "";
+      });
+      setCiAutostart(true);
+      kickCi(ctx);
+      assert.equal(jobs.length, 2, "both runs are claimed");
+      const deadline = Date.now() + 8000;
+      const statuses = () =>
+        ids.map(
+          (id) =>
+            (ctx.db.prepare("SELECT status FROM ci_runs WHERE id = ?").get(id) as { status: string }).status
+        );
+      while (statuses().some((status) => status !== "passed") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.deepEqual(statuses(), ["passed", "passed"]);
+      assert.equal(peak, 1, "the two large jobs never ran together");
+    } finally {
+      setCiAutostart(false);
+      setCiExecutorForTests(null);
+      setHostCapacityForTests(null);
+      await Promise.allSettled(jobs);
+    }
+  });
+});
+
+describe("CI host capacity", () => {
+  test("free memory is MemAvailable, not MemFree", () => {
+    const meminfo = "MemTotal:       16000000 kB\nMemFree:         1558452 kB\nMemAvailable:    8057884 kB\n";
+    assert.equal(availableMemMb(meminfo), 7869);
   });
 });
