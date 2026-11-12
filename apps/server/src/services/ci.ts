@@ -50,6 +50,7 @@ import {
   readCiCapacitySettings
 } from "./ciCapacity.js";
 import { chownTree, dirSize, ensureRepoCacheDir, pruneCaches, repoCacheKey } from "./ciCache.js";
+import { addAutoCiOptOut, repoHasCiConfig, startAutoCi } from "./ciAuto.js";
 
 export { CI_CONFIG_PATH, EXAMPLE_CI_YAML, CiConfigError, assertImageRef, parseCiConfig, planForPipeline };
 export type { CiPlan, CiConfig };
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS ci_pipelines (
   cpus REAL NOT NULL DEFAULT 1,
   trigger_branches TEXT,
   trigger_pull_requests INTEGER NOT NULL DEFAULT 1,
+  auto_created INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -125,6 +127,7 @@ const CI_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
     column: "trigger_pull_requests",
     ddl: "trigger_pull_requests INTEGER NOT NULL DEFAULT 1"
   },
+  { table: "ci_pipelines", column: "auto_created", ddl: "auto_created INTEGER NOT NULL DEFAULT 0" },
   { table: "ci_runs", column: "event", ddl: "event TEXT NOT NULL DEFAULT 'push'" },
   { table: "ci_runs", column: "lane", ddl: "lane TEXT" },
   { table: "ci_runs", column: "pr_number", ddl: "pr_number INTEGER" },
@@ -158,6 +161,8 @@ type PipelineRow = {
   cpus: number;
   trigger_branches: string | null;
   trigger_pull_requests: number;
+  /** 1 = made by "CI for every repository"; it runs only when the repo has ci.yml. */
+  auto_created: number;
   created_at: string;
   updated_at: string;
 };
@@ -308,6 +313,8 @@ export type PipelineInput = {
   /** Blank = deploy branch only, "*" = every branch, else a comma/newline list. */
   triggerBranches?: string | null;
   triggerPullRequests?: boolean;
+  /** Internal: created by "CI for every repository". */
+  auto?: boolean;
 };
 
 function normalizeTriggerBranches(raw: string | null | undefined): string | null {
@@ -353,8 +360,8 @@ export function createCiPipeline(ctx: AppContext, input: PipelineInput) {
     .prepare(
       `INSERT INTO ci_pipelines
        (id, service_id, name, enabled, gate_deploy, config_source, inline_config, image, timeout_minutes, memory_mb, cpus,
-        trigger_branches, trigger_pull_requests, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        trigger_branches, trigger_pull_requests, auto_created, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -370,6 +377,7 @@ export function createCiPipeline(ctx: AppContext, input: PipelineInput) {
       input.cpus ?? DEFAULT_CI_CPUS,
       normalizeTriggerBranches(input.triggerBranches),
       input.triggerPullRequests === false ? 0 : 1,
+      input.auto ? 1 : 0,
       now,
       now
     );
@@ -388,7 +396,7 @@ export function updateCiPipeline(ctx: AppContext, id: string, input: PipelineInp
       `UPDATE ci_pipelines SET
          name = ?, enabled = ?, gate_deploy = ?, config_source = ?, inline_config = ?,
          image = ?, timeout_minutes = ?, memory_mb = ?, cpus = ?,
-         trigger_branches = ?, trigger_pull_requests = ?, updated_at = ?
+         trigger_branches = ?, trigger_pull_requests = ?, auto_created = 0, updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -416,8 +424,8 @@ export function updateCiPipeline(ctx: AppContext, id: string, input: PipelineInp
 }
 
 export function deleteCiPipeline(ctx: AppContext, id: string): void {
-  const current = ctx.db.prepare("SELECT id FROM ci_pipelines WHERE id = ?").get(id) as
-    | { id: string }
+  const current = ctx.db.prepare("SELECT id, service_id FROM ci_pipelines WHERE id = ?").get(id) as
+    | { id: string; service_id: string }
     | undefined;
   if (!current) throw httpError(404, "CI pipeline not found");
   const active = ctx.db
@@ -432,6 +440,8 @@ export function deleteCiPipeline(ctx: AppContext, id: string): void {
   }
   ctx.db.prepare("DELETE FROM ci_runs WHERE pipeline_id = ?").run(id);
   ctx.db.prepare("DELETE FROM ci_pipelines WHERE id = ?").run(id);
+  // "CI for every repository" must not bring back a pipeline someone removed.
+  addAutoCiOptOut(ctx, current.service_id);
 }
 
 function trimRunHistory(ctx: AppContext, pipelineId: string): void {
@@ -470,6 +480,8 @@ export function enqueueCiRun(
     lane?: string;
     prNumber?: number | null;
     gitRef?: string | null;
+    /** Do not post "pending" to GitHub yet (the repo may not have ci.yml). */
+    quietStatus?: boolean;
   }
 ): { id: string; deduped: boolean } {
   const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE service_id = ?").get(input.serviceId) as
@@ -548,14 +560,41 @@ export function enqueueCiRun(
     );
   trimRunHistory(ctx, pipeline.id);
   emitRun(ctx, id, "queued", input.serviceId);
-  reportStatus(
-    ctx,
-    { id, commit_hash: commit, pipeline_id: pipeline.id, service_id: input.serviceId },
-    "pending",
-    "Queued on ServerHoster"
-  );
+  if (!input.quietStatus) {
+    reportStatus(
+      ctx,
+      { id, commit_hash: commit, pipeline_id: pipeline.id, service_id: input.serviceId },
+      "pending",
+      "Queued on ServerHoster"
+    );
+  }
   kickCi(ctx);
   return { id, deduped: false };
+}
+
+type EnqueueInput = Parameters<typeof enqueueCiRun>[1];
+
+/**
+ * Pipelines made by "CI for every repository" only run for repos that have
+ * ci.yml. Ask GitHub first, so a repo without one is not cloned on every push
+ * and gets no commit status. If GitHub cannot answer, queue anyway; the runner
+ * then skips the run quietly when the file is missing.
+ */
+function queueIfRepoHasCiConfig(ctx: AppContext, input: EnqueueInput): void {
+  const service = ctx.db.prepare("SELECT github_repo_url FROM services WHERE id = ?").get(input.serviceId) as
+    | { github_repo_url?: string | null }
+    | undefined;
+  const repoUrl = service?.github_repo_url;
+  if (!repoUrl) return;
+  const ref = input.commit && isCommitSha(input.commit) ? input.commit : input.gitRef || input.branch;
+  void repoHasCiConfig(ctx, repoUrl, ref)
+    .then((has) => {
+      if (has === false) return;
+      enqueueCiRun(ctx, { ...input, quietStatus: has !== true });
+    })
+    .catch((error: unknown) => {
+      serviceLog(ctx, input.serviceId, "warn", `CI: could not queue a run: ${serializeError(error)}`);
+    });
 }
 
 /**
@@ -575,18 +614,24 @@ export function handleIncomingCommit(
   }
 ): CiPlan {
   const pipeline = ctx.db
-    .prepare("SELECT enabled, gate_deploy FROM ci_pipelines WHERE service_id = ?")
-    .get(input.serviceId) as { enabled: number; gate_deploy: number } | undefined;
+    .prepare("SELECT enabled, gate_deploy, auto_created FROM ci_pipelines WHERE service_id = ?")
+    .get(input.serviceId) as { enabled: number; gate_deploy: number; auto_created: number } | undefined;
   const plan = planForPipeline(pipeline);
   if (plan === "deploy-only") return plan;
+  const queueInput: EnqueueInput = {
+    serviceId: input.serviceId,
+    commit: isCommitSha(input.commit) ? input.commit : null,
+    branch: input.branch,
+    trigger: input.trigger,
+    deployAfter: plan === "ci-then-deploy"
+  };
+  // An automatic pipeline never holds a deploy, so it can check for ci.yml first.
+  if (pipeline?.auto_created && plan === "deploy-and-ci") {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return plan;
+  }
   try {
-    enqueueCiRun(ctx, {
-      serviceId: input.serviceId,
-      commit: isCommitSha(input.commit) ? input.commit : null,
-      branch: input.branch,
-      trigger: input.trigger,
-      deployAfter: plan === "ci-then-deploy"
-    });
+    enqueueCiRun(ctx, queueInput);
   } catch (error) {
     // With the gate off the caller still deploys; a CI queue error must not stop it.
     // With the gate on, nothing deploys untested, so the error goes up.
@@ -613,7 +658,7 @@ export function handleBranchPush(
   if (!shouldRunPush(pipeline, input.branch, deployBranch)) {
     return { queued: false, reason: `branch ${input.branch} is not in the pipeline's branch filter` };
   }
-  const queued = enqueueCiRun(ctx, {
+  const queueInput: EnqueueInput = {
     serviceId: input.serviceId,
     commit: isCommitSha(input.commit) ? input.commit : null,
     branch: input.branch,
@@ -621,7 +666,12 @@ export function handleBranchPush(
     deployAfter: false,
     event: "push",
     lane: laneForPush(input.branch)
-  });
+  };
+  if (pipeline.auto_created) {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return { queued: false, reason: `queued if the commit has ${CI_CONFIG_PATH}` };
+  }
+  const queued = enqueueCiRun(ctx, queueInput);
   return { queued: true, runId: queued.id };
 }
 
@@ -678,7 +728,7 @@ export function handlePullRequest(ctx: AppContext, input: PullRequestEvent): Tri
     return { queued: false, reason: reasons[decision.reason] };
   }
   if (!isCommitSha(input.headSha)) return { queued: false, reason: "pull request has no head commit" };
-  const queued = enqueueCiRun(ctx, {
+  const queueInput: EnqueueInput = {
     serviceId: input.serviceId,
     commit: input.headSha,
     branch: input.headBranch,
@@ -688,7 +738,12 @@ export function handlePullRequest(ctx: AppContext, input: PullRequestEvent): Tri
     lane,
     prNumber: input.number,
     gitRef: pullRequestRef(input.number)
-  });
+  };
+  if (pipeline.auto_created) {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return { queued: false, reason: `queued if the pull request has ${CI_CONFIG_PATH}` };
+  }
+  const queued = enqueueCiRun(ctx, queueInput);
   return { queued: true, runId: queued.id };
 }
 
@@ -1132,6 +1187,8 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     | undefined;
 
   const workspace = path.join(workRoot(ctx), runId);
+  // An automatic pipeline stays silent on GitHub until the commit turns out to have ci.yml.
+  let quiet = pipeline?.auto_created === 1;
   const fail = (message: string, failureStep: string | null = null, state: CommitState = "error") => {
     const now = nowIso();
     ctx.db
@@ -1145,7 +1202,7 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       )
       .run(message.slice(0, 2000), failureStep, now, runId);
     emitRun(ctx, runId, "failed", run.service_id);
-    reportStatus(ctx, run, state, message);
+    if (!quiet) reportStatus(ctx, run, state, message);
     serviceLog(ctx, run.service_id, "error", `CI failed: ${message}`);
     notify(ctx, {
       severity: "error",
@@ -1186,7 +1243,7 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
       else if (!waitingForCapacity && Date.now() - started >= timeoutMinutes * 60_000) abort.abort();
     }, 250);
     stopWatch.unref();
-    reportStatus(ctx, run, "pending", "Running on ServerHoster");
+    if (!quiet) reportStatus(ctx, run, "pending", "Running on ServerHoster");
 
     // Bind-mounted workspaces cannot be size-limited by Docker, so check it.
     let measuring = false;
@@ -1237,17 +1294,32 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     if (!run.commit_hash && isCommitSha(checkedOut)) {
       run.commit_hash = checkedOut;
       ctx.db.prepare("UPDATE ci_runs SET commit_hash = ? WHERE id = ?").run(checkedOut, runId);
-      reportStatus(ctx, run, "pending", "Running on ServerHoster");
+      if (!quiet) reportStatus(ctx, run, "pending", "Running on ServerHoster");
     }
 
     let source = pipeline.inline_config ?? "";
     if (pipeline.config_source !== "inline") {
       const read = readRepoCiConfig(workspace);
       if ("error" in read) {
+        if (pipeline.auto_created && read.missing) {
+          ctx.db
+            .prepare(
+              `UPDATE ci_runs SET status = 'skipped', error = ?, finished_at = ? WHERE id = ? AND status = 'running'`
+            )
+            .run(`No ${CI_CONFIG_PATH} in this commit; nothing to run.`, nowIso(), runId);
+          emitRun(ctx, runId, "skipped", run.service_id);
+          return;
+        }
         fail(read.error);
         return;
       }
       source = read.source;
+    }
+    // The commit has a config (or the pipeline is inline): report on GitHub from here on,
+    // so a broken ci.yml shows up on the commit too.
+    if (quiet) {
+      quiet = false;
+      reportStatus(ctx, run, "pending", "Running on ServerHoster");
     }
     const config = parseCiConfig(source, defaultsOf(pipeline));
     timeoutMinutes = config.timeoutMinutes;
@@ -1507,14 +1579,14 @@ function scheduleCachePrune(ctx: AppContext, repoKey: string): void {
  * it. A repo could otherwise point the file at a host path and get its
  * contents echoed back in the parse error.
  */
-function readRepoCiConfig(workspace: string): { source: string } | { error: string } {
+function readRepoCiConfig(workspace: string): { source: string } | { error: string; missing?: boolean } {
   const missing = `No ${CI_CONFIG_PATH} in this commit. Add that file, or switch the pipeline to inline config.`;
   const filePath = path.join(workspace, CI_CONFIG_PATH);
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(filePath);
   } catch {
-    return { error: missing };
+    return { error: missing, missing: true };
   }
   if (!stat.isFile()) return { error: `${CI_CONFIG_PATH} must be a regular file, not a link or directory.` };
   try {
@@ -1783,11 +1855,13 @@ export function startCiLoop(ctx: AppContext): () => Promise<void> {
   }
   const timer = setInterval(() => kickCi(ctx), 2000);
   kickCi(ctx);
+  const stopAutoCi = startAutoCi(ctx);
   return async () => {
     draining = true;
     autostart = false;
     clearInterval(timer);
     clearInterval(pruneTimer);
+    stopAutoCi();
     for (const id of inflight) {
       try {
         requestCancelCiRun(ctx, id);

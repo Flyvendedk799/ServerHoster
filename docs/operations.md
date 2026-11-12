@@ -90,6 +90,17 @@ The CI tab runs test jobs on this machine, in Docker, instead of GitHub Actions.
 - Only names listed under `secrets` are copied from the service or project env. Production `DATABASE_URL` is not injected on its own.
 - **Hold deploy until CI passes** makes GitOps and the GitHub push webhook wait. A green run deploys only if the branch still points at the tested commit. The Run button checks the commit and does not deploy.
 
+### CI for every repository
+
+Turn on **CI for every repository** at the top of the Pipelines list to stop attaching pipelines one by one.
+
+- Every service linked to a GitHub repo gets a pipeline, and services added later get one within a minute.
+- To test a repo, add `.survhub/ci.yml` to it. Before queuing a run, ServerHoster asks GitHub whether the commit has that file. A repo without it is not cloned and gets no commit status. If GitHub cannot be asked (no token, or an API error), the run is queued anyway and ends as **skipped** when the file is missing.
+- Automatic pipelines never hold a deploy. Editing one turns it into a normal pipeline that you control, for example to turn on **Hold deploy until CI passes**. Deleting one turns CI off for that service, and the switch does not bring it back.
+- Each repo also gets a `push` + `pull_request` webhook. This needs a GitHub token (Settings → GitHub), `SURVHUB_WEBHOOK_SECRET`, and either `SURVHUB_PUBLIC_URL` or a webhook URL saved under Settings. The CI page names whatever is missing. Webhooks respect each service's auto-deploy switch, so adding one never starts deploys on a service that has auto-deploy off.
+- `POST /api/ci/auto/sync` runs the sync immediately. Pass `{"force": true}` to re-register every webhook, for example after you change the secret.
+- New repos need only `.survhub/ci.yml`. Delete `.github/workflows/` (or disable Actions for the repo), or GitHub keeps running and billing those workflows too.
+
 ### Triggers
 
 - By default a pipeline runs on pushes to the service's deploy branch and on pull requests that target it (`opened`, `synchronize`, `reopened`). Closing a pull request cancels its run.

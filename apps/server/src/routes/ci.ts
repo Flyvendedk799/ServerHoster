@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { autoWebhookReadiness, isAutoCiEnabled, setAutoCiEnabled, syncAutoCi } from "../services/ciAuto.js";
 import type { AppContext } from "../types.js";
 import { writeCiCapacitySettings } from "../services/ciCapacity.js";
 import { ciFirewallStatus } from "../services/ciNetwork.js";
@@ -36,7 +37,9 @@ const settingsSchema = z.object({
   budgetPercent: z.number().int().min(10).max(90).optional(),
   readonlyRootfs: z.boolean().optional(),
   cacheMaxMb: z.number().int().min(0).max(512_000).optional(),
-  workspaceMaxMb: z.number().int().min(512).max(512_000).optional()
+  workspaceMaxMb: z.number().int().min(512).max(512_000).optional(),
+  /** "CI for every repository". */
+  autoAll: z.boolean().optional()
 });
 
 function asConfigError(error: unknown): Error {
@@ -102,14 +105,27 @@ export function registerCiRoutes(ctx: AppContext): void {
     firewall: ciFirewallStatus(),
     webhookInsecure: ctx.config.webhookInsecure,
     webhookSecretConfigured: Boolean(ctx.config.webhookSecret),
-    publicUrlConfigured: Boolean(ctx.config.publicUrl)
+    publicUrlConfigured: Boolean(ctx.config.publicUrl),
+    autoAll: isAutoCiEnabled(ctx),
+    autoWebhooks: autoWebhookReadiness(ctx)
   });
 
   ctx.app.get("/api/ci/settings", async () => settingsView());
 
   ctx.app.put("/api/ci/settings", async (req) => {
-    writeCiCapacitySettings(ctx, settingsSchema.parse(req.body ?? {}));
+    const { autoAll, ...capacity } = settingsSchema.parse(req.body ?? {});
+    writeCiCapacitySettings(ctx, capacity);
+    if (autoAll !== undefined) {
+      setAutoCiEnabled(ctx, autoAll);
+      if (autoAll) await syncAutoCi(ctx);
+    }
     return settingsView();
+  });
+
+  // Create missing automatic pipelines and (re)register webhooks now.
+  ctx.app.post("/api/ci/auto/sync", async (req) => {
+    const force = (req.body as { force?: unknown } | undefined)?.force === true;
+    return syncAutoCi(ctx, { force });
   });
 
   ctx.app.delete("/api/ci/pipelines/:id/cache", async (req, reply) => {

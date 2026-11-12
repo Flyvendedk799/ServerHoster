@@ -24,6 +24,7 @@ type Pipeline = {
   cpus: number;
   trigger_branches?: string | null;
   trigger_pull_requests?: number | null;
+  auto_created?: number | null;
   last_status?: string | null;
   last_run_at?: string | null;
   last_commit?: string | null;
@@ -101,6 +102,8 @@ type CiSettingsView = {
   webhookInsecure: boolean;
   webhookSecretConfigured: boolean;
   publicUrlConfigured: boolean;
+  autoAll?: boolean;
+  autoWebhooks?: { ready: true; url: string } | { ready: false; reason: string };
 };
 
 const EMPTY: Draft = {
@@ -180,6 +183,23 @@ export function CiPage() {
       toast.success("CI host settings saved");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save CI settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  async function toggleAutoAll(next: boolean): Promise<void> {
+    setSavingSettings(true);
+    try {
+      const view = await api<CiSettingsView>("/api/ci/settings", {
+        method: "PUT",
+        body: JSON.stringify({ autoAll: next })
+      });
+      setCiSettings(view);
+      toast.success(next ? "CI is on for every repository" : "Automatic CI for new repositories is off");
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not change the setting");
     } finally {
       setSavingSettings(false);
     }
@@ -547,6 +567,31 @@ export function CiPage() {
             </span>
           )}
         </div>
+        {ciSettings && (
+          <div style={{ marginTop: "0.75rem" }}>
+            <label className="row tiny">
+              <input
+                type="checkbox"
+                aria-label="CI for every repository"
+                checked={Boolean(ciSettings.autoAll)}
+                disabled={savingSettings}
+                onChange={(e) => void toggleAutoAll(e.target.checked)}
+              />
+              <strong>CI for every repository</strong>
+            </label>
+            <p className="tiny muted" style={{ marginTop: "0.25rem" }}>
+              Every service linked to GitHub, including new ones, gets a pipeline and a webhook. A repo is
+              only tested when it has a .survhub/ci.yml file; repos without one are skipped and get no status
+              on GitHub. Automatic pipelines never hold a deploy. Edit one to change it, or delete it to turn
+              CI off for that service.
+            </p>
+            {ciSettings.autoAll && ciSettings.autoWebhooks && !ciSettings.autoWebhooks.ready && (
+              <p className="tiny text-danger" style={{ marginTop: "0.25rem" }}>
+                <AlertTriangle size={12} /> Webhooks are not set up yet: {ciSettings.autoWebhooks.reason}
+              </p>
+            )}
+          </div>
+        )}
         {loading ? (
           <p className="muted">Loading…</p>
         ) : pipelines.length === 0 ? (
@@ -561,6 +606,7 @@ export function CiPage() {
                 <div>
                   <strong>{pipeline.service_name}</strong>
                   <div className="tiny muted">
+                    {pipeline.auto_created ? "Automatic · " : ""}
                     {pipeline.config_source === "inline" ? "Inline config" : ".survhub/ci.yml"} ·{" "}
                     {pipeline.image}
                     {pipeline.gate_deploy ? " · holds deploy" : ""}
