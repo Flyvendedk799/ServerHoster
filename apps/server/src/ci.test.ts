@@ -32,6 +32,7 @@ import {
 import { ciContainerUser, dockerCiSandbox, type CiSandbox } from "./services/ciDocker.js";
 import type Docker from "dockerode";
 import { flushCommitStatuses, setStatusFetchForTests } from "./services/ciStatus.js";
+import { setHostCapacityForTests } from "./services/ciCapacity.js";
 import { encryptSecret } from "./security.js";
 
 // The db tests use an in-memory better-sqlite3 database (the app's driver).
@@ -1149,6 +1150,8 @@ describe("CI scheduler", { skip }, () => {
     ctx.db.prepare("UPDATE ci_pipelines SET trigger_branches = '*', memory_mb = 128, cpus = 0.25").run();
     ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ci_max_concurrent', '2')").run();
     ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ci_host_budget_percent', '90')").run();
+    // macOS runners report little free RAM; pin the host so admission is deterministic.
+    setHostCapacityForTests({ cpus: 8, totalMemMb: 16_384, freeMemMb: 12_000 });
     const started: string[] = [];
     const release = new Map<string, () => void>();
     setCiExecutorForTests(async (_ctx, runId) => {
@@ -1178,6 +1181,7 @@ describe("CI scheduler", { skip }, () => {
     } finally {
       setCiAutostart(false);
       setCiExecutorForTests(null);
+      setHostCapacityForTests(null);
     }
   });
 });

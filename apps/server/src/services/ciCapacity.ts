@@ -20,7 +20,15 @@ export const FREE_MEM_HEADROOM_MB = 1024;
 export const DEFAULT_CACHE_MAX_MB = 5120;
 export const DEFAULT_WORKSPACE_MAX_MB = 10240;
 
+let hostOverride: HostCapacity | null = null;
+
+/** Tests pin the host so scheduling does not depend on the runner's free RAM. */
+export function setHostCapacityForTests(host: HostCapacity | null): void {
+  hostOverride = host;
+}
+
 export function detectHostCapacity(): HostCapacity {
+  if (hostOverride) return hostOverride;
   const cpus =
     typeof os.availableParallelism === "function" ? os.availableParallelism() : Math.max(1, os.cpus().length);
   return {
