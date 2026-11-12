@@ -70,7 +70,7 @@ test("setStackEmailConfirmations: re-applying the same value is a no-op", () => 
 test("setStackEmailConfirmations: leaves a configured SMTP block and other sections intact", () => {
   const dir = stackDir(
     'project_id = "app"\n\n[functions.send-mail]\nverify_jwt = false\n\n' +
-      "[auth.email.smtp]\nenabled = true\nhost = \"smtp.mx.cloudflare.net\"\n"
+      '[auth.email.smtp]\nenabled = true\nhost = "smtp.mx.cloudflare.net"\n'
   );
   try {
     setStackEmailConfirmations(dir, true);
@@ -127,7 +127,10 @@ test("patchStackAuthMail: enabling email sets no external_url and writes the tem
     const toml = fs.readFileSync(path.join(dir, "supabase", "config.toml"), "utf8");
     assert.ok(!/^\s*external_url\s*=/m.test(toml), "external_url stripped\n" + toml);
     assert.ok(toml.includes("port = 55821"), "port block preserved");
-    assert.ok(fs.existsSync(path.join(dir, "supabase", "templates", "confirmation.html")), "template written");
+    assert.ok(
+      fs.existsSync(path.join(dir, "supabase", "templates", "confirmation.html")),
+      "template written"
+    );
     assert.equal(res.audit.smtp_configured, true);
     assert.equal(res.audit.public_links, true);
   } finally {

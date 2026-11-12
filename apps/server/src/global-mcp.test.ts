@@ -199,11 +199,19 @@ CREATE TABLE IF NOT EXISTS service_resource_links (id TEXT PRIMARY KEY, service_
 CREATE TABLE IF NOT EXISTS managed_resources (id TEXT PRIMARY KEY, profile TEXT, ports_json TEXT, config_json TEXT, status TEXT);
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, count INTEGER);
 `);
-  
-  try { db.exec("ALTER TABLE services ADD COLUMN ssl_status TEXT;"); } catch (e) {}
-  try { db.exec("ALTER TABLE services ADD COLUMN github_repo_url TEXT;"); } catch (e) {}
-  try { db.exec("ALTER TABLE services ADD COLUMN github_branch TEXT;"); } catch (e) {}
-  db.exec("INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('test', 'test', 'hash', 'admin', 'now', 'now')");
+
+  try {
+    db.exec("ALTER TABLE services ADD COLUMN ssl_status TEXT;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE services ADD COLUMN github_repo_url TEXT;");
+  } catch (e) {}
+  try {
+    db.exec("ALTER TABLE services ADD COLUMN github_branch TEXT;");
+  } catch (e) {}
+  db.exec(
+    "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('test', 'test', 'hash', 'admin', 'now', 'now')"
+  );
   const app = Fastify();
   return {
     db,
@@ -229,7 +237,7 @@ test("Global MCP rejects unauthenticated requests", async () => {
   ctx.app.decorate("ctx", ctx);
   registerAuthRoutes(ctx);
   registerMcpRoutes(ctx);
-  
+
   try {
     const start = Date.now();
     const response = await ctx.app.inject({
@@ -238,7 +246,7 @@ test("Global MCP rejects unauthenticated requests", async () => {
       payload: { jsonrpc: "2.0", method: "initialize", id: 1 }
     });
     const elapsed = Date.now() - start;
-    
+
     assert.strictEqual(response.statusCode, 401);
     const data = response.json();
     assert.strictEqual(data.error.code, -32000);
@@ -256,7 +264,7 @@ test("Global MCP accepts SURVHUB_AUTH_TOKEN", async () => {
   ctx.app.decorate("ctx", ctx);
   registerAuthRoutes(ctx);
   registerMcpRoutes(ctx);
-  
+
   try {
     const response = await ctx.app.inject({
       method: "POST",
@@ -265,11 +273,15 @@ test("Global MCP accepts SURVHUB_AUTH_TOKEN", async () => {
       payload: {
         jsonrpc: "2.0",
         method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" }
+        },
         id: 1
       }
     });
-    
+
     assert.strictEqual(response.statusCode, 200);
     const data = parseMcpJson(response.body);
     assert.strictEqual(data.id, 1);
@@ -287,11 +299,11 @@ test("Global MCP accepts durable API token", async () => {
   ctx.app.decorate("ctx", ctx);
   registerAuthRoutes(ctx);
   registerMcpRoutes(ctx);
-  
+
   const durableToken = getDurableApiToken(ctx);
   assert.ok(durableToken);
   assert.strictEqual(durableToken.length, 40);
-  
+
   try {
     const response = await ctx.app.inject({
       method: "POST",
@@ -300,11 +312,15 @@ test("Global MCP accepts durable API token", async () => {
       payload: {
         jsonrpc: "2.0",
         method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } },
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" }
+        },
         id: 1
       }
     });
-    
+
     assert.strictEqual(response.statusCode, 200);
     const data = parseMcpJson(response.body);
     assert.strictEqual(data.id, 1);
@@ -325,9 +341,7 @@ test("Global MCP durable token initialize + list_services succeeds", async () =>
   registerMcpRoutes(ctx);
 
   ctx.db
-    .prepare(
-      "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-    )
+    .prepare("INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run("p1", "demo", null, "now", "now");
   ctx.db
     .prepare(

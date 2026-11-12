@@ -92,8 +92,12 @@ export function SecretsPage() {
 
   const grouped = useMemo(() => {
     const detected = secrets.filter((secret) => secret.storage === "repo-detected");
-    const shared = secrets.filter((secret) => secret.scope === "shared" && secret.storage !== "repo-detected");
-    const service = secrets.filter((secret) => secret.scope === "service" && secret.storage !== "repo-detected");
+    const shared = secrets.filter(
+      (secret) => secret.scope === "shared" && secret.storage !== "repo-detected"
+    );
+    const service = secrets.filter(
+      (secret) => secret.scope === "service" && secret.storage !== "repo-detected"
+    );
     return { shared, service, detected };
   }, [secrets]);
 
@@ -232,8 +236,8 @@ export function SecretsPage() {
             {secret.storage === "repo-detected" && secret.source_file
               ? `Detected in ${secret.source_file}`
               : secret.scope === "shared"
-              ? secret.project_name ?? "Project secret"
-              : `${secret.service_name ?? "Service secret"}${secret.project_name ? ` in ${secret.project_name}` : ""}`}
+                ? (secret.project_name ?? "Project secret")
+                : `${secret.service_name ?? "Service secret"}${secret.project_name ? ` in ${secret.project_name}` : ""}`}
           </div>
           <div className="secret-preview">{secret.value_preview}</div>
         </div>
@@ -269,21 +273,24 @@ export function SecretsPage() {
               Encrypt
             </button>
           )}
-          {secret.scope === "service" && !secret.system && secret.project_id && secret.storage !== "repo-detected" && (
-            <button
-              className="ghost xsmall"
-              onClick={() => void promote(secret)}
-              disabled={busy}
-              data-tooltip="Copy this secret into shared project secrets"
-            >
-              {busyKey === `promote:${secret.id}` ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Share2 size={14} />
-              )}
-              Add to shared
-            </button>
-          )}
+          {secret.scope === "service" &&
+            !secret.system &&
+            secret.project_id &&
+            secret.storage !== "repo-detected" && (
+              <button
+                className="ghost xsmall"
+                onClick={() => void promote(secret)}
+                disabled={busy}
+                data-tooltip="Copy this secret into shared project secrets"
+              >
+                {busyKey === `promote:${secret.id}` ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Share2 size={14} />
+                )}
+                Add to shared
+              </button>
+            )}
           <button
             className="ghost xsmall text-danger"
             onClick={() => void remove(secret)}
@@ -329,10 +336,9 @@ export function SecretsPage() {
           </div>
         </div>
         <p className="muted small">
-          Apps that call LocalSURV License v1 need a base URL. Inject{" "}
-          <code>LICENSE_SERVER_URL</code> from the{" "}
-          <Link to="/license">License</Link> tab (Client integration), or add it as a shared
-          project secret here.
+          Apps that call LocalSURV License v1 need a base URL. Inject <code>LICENSE_SERVER_URL</code> from the{" "}
+          <Link to="/license">License</Link> tab (Client integration), or add it as a shared project secret
+          here.
         </p>
       </section>
 

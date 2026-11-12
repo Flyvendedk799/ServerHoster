@@ -230,31 +230,27 @@ test(
   }
 );
 
-test(
-  "git poller skips a service whose action lock is held",
-  { skip: !hasGit() },
-  async () => {
-    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-poller-locked-"));
-    initRepo(repo);
-    const repoUrl = pathToFileURL(repo).href;
-    const ctx = await buildApp();
-    const { serviceId } = seedGitService(ctx, repoUrl);
-    ctx.actionLocks.add(serviceId); // a deploy/start/stop is "in progress"
-    try {
-      await pollGitUpdatesOnce(ctx);
-      assert.equal(
-        deploymentCount(ctx, serviceId),
-        0,
-        "poller must not start a deploy while another action holds the lock"
-      );
-    } finally {
-      ctx.actionLocks.delete(serviceId);
-      await gracefulShutdown(ctx);
-      await rmTreeWithRetry(repo);
-      await rmTreeWithRetry(path.join(ctx.config.projectsDir, serviceId));
-    }
+test("git poller skips a service whose action lock is held", { skip: !hasGit() }, async () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-poller-locked-"));
+  initRepo(repo);
+  const repoUrl = pathToFileURL(repo).href;
+  const ctx = await buildApp();
+  const { serviceId } = seedGitService(ctx, repoUrl);
+  ctx.actionLocks.add(serviceId); // a deploy/start/stop is "in progress"
+  try {
+    await pollGitUpdatesOnce(ctx);
+    assert.equal(
+      deploymentCount(ctx, serviceId),
+      0,
+      "poller must not start a deploy while another action holds the lock"
+    );
+  } finally {
+    ctx.actionLocks.delete(serviceId);
+    await gracefulShutdown(ctx);
+    await rmTreeWithRetry(repo);
+    await rmTreeWithRetry(path.join(ctx.config.projectsDir, serviceId));
   }
-);
+});
 
 test("getGithubSyncStatus: no deploy record but a clone at HEAD is NOT 'update available'", async () => {
   if (!hasGit()) return;

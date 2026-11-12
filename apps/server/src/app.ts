@@ -14,11 +14,7 @@ import { config } from "./config.js";
 import { db } from "./db.js";
 import type { AppContext } from "./types.js";
 import { dockerUnavailableMessage, serializeError } from "./lib/core.js";
-import {
-  COMPANION_MOUNT_PATH,
-  companionDistDir,
-  serveCompanionAsset
-} from "./services/companionStatic.js";
+import { COMPANION_MOUNT_PATH, companionDistDir, serveCompanionAsset } from "./services/companionStatic.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerOpsRoutes } from "./routes/ops.js";
 import { registerProjectRoutes } from "./routes/projects.js";
@@ -52,6 +48,7 @@ import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerAiGatewayRoutes } from "./routes/aiGateway.js";
 import { registerAiUsageRoutes } from "./routes/aiUsage.js";
 import { registerStripeRoutes } from "./routes/stripe.js";
+import { registerCiRoutes } from "./routes/ci.js";
 import { getGatewayConfig, primeCredentialRedaction } from "./services/aiGateway.js";
 import { startInferenceServer, stopInferenceServer } from "./services/aiGatewayServer.js";
 import { isExternalMode, primeExternalRedaction } from "./services/aiGatewayExternal.js";
@@ -70,6 +67,7 @@ import {
   startContainerDriftLoop
 } from "./services/runtime.js";
 import { startGitPollerLoop } from "./services/poller.js";
+import { startCiLoop } from "./services/ci.js";
 import { writeAuditLog } from "./services/audit.js";
 import { registerBuiltinTunnelAdapters } from "./services/tunnels/register.js";
 import { stopAllTerminalSessions } from "./services/terminals.js";
@@ -317,6 +315,7 @@ export async function buildApp(): Promise<AppContext> {
   registerAiGatewayRoutes(ctx);
   registerAiUsageRoutes(ctx);
   registerStripeRoutes(ctx);
+  registerCiRoutes(ctx);
   registerBuiltinTunnelAdapters();
   registerTunnelRoutes(ctx);
   registerInspectorRoutes(ctx);
@@ -396,6 +395,8 @@ export async function buildApp(): Promise<AppContext> {
   ctx.shutdownTasks.push(() => stopDriftLoop());
   const stopGitLoop = startGitPollerLoop(ctx);
   ctx.shutdownTasks.push(() => stopGitLoop());
+  const stopCiLoop = startCiLoop(ctx);
+  ctx.shutdownTasks.push(() => stopCiLoop());
   const stopMetricsLoop = startMetricsLoop(ctx);
   ctx.shutdownTasks.push(() => stopMetricsLoop());
   const stopHealthLoopSys = startSystemHealthLoop(ctx);

@@ -45,7 +45,24 @@ function seedService(
         auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, projectId, name, "process", command, "/tmp", "", "", null, "stopped", 0, 0, 5, "manual", now, now);
+    .run(
+      id,
+      projectId,
+      name,
+      "process",
+      command,
+      "/tmp",
+      "",
+      "",
+      null,
+      "stopped",
+      0,
+      0,
+      5,
+      "manual",
+      now,
+      now
+    );
   return id;
 }
 
@@ -71,10 +88,7 @@ test("service groups create, list, update, delete selected parent services", asy
     assert.equal(create.statusCode, 200);
     const created = create.json() as { id: string; service_ids: string[]; services: Array<{ id: string }> };
     assert.deepEqual(created.service_ids.sort(), [apiId, webId].sort());
-    assert.deepEqual(
-      created.services.map((service) => service.id).sort(),
-      [apiId, webId].sort()
-    );
+    assert.deepEqual(created.services.map((service) => service.id).sort(), [apiId, webId].sort());
 
     const list = await ctx.app.inject({ method: "GET", url: "/service-groups", headers });
     assert.equal(list.statusCode, 200);
@@ -128,10 +142,7 @@ test("service group start-all returns per-service results", async () => {
     });
     assert.equal(start.statusCode, 200);
     const body = start.json() as { results: Array<{ serviceId: string; ok: boolean }> };
-    assert.deepEqual(
-      body.results.map((result) => result.serviceId).sort(),
-      [one, two].sort()
-    );
+    assert.deepEqual(body.results.map((result) => result.serviceId).sort(), [one, two].sort());
     assert.ok(body.results.every((result) => result.ok));
   } finally {
     await gracefulShutdown(ctx);
@@ -159,11 +170,16 @@ test("deleting a service removes it from service groups", async () => {
     });
     assert.equal(removeService.statusCode, 200);
 
-    const groups = (await ctx.app.inject({ method: "GET", url: "/service-groups", headers })).json() as Array<{
+    const groups = (
+      await ctx.app.inject({ method: "GET", url: "/service-groups", headers })
+    ).json() as Array<{
       id: string;
       service_ids: string[];
     }>;
-    assert.deepEqual(groups.find((group) => group.id === (create.json() as { id: string }).id)?.service_ids, []);
+    assert.deepEqual(
+      groups.find((group) => group.id === (create.json() as { id: string }).id)?.service_ids,
+      []
+    );
   } finally {
     await gracefulShutdown(ctx);
   }

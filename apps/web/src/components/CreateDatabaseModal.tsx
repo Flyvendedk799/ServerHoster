@@ -99,8 +99,8 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
               Target Project
               <InfoHint side="right">
                 <p>
-                  Just groups this database under a project in the dashboard. It doesn't limit
-                  anything — you can still connect any app to it later, whatever project it's in.
+                  Just groups this database under a project in the dashboard. It doesn't limit anything — you
+                  can still connect any app to it later, whatever project it's in.
                 </p>
               </InfoHint>
             </label>
@@ -119,9 +119,9 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 Instance Name
                 <InfoHint side="right">
                   <p>
-                    A friendly name for this database in ServerHoster — the label you'll see in the
-                    dashboard, not the technical database name inside it. Something like{" "}
-                    <code>users-db</code> works well.
+                    A friendly name for this database in ServerHoster — the label you'll see in the dashboard,
+                    not the technical database name inside it. Something like <code>users-db</code> works
+                    well.
                   </p>
                 </InfoHint>
               </label>
@@ -137,16 +137,16 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 <InfoHint title="Which database engine?" side="left">
                   <p>The kind of database to run. Not sure? PostgreSQL is the safe choice for most apps.</p>
                   <p>
-                    <strong>PostgreSQL</strong> — the popular general-purpose default (works with
-                    Prisma, Drizzle, <code>pg</code>). Comes with the data browser and SQL tools.
+                    <strong>PostgreSQL</strong> — the popular general-purpose default (works with Prisma,
+                    Drizzle, <code>pg</code>). Comes with the data browser and SQL tools.
                   </p>
                   <p>
                     <strong>MySQL</strong> — another popular general-purpose option; pick it if your app
                     specifically expects MySQL.
                   </p>
                   <p>
-                    <strong>Redis</strong> — a fast in-memory store for things like caching and
-                    sessions. It has no tables.
+                    <strong>Redis</strong> — a fast in-memory store for things like caching and sessions. It
+                    has no tables.
                   </p>
                   <p>
                     <strong>MongoDB</strong> — a document database; pick it if your app uses MongoDB.
@@ -180,8 +180,8 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 Port
                 <InfoHint side="right">
                   <p>
-                    The port number this database listens on. ServerHoster fills in the normal one for
-                    each type — only change it if another service is already using that number.
+                    The port number this database listens on. ServerHoster fills in the normal one for each
+                    type — only change it if another service is already using that number.
                   </p>
                 </InfoHint>
               </label>
@@ -198,9 +198,8 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 Initial Database <span className="optional">(Schema)</span>
                 <InfoHint side="left">
                   <p>
-                    The name of the first database created inside this instance — it appears at the end
-                    of the connection address. Leave it blank to use a sensible default. Redis doesn't
-                    use this.
+                    The name of the first database created inside this instance — it appears at the end of the
+                    connection address. Leave it blank to use a sensible default. Redis doesn't use this.
                   </p>
                 </InfoHint>
               </label>
@@ -218,8 +217,8 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 Root User
                 <InfoHint side="right">
                   <p>
-                    The main admin username for the database, saved into the connection address.
-                    Defaults to <code>admin</code>. (Redis only uses a password.)
+                    The main admin username for the database, saved into the connection address. Defaults to{" "}
+                    <code>admin</code>. (Redis only uses a password.)
                   </p>
                 </InfoHint>
               </label>
@@ -234,8 +233,8 @@ export function CreateDatabaseModal({ projects, onClose, onCreated, initialProje
                 Root Pass
                 <InfoHint side="left">
                   <p>
-                    Leave this empty and ServerHoster will create a strong password for you, or click
-                    the refresh icon to generate one. It's stored encrypted.
+                    Leave this empty and ServerHoster will create a strong password for you, or click the
+                    refresh icon to generate one. It's stored encrypted.
                   </p>
                 </InfoHint>
               </label>

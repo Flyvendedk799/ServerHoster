@@ -221,7 +221,8 @@ function composeEnvMap(value: unknown): Record<string, string> {
 }
 
 function composeFilesForWorkdir(workingDir: string): string[] {
-  const start = fs.existsSync(workingDir) && fs.statSync(workingDir).isFile() ? path.dirname(workingDir) : workingDir;
+  const start =
+    fs.existsSync(workingDir) && fs.statSync(workingDir).isFile() ? path.dirname(workingDir) : workingDir;
   const out: string[] = [];
   let current = path.resolve(start);
   for (let depth = 0; depth < 5; depth += 1) {
@@ -407,7 +408,9 @@ async function enrichComposeCandidate(
   const port = inspected?.hostPort ?? fallbackPort;
   const running = inspected?.running ?? false;
   const connectionUrl = port
-    ? (rawUrl ? rewriteComposeUrl(rawUrl.value, db, port) : buildUrlFromDbEnv(db, port))
+    ? rawUrl
+      ? rewriteComposeUrl(rawUrl.value, db, port)
+      : buildUrlFromDbEnv(db, port)
     : null;
   const note = port
     ? running
@@ -446,7 +449,10 @@ export async function detectComposeDatabaseCandidate(
     const preferredApps = opts.composeServiceName
       ? services.filter((service) => service.name === opts.composeServiceName)
       : services;
-    const appCandidates = [...preferredApps, ...services.filter((service) => !preferredApps.includes(service))];
+    const appCandidates = [
+      ...preferredApps,
+      ...services.filter((service) => !preferredApps.includes(service))
+    ];
     for (const app of appCandidates) {
       for (const [key, value] of Object.entries(app.env)) {
         if (!PERSISTENCE_ENV_HINTS.includes(key)) continue;

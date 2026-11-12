@@ -70,9 +70,30 @@ export const SMTP_PASS_ENV_KEY = "SUPABASE_AUTH_SMTP_PASS";
  * `/auth/v1/verify` endpoint expects for that flow.
  */
 export const AUTH_MAIL_TEMPLATES = [
-  { key: "confirmation", verifyType: "signup", subject: "Confirm your email", heading: "Confirm your email", lead: "Confirm your address to finish creating your account:", cta: "Confirm your email" },
-  { key: "recovery", verifyType: "recovery", subject: "Reset your password", heading: "Reset your password", lead: "Follow this link to choose a new password:", cta: "Reset password" },
-  { key: "magic_link", verifyType: "magiclink", subject: "Your sign-in link", heading: "Sign in", lead: "Follow this link to sign in:", cta: "Sign in" }
+  {
+    key: "confirmation",
+    verifyType: "signup",
+    subject: "Confirm your email",
+    heading: "Confirm your email",
+    lead: "Confirm your address to finish creating your account:",
+    cta: "Confirm your email"
+  },
+  {
+    key: "recovery",
+    verifyType: "recovery",
+    subject: "Reset your password",
+    heading: "Reset your password",
+    lead: "Follow this link to choose a new password:",
+    cta: "Reset password"
+  },
+  {
+    key: "magic_link",
+    verifyType: "magiclink",
+    subject: "Your sign-in link",
+    heading: "Sign in",
+    lead: "Follow this link to sign in:",
+    cta: "Sign in"
+  }
 ] as const;
 
 type AuthMailTemplate = (typeof AUTH_MAIL_TEMPLATES)[number];

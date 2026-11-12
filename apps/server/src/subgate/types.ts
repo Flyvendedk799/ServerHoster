@@ -167,13 +167,7 @@ export type AnthropicRequest = {
   [key: string]: unknown;
 };
 
-export type AnthropicStopReason =
-  | "end_turn"
-  | "max_tokens"
-  | "stop_sequence"
-  | "tool_use"
-  | "refusal"
-  | null;
+export type AnthropicStopReason = "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | "refusal" | null;
 
 export type AnthropicUsage = {
   input_tokens: number;
@@ -206,9 +200,7 @@ export type AnthropicStreamEvent =
   | {
       type: "content_block_delta";
       index: number;
-      delta:
-        | { type: "text_delta"; text: string }
-        | { type: "input_json_delta"; partial_json: string };
+      delta: { type: "text_delta"; text: string } | { type: "input_json_delta"; partial_json: string };
     }
   | { type: "content_block_stop"; index: number }
   | {

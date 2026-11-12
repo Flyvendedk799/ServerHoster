@@ -206,9 +206,7 @@ function engineForProfile(profile: ResourceProfileId): DatabaseRow["engine"] | n
 }
 
 function isLocalHostname(hostname: string): boolean {
-  return ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "host.docker.internal"].includes(
-    hostname
-  );
+  return ["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "host.docker.internal"].includes(hostname);
 }
 
 function urlIsHosted(value: string): boolean {
@@ -452,11 +450,7 @@ function unlinkedDatabases(ctx: AppContext, service: ServiceRow, profile: Resour
     .all(service.project_id, engine, service.linked_database_id) as DatabaseRow[];
 }
 
-function addSecretIssues(
-  ctx: AppContext,
-  current: RecognitionProvider,
-  issues: RecognitionIssue[]
-): void {
+function addSecretIssues(ctx: AppContext, current: RecognitionProvider, issues: RecognitionIssue[]): void {
   if (current.kind !== "managed-resource" || current.profile !== "supabase" || !current.resource_id) return;
   const resource = getResource(ctx, current.resource_id);
   if (!resource) return;
@@ -508,7 +502,9 @@ function buildActions(
       preferred: current.kind === "none"
     });
   }
-  const hosted = providers.find((provider) => provider.kind === "hosted-env" && providerMatches(provider, detectedProfile));
+  const hosted = providers.find(
+    (provider) => provider.kind === "hosted-env" && providerMatches(provider, detectedProfile)
+  );
   if (hosted) {
     actions.push({
       id: "use-hosted",
@@ -517,7 +513,11 @@ function buildActions(
       preferred: current.kind === "hosted-env"
     });
   }
-  if (providers.some((provider) => provider.kind === "managed-resource" && providerMatches(provider, detectedProfile))) {
+  if (
+    providers.some(
+      (provider) => provider.kind === "managed-resource" && providerMatches(provider, detectedProfile)
+    )
+  ) {
     actions.push({ id: "use-local", label: "Prefer local managed resource", kind: "set-preference" });
   }
   for (const resource of unlinkedResources) {
@@ -560,7 +560,12 @@ function buildActions(
     });
   }
   if (hasIssue(issues, "env-override")) {
-    actions.push({ id: "fix-env", label: "Remove or update overriding service env", kind: "fix-env", preferred: true });
+    actions.push({
+      id: "fix-env",
+      label: "Remove or update overriding service env",
+      kind: "fix-env",
+      preferred: true
+    });
   }
   if (detectedProfile === "manual") {
     actions.push({ id: "ignore", label: "Mark database not needed", kind: "set-preference" });
@@ -587,7 +592,9 @@ function stateFrom(
 
 export function getRecognitionPreference(ctx: AppContext, serviceId: string): RecognitionPreference {
   const row = ctx.db
-    .prepare("SELECT value_json, updated_at FROM service_resource_preferences WHERE service_id = ? AND kind = ?")
+    .prepare(
+      "SELECT value_json, updated_at FROM service_resource_preferences WHERE service_id = ? AND kind = ?"
+    )
     .get(serviceId, PREFERENCE_KIND) as { value_json: string; updated_at: string } | undefined;
   if (!row) return { mode: "auto" };
   const parsed = parseJson<RecognitionPreference>(row.value_json, { mode: "auto" });
@@ -749,15 +756,16 @@ export async function recognizeService(
 
   const unlinkedResources = unlinkedManagedResources(ctx, service, detected.profile);
   const unlinkedDbs = unlinkedDatabases(ctx, service, detected.profile);
-  if (detected.profile !== "manual" && current.kind === "none" && (unlinkedResources.length || unlinkedDbs.length)) {
+  if (
+    detected.profile !== "manual" &&
+    current.kind === "none" &&
+    (unlinkedResources.length || unlinkedDbs.length)
+  ) {
     issues.push({
       code: "unlinked-existing",
       severity: "warning",
       message: "A matching existing database/resource is available but not linked to this service.",
-      evidence: [
-        ...unlinkedResources.map((resource) => resource.name),
-        ...unlinkedDbs.map((db) => db.name)
-      ],
+      evidence: [...unlinkedResources.map((resource) => resource.name), ...unlinkedDbs.map((db) => db.name)],
       action_id: unlinkedResources.length ? "link-existing" : "adopt-legacy"
     });
   }
@@ -812,7 +820,9 @@ export async function runRecognitionScan(ctx: AppContext, serviceId: string): Pr
 }
 
 function findResourceForDatabase(ctx: AppContext, databaseId: string): ManagedResourceRow | null {
-  const rows = ctx.db.prepare("SELECT * FROM managed_resources ORDER BY created_at DESC").all() as ManagedResourceRow[];
+  const rows = ctx.db
+    .prepare("SELECT * FROM managed_resources ORDER BY created_at DESC")
+    .all() as ManagedResourceRow[];
   for (const row of rows) {
     const config = resourceConfig(row);
     if (config.database_id === databaseId) return row;

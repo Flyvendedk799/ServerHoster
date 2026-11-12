@@ -67,8 +67,7 @@ export function matchProxyRoute<T extends { path_prefix?: string | null }>(
   let bestLength = -1;
   for (const route of routes) {
     const prefix = normalizeRoutePrefix(route.path_prefix);
-    const matches =
-      prefix === "/" || requestPath === prefix || requestPath.startsWith(`${prefix}/`);
+    const matches = prefix === "/" || requestPath === prefix || requestPath.startsWith(`${prefix}/`);
     if (!matches) continue;
     if (prefix.length > bestLength) {
       best = route;
@@ -340,7 +339,9 @@ export function assertPortAvailable(ctx: AppContext, port: number, excludeServic
     .get(port, excludeServiceId ?? "") as { name?: string } | undefined;
   const db = svc
     ? undefined
-    : (ctx.db.prepare("SELECT name FROM databases WHERE port = ?").get(port) as { name?: string } | undefined);
+    : (ctx.db.prepare("SELECT name FROM databases WHERE port = ?").get(port) as
+        | { name?: string }
+        | undefined);
   const owner = svc ? `service "${svc.name ?? "?"}"` : db ? `database "${db.name ?? "?"}"` : null;
   if (owner) {
     const e = new Error(`Port ${port} is already used by ${owner}. Pick a different port.`) as Error & {

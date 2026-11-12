@@ -101,14 +101,20 @@ export function registerAiUsageRoutes(ctx: AppContext): void {
   // ---- Dashboard: reads ---------------------------------------------------
   ctx.app.get("/api/ai-usage/summary", async (req) => {
     const q = z
-      .object({ range: z.enum(["24h", "7d", "30d", "month"]).default("7d"), service: z.string().max(80).optional() })
+      .object({
+        range: z.enum(["24h", "7d", "30d", "month"]).default("7d"),
+        service: z.string().max(80).optional()
+      })
       .parse(req.query ?? {});
     return usageSummary(ctx, q.range, q.service);
   });
 
   ctx.app.get("/api/ai-usage/events", async (req) => {
     const q = z
-      .object({ limit: z.coerce.number().int().min(1).max(200).default(50), service: z.string().max(80).optional() })
+      .object({
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+        service: z.string().max(80).optional()
+      })
       .parse(req.query ?? {});
     return { events: recentEvents(ctx, q.limit, q.service) };
   });
@@ -152,7 +158,9 @@ export function registerAiUsageRoutes(ctx: AppContext): void {
   });
 
   ctx.app.put("/api/ai-usage/prices", async (req) => {
-    const body = z.object({ overrides: z.record(z.string().min(1).max(120), priceSchema) }).parse(req.body ?? {});
+    const body = z
+      .object({ overrides: z.record(z.string().min(1).max(120), priceSchema) })
+      .parse(req.body ?? {});
     setPriceOverrides(ctx, body.overrides);
     return { models: modelPrices(ctx) };
   });

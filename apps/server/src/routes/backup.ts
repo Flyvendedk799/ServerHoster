@@ -45,9 +45,7 @@ export function registerBackupRoutes(ctx: AppContext): void {
         // quote identifiers, so a crafted import can't inject SQL or touch
         // columns that don't exist.
         const validCols = new Set(
-          (ctx.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-            (c) => c.name
-          )
+          (ctx.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name)
         );
         const keys = Object.keys(rows[0] ?? {}).filter((k) => validCols.has(k));
         if (keys.length === 0) continue;

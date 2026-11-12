@@ -172,23 +172,23 @@ export function GitHubDeployModal({ projects, onClose, onDeployed }: Props) {
                 )}
                 {!loading &&
                   filtered.map((repo) => (
-                  <div
-                    key={repo.full_name}
-                    className="repo-item"
-                    onClick={() => selectRepo(repo)}
-                    style={{
-                      padding: "1rem",
-                      borderBottom: "1px solid var(--border-subtle)",
-                      cursor: "pointer",
-                      transition: "var(--transition)"
-                    }}
-                  >
-                    <div className="row between">
-                      <span className="font-semibold">{repo.full_name}</span>
-                      <span className="tiny muted">{repo.default_branch}</span>
+                    <div
+                      key={repo.full_name}
+                      className="repo-item"
+                      onClick={() => selectRepo(repo)}
+                      style={{
+                        padding: "1rem",
+                        borderBottom: "1px solid var(--border-subtle)",
+                        cursor: "pointer",
+                        transition: "var(--transition)"
+                      }}
+                    >
+                      <div className="row between">
+                        <span className="font-semibold">{repo.full_name}</span>
+                        <span className="tiny muted">{repo.default_branch}</span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
               </div>
 
               <div className="form-group" style={{ marginTop: "1.5rem" }}>

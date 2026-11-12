@@ -35,6 +35,7 @@ ServerHoster uses a **durable API token** for MCP and REST API authentication. T
 - Remains valid indefinitely unless explicitly rotated
 
 **To use the token:**
+
 1. Copy it from the Settings UI (Dev Tools tab)
 2. Send it in API requests: `Authorization: Bearer <your-token>`
 3. Configure MCP clients (Grok Bot, Claude Desktop) with this same token
@@ -80,6 +81,57 @@ External agents (e.g. Grok Bot via `mcp-remote` → `POST http://<host>:8787/mcp
 1. Use the **Settings → Dev Tools → API / MCP Token** value as `Authorization: Bearer …` (same token as REST).
 2. Set a **client timeout of ≥ 30s** (60s is comfortable for health/log tools; raise further for `redeploy_service`).
 3. Treat client `-32001 Request timed out` as “no response in time” — not as an auth error. Auth failures return **401** with JSON-RPC `-32000` immediately. See [docs/mcp.md](./mcp.md).
+
+## CI
+
+The CI tab runs test jobs on this machine, in Docker, instead of GitHub Actions. Private repositories therefore do not spend Actions minutes. A pipeline is attached to a service that already deploys from GitHub.
+
+- Put the job in `.survhub/ci.yml` (`steps`, optional `image`, `timeoutMinutes`, `memoryMb`, `secrets`) or paste that YAML into the pipeline.
+- Only names listed under `secrets` are copied from the service or project env. Production `DATABASE_URL` is not injected on its own.
+- **Hold deploy until CI passes** makes GitOps and the GitHub push webhook wait. A green run deploys only if the branch still points at the tested commit. The Run button checks the commit and does not deploy.
+
+### CI for every repository
+
+Turn on **CI for every repository** at the top of the Pipelines list to stop attaching pipelines one by one.
+
+- Every service linked to a GitHub repo gets a pipeline, and services added later get one within a minute.
+- To test a repo, add `.survhub/ci.yml` to it. Before queuing a run, ServerHoster asks GitHub whether the commit has that file. A repo without it is not cloned and gets no commit status. If GitHub cannot be asked (no token, or an API error), the run is queued anyway and ends as **skipped** when the file is missing.
+- Automatic pipelines never hold a deploy. Editing one turns it into a normal pipeline that you control, for example to turn on **Hold deploy until CI passes**. Deleting one turns CI off for that service, and the switch does not bring it back.
+- Each repo also gets a `push` + `pull_request` webhook. This needs a GitHub token (Settings → GitHub), `SURVHUB_WEBHOOK_SECRET`, and either `SURVHUB_PUBLIC_URL` or a webhook URL saved under Settings. The CI page names whatever is missing. Webhooks respect each service's auto-deploy switch, so adding one never starts deploys on a service that has auto-deploy off.
+- `POST /api/ci/auto/sync` runs the sync immediately. Pass `{"force": true}` to re-register every webhook, for example after you change the secret.
+- New repos need only `.survhub/ci.yml`. Delete `.github/workflows/` (or disable Actions for the repo), or GitHub keeps running and billing those workflows too.
+
+### Triggers
+
+- By default a pipeline runs on pushes to the service's deploy branch and on pull requests that target it (`opened`, `synchronize`, `reopened`). Closing a pull request cancels its run.
+- **Other branches** takes a comma-separated list of branch names or globs (`feature/*`, `release-*`, `*`). Names are compared against the full ref, so `refs/heads/feature/main` is `feature/main`, not `main`. Tag pushes are ignored.
+- Only the deploy branch deploys. Branch and pull request runs never deploy, even with **Hold deploy until CI passes** on.
+- Pull requests from forks are skipped. Their code and `.survhub/ci.yml` come from someone without push access, and a job can read the secrets it lists. Same-repository pull requests get those secrets, the same as a branch push.
+- A newer push to the same branch, or a new commit on the same pull request, supersedes the older run. A queued run is dropped; a running run on a non-deploy branch or pull request is cancelled.
+- Triggers are set on the pipeline. The `on:` key of a GitHub Actions workflow is not read, because the trigger is decided before the repository is checked out.
+- Pull request and branch CI need `SURVHUB_WEBHOOK_SECRET`. With `SURVHUB_WEBHOOK_INSECURE=1` and no secret, they are refused and the CI page says so; deploy-branch pushes behave as before.
+- Webhooks created before this version only send `push`. Press **Set up webhook** on the service again to add `pull_request`.
+
+### Commit statuses
+
+Each run reports a commit status named `survhub-ci/<pipeline>`: pending while queued or running, then success, failure (a step failed, timed out, or hit the disk cap), or error (cancelled, superseded, or a setup problem). With `SURVHUB_PUBLIC_URL` set, the status links to `/ci?run=<id>`.
+
+Statuses use the GitHub token saved under Settings. A classic token needs `repo` (or `repo:status`); a fine-grained token needs **Commit statuses: Read and write**. If GitHub refuses, the run still finishes, and the reason is shown on the run and in the service log. The token is never written to logs.
+
+### Limits and speed
+
+- Each job gets a hard memory cap with no swap, a CPU cap, 512 processes, a 16384 open-file limit, and the pipeline timeout. Defaults: 1 CPU, 2048 MB, 20 minutes.
+- A job can briefly use up to twice its CPUs (at most 4) when the host is idle. It runs at low CPU and disk priority, so services on the host win under contention.
+- **Parallel jobs** is automatic: about one job per 2 CPU cores and per 2.5 GB of free RAM, between 1 and 4. A further job starts only while all running jobs fit in the **host budget** (50% of CPUs and RAM by default) and 1 GB of RAM stays free. Otherwise it waits in line, in order. One job always runs, even if it is larger than the budget.
+- npm, pnpm, yarn, pip and Go caches are kept per repository under the data directory (5 GB per repository by default, oldest files pruned; 0 turns caching off). **Clear cache** on a pipeline removes it.
+- Checkouts are shallow. Pull requests fetch only `refs/pull/<n>/head`. A local image is not pulled again.
+- A workspace that grows past **Workspace MB** (10 GB by default) stops the job.
+
+### Isolation
+
+- The container runs as a non-root user, with no new privileges, all capabilities dropped, and no Docker socket. Its own log driver is off; output is kept in the run.
+- The root filesystem is read-only by default. Only `/workspace`, `/cache`, and `/tmp` (a RAM disk of up to half the memory cap) are writable. Turn **Read-only container filesystem** off for an image that writes elsewhere, for example a global `npm install -g`.
+- Jobs use their own Docker network, `survhub-ci`, with no `host.docker.internal`. When ServerHoster runs as root on Linux with Docker's iptables enabled, it also blocks jobs from reaching the host and private networks (DNS is allowed). Otherwise the CI page shows that this block is not in place.
 
 ## Backups
 

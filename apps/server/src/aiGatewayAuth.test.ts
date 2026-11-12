@@ -1,15 +1,14 @@
 /**
  * AI Gateway auth, token, and metering tests (§8.5, §8.6).
  *
- * These need a database. Rather than the app's better-sqlite3 handle — which
- * needs a native build and would point at the real ~/.survhub/survhub.db —
- * they run against an in-memory `node:sqlite` database with just the tables
- * the gateway touches. The service layer only uses the
+ * These need a database. Rather than the app's database file — which would
+ * point at the real ~/.survhub/survhub.db — they run against an in-memory
+ * better-sqlite3 database with just the tables the gateway touches. The service layer only uses the
  * `prepare().get()/.all()/.run()` surface, which both drivers share.
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
+import DatabaseSync from "better-sqlite3";
 import test, { beforeEach, describe } from "node:test";
 
 import { isApiPath } from "./routes/auth.js";
@@ -87,9 +86,7 @@ describe("consumer tokens", () => {
   test("only a hash is persisted — the plaintext token is never stored", () => {
     const { token } = mintConsumerToken(ctx, "mymetaview-prod");
 
-    const rows = ctx.db.prepare("SELECT * FROM ai_gateway_tokens").all() as Array<
-      Record<string, unknown>
-    >;
+    const rows = ctx.db.prepare("SELECT * FROM ai_gateway_tokens").all() as Array<Record<string, unknown>>;
     assert.equal(rows.length, 1);
     const serialised = JSON.stringify(rows);
     assert.ok(!serialised.includes(token), "plaintext token found in the tokens table");
@@ -254,9 +251,7 @@ describe("provider credentials", () => {
 
     clearProviderKey(ctx, "openai");
     assert.deepEqual(listAvailableProviders(ctx), []);
-    const row = ctx.db
-      .prepare("SELECT value FROM settings WHERE key = 'ai_gateway_key_openai'")
-      .get();
+    const row = ctx.db.prepare("SELECT value FROM settings WHERE key = 'ai_gateway_key_openai'").get();
     assert.equal(row, undefined);
   });
 
@@ -404,9 +399,7 @@ describe("gateway config", () => {
   });
 
   test("a corrupted config blob falls back to defaults instead of throwing", () => {
-    ctx.db
-      .prepare("INSERT INTO settings (key, value) VALUES ('ai_gateway_config', '{not json')")
-      .run();
+    ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('ai_gateway_config', '{not json')").run();
     assert.equal(getGatewayConfig(ctx).enabled, false);
   });
 

@@ -161,10 +161,9 @@ export function GoPublicWizard({ serviceId, onClose }: Props) {
   async function connectCloudflare(): Promise<void> {
     setBusy("connect");
     try {
-      const res = await api<{ authUrl: string | null; connected: boolean }>(
-        "/cloudflare/connect/login",
-        { method: "POST" }
-      );
+      const res = await api<{ authUrl: string | null; connected: boolean }>("/cloudflare/connect/login", {
+        method: "POST"
+      });
       if (res.connected) {
         toast.success("Cloudflare already connected");
         await refetch();
@@ -180,10 +179,9 @@ export function GoPublicWizard({ serviceId, onClose }: Props) {
       const deadline = Date.now() + 5 * 60 * 1000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 2000));
-        const st = await api<{ connected: boolean; authUrl: string | null }>(
-          "/cloudflare/connect/status",
-          { silent: true }
-        );
+        const st = await api<{ connected: boolean; authUrl: string | null }>("/cloudflare/connect/status", {
+          silent: true
+        });
         if (st.connected) {
           toast.success("Cloudflare connected");
           await refetch();
@@ -488,11 +486,7 @@ export function GoPublicWizard({ serviceId, onClose }: Props) {
                       onClick={() => void disconnectCloudflareTunnel()}
                       style={{ alignSelf: "flex-start" }}
                     >
-                      {busy === "connect" ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        <X size={12} />
-                      )}{" "}
+                      {busy === "connect" ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}{" "}
                       Disconnect
                     </button>
                   </div>
@@ -534,75 +528,75 @@ export function GoPublicWizard({ serviceId, onClose }: Props) {
                         account ID, tunnel ID, and zone ID. Already-saved fields can be left blank.
                       </p>
                       <div className="creds-grid">
-                      <label>
-                        <span>
-                          API token{" "}
-                          <span className="muted tiny">
-                            {data.capabilities.hasCloudflareApiToken ? "✓ saved" : "missing"}
+                        <label>
+                          <span>
+                            API token{" "}
+                            <span className="muted tiny">
+                              {data.capabilities.hasCloudflareApiToken ? "✓ saved" : "missing"}
+                            </span>
                           </span>
-                        </span>
-                        <input
-                          type="password"
-                          value={creds.apiToken}
-                          onChange={(e) => setCreds({ ...creds, apiToken: e.target.value })}
-                          placeholder="Bearer …"
-                        />
-                      </label>
-                      <label>
-                        <span>
-                          Tunnel token{" "}
-                          <span className="muted tiny">
-                            {data.capabilities.hasCloudflareTunnelToken ? "✓ saved" : "missing"}
+                          <input
+                            type="password"
+                            value={creds.apiToken}
+                            onChange={(e) => setCreds({ ...creds, apiToken: e.target.value })}
+                            placeholder="Bearer …"
+                          />
+                        </label>
+                        <label>
+                          <span>
+                            Tunnel token{" "}
+                            <span className="muted tiny">
+                              {data.capabilities.hasCloudflareTunnelToken ? "✓ saved" : "missing"}
+                            </span>
                           </span>
-                        </span>
-                        <input
-                          type="password"
-                          value={creds.tunnelToken}
-                          onChange={(e) => setCreds({ ...creds, tunnelToken: e.target.value })}
-                          placeholder="ey…"
-                        />
-                      </label>
-                      <label>
-                        <span>Account ID</span>
-                        <input
-                          value={creds.accountId}
-                          onChange={(e) => setCreds({ ...creds, accountId: e.target.value })}
-                        />
-                      </label>
-                      <label>
-                        <span>
-                          Tunnel ID{" "}
-                          <span className="muted tiny">
-                            {data.capabilities.hasCloudflareTunnelId ? "✓ saved" : "missing"}
+                          <input
+                            type="password"
+                            value={creds.tunnelToken}
+                            onChange={(e) => setCreds({ ...creds, tunnelToken: e.target.value })}
+                            placeholder="ey…"
+                          />
+                        </label>
+                        <label>
+                          <span>Account ID</span>
+                          <input
+                            value={creds.accountId}
+                            onChange={(e) => setCreds({ ...creds, accountId: e.target.value })}
+                          />
+                        </label>
+                        <label>
+                          <span>
+                            Tunnel ID{" "}
+                            <span className="muted tiny">
+                              {data.capabilities.hasCloudflareTunnelId ? "✓ saved" : "missing"}
+                            </span>
                           </span>
-                        </span>
-                        <input
-                          value={creds.tunnelId}
-                          onChange={(e) => setCreds({ ...creds, tunnelId: e.target.value })}
-                        />
-                      </label>
-                      <label>
-                        <span>
-                          Zone ID{" "}
-                          <span className="muted tiny">
-                            {data.capabilities.hasCloudflareZoneId ? "✓ saved" : "missing"}
+                          <input
+                            value={creds.tunnelId}
+                            onChange={(e) => setCreds({ ...creds, tunnelId: e.target.value })}
+                          />
+                        </label>
+                        <label>
+                          <span>
+                            Zone ID{" "}
+                            <span className="muted tiny">
+                              {data.capabilities.hasCloudflareZoneId ? "✓ saved" : "missing"}
+                            </span>
                           </span>
-                        </span>
-                        <input
-                          value={creds.zoneId}
-                          onChange={(e) => setCreds({ ...creds, zoneId: e.target.value })}
-                        />
-                      </label>
-                    </div>
-                    <button
-                      className="primary xsmall"
-                      disabled={busy === "creds"}
-                      onClick={() => void saveCredentials()}
-                      style={{ marginTop: "0.5rem" }}
-                    >
-                      {busy === "creds" ? <Loader2 size={12} className="animate-spin" /> : null} Save
-                      credentials
-                    </button>
+                          <input
+                            value={creds.zoneId}
+                            onChange={(e) => setCreds({ ...creds, zoneId: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <button
+                        className="primary xsmall"
+                        disabled={busy === "creds"}
+                        onClick={() => void saveCredentials()}
+                        style={{ marginTop: "0.5rem" }}
+                      >
+                        {busy === "creds" ? <Loader2 size={12} className="animate-spin" /> : null} Save
+                        credentials
+                      </button>
                     </details>
                   </div>
                 )}
@@ -710,9 +704,9 @@ export function GoPublicWizard({ serviceId, onClose }: Props) {
                       <p className="muted tiny">
                         Cloudflare is authorized for{" "}
                         <code>{zoneMismatch.authorizedZone ?? "another zone"}</code>, but{" "}
-                        <code>{zoneMismatch.domain}</code> is a separate zone — so its DNS won&rsquo;t
-                        resolve to your tunnel. Re-authorize and pick <code>{zoneMismatch.domain}</code>;
-                        ServerHoster will finish the binding automatically.
+                        <code>{zoneMismatch.domain}</code> is a separate zone — so its DNS won&rsquo;t resolve
+                        to your tunnel. Re-authorize and pick <code>{zoneMismatch.domain}</code>; ServerHoster
+                        will finish the binding automatically.
                       </p>
                       <button
                         className="primary"

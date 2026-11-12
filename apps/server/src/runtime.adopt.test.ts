@@ -6,7 +6,11 @@ import { buildApp } from "./app.js";
 import { nowIso } from "./lib/core.js";
 import { gracefulShutdown, reconcileRuntimeStateOnBoot } from "./services/runtime.js";
 
-function seedProcessService(ctx: Awaited<ReturnType<typeof buildApp>>, status: string, pgid: number | null): string {
+function seedProcessService(
+  ctx: Awaited<ReturnType<typeof buildApp>>,
+  status: string,
+  pgid: number | null
+): string {
   const id = nanoid();
   ctx.db
     .prepare(
@@ -15,7 +19,25 @@ function seedProcessService(ctx: Awaited<ReturnType<typeof buildApp>>, status: s
         auto_restart, restart_count, max_restarts, start_mode, created_at, updated_at, runtime_pgid)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(id, "p1", "adopt-me", "process", "x", "/tmp", "", "", 0, status, 0, 0, 5, "manual", nowIso(), nowIso(), pgid);
+    .run(
+      id,
+      "p1",
+      "adopt-me",
+      "process",
+      "x",
+      "/tmp",
+      "",
+      "",
+      0,
+      status,
+      0,
+      0,
+      5,
+      "manual",
+      nowIso(),
+      nowIso(),
+      pgid
+    );
   return id;
 }
 

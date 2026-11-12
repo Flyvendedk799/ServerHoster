@@ -27,7 +27,7 @@ const FOCUSABLE =
  */
 export function useModalA11y(ref: RefObject<HTMLElement | null>, opts: Options = {}): void {
   const { onClose, onSubmit, noAutoFocus } = opts;
-  
+
   // Keep fresh references to callbacks without triggering effect re-runs
   const callbacksRef = useRef({ onClose, onSubmit });
   useEffect(() => {
@@ -45,8 +45,7 @@ export function useModalA11y(ref: RefObject<HTMLElement | null>, opts: Options =
 
     if (!noAutoFocus) {
       const els = focusables();
-      const preferred =
-        els.find((el) => ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) ?? els[0];
+      const preferred = els.find((el) => ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) ?? els[0];
       // Defer so the element exists after the entrance animation frame.
       requestAnimationFrame(() => preferred?.focus());
     }

@@ -117,9 +117,7 @@ export async function* anthropicStreamToOpenAI(
           // Anthropic may seed a text block with content; don't drop it.
           yield {
             ...base(),
-            choices: [
-              { index: 0, delta: { content: event.content_block.text }, finish_reason: null }
-            ]
+            choices: [{ index: 0, delta: { content: event.content_block.text }, finish_reason: null }]
           };
         }
         break;
@@ -143,9 +141,7 @@ export async function* anthropicStreamToOpenAI(
               {
                 index: 0,
                 delta: {
-                  tool_calls: [
-                    { index: toolIndex, function: { arguments: event.delta.partial_json } }
-                  ]
+                  tool_calls: [{ index: toolIndex, function: { arguments: event.delta.partial_json } }]
                 },
                 finish_reason: null
               }

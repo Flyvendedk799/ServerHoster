@@ -21,6 +21,24 @@ function tmpRoot(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `survhub-deploy-${label}-`));
 }
 
+/**
+ * Detection only picks pnpm when a `pnpm` binary is on PATH (otherwise it
+ * falls back to npm). Put a stand-in on PATH so pnpm cases do not depend on
+ * what the test host has installed.
+ */
+function withPnpmOnPath(run: () => void): void {
+  const bin = tmpRoot("fake-pnpm");
+  const savedPath = process.env.PATH;
+  try {
+    fs.writeFileSync(path.join(bin, "pnpm"), "");
+    process.env.PATH = [bin, savedPath ?? ""].join(path.delimiter);
+    run();
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
 function writeJson(dir: string, name: string, value: unknown): void {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, name), JSON.stringify(value, null, 2));
@@ -346,12 +364,14 @@ test("detectNodeLaunchTarget: a Next.js member runs `next start` directly on $PO
       scripts: { dev: "next dev -p 3000", build: "next build", start: "next start -p 3000" },
       dependencies: { next: "14.2.18" }
     });
-    const target = detectNodeLaunchTarget(root, "web");
-    assert.equal(path.resolve(target.workingDir), path.resolve(appDir));
-    assert.equal(target.kind, "web");
-    assert.equal(target.command, "pnpm exec next start -p $PORT -H 0.0.0.0");
-    // No forwarded `--`, no hard-coded port leaking through.
-    assert.doesNotMatch(target.command, /--\s|run (dev|start)/);
+    withPnpmOnPath(() => {
+      const target = detectNodeLaunchTarget(root, "web");
+      assert.equal(path.resolve(target.workingDir), path.resolve(appDir));
+      assert.equal(target.kind, "web");
+      assert.equal(target.command, "pnpm exec next start -p $PORT -H 0.0.0.0");
+      // No forwarded `--`, no hard-coded port leaking through.
+      assert.doesNotMatch(target.command, /--\s|run (dev|start)/);
+    });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -401,12 +421,14 @@ test("detectNodeLaunchTarget: a pnpm Vite app launches via the host-wrapper conf
       devDependencies: { vite: "^5.4.19" }
     });
     fs.writeFileSync(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
-    const target = detectNodeLaunchTarget(root, "vite_react_shadcn_ts");
-    assert.equal(target.kind, "web");
-    assert.equal(
-      target.command,
-      "pnpm exec vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs"
-    );
+    withPnpmOnPath(() => {
+      const target = detectNodeLaunchTarget(root, "vite_react_shadcn_ts");
+      assert.equal(target.kind, "web");
+      assert.equal(
+        target.command,
+        "pnpm exec vite --host 0.0.0.0 --port $PORT --config .survhub-vite.config.mjs"
+      );
+    });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

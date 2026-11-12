@@ -106,7 +106,13 @@ type Summary = {
   unread: number;
   open: number;
   unassigned: number;
-  services: Array<{ service_id: string; unread: number; threads: number; mailboxes: number; last_message_at: string | null }>;
+  services: Array<{
+    service_id: string;
+    unread: number;
+    threads: number;
+    mailboxes: number;
+    last_message_at: string | null;
+  }>;
 };
 
 type Overview = {
@@ -151,7 +157,12 @@ function Avatar({ name, address, size = 34 }: { name: string | null; address: st
   return (
     <span
       className="em-avatar"
-      style={{ width: size, height: size, fontSize: size * 0.38, background: `hsl(${hueOf(address)} 55% 42%)` }}
+      style={{
+        width: size,
+        height: size,
+        fontSize: size * 0.38,
+        background: `hsl(${hueOf(address)} 55% 42%)`
+      }}
       aria-hidden
     >
       {initials(name, address)}
@@ -168,8 +179,9 @@ function splitQuoted(text: string): { body: string; quoted: string | null } {
       /^On .+wrote:$/i.test(line) ||
       /^Den .+skrev.*:$/i.test(line) ||
       /^-{2,}\s*Original Message\s*-{2,}/i.test(line) ||
-      /^From: .+/.test(line) && i > 0 && lines[i - 1].trim() === "";
-    const quoteBlock = line.startsWith(">") && lines.slice(i).every((l) => !l.trim() || l.trim().startsWith(">"));
+      (/^From: .+/.test(line) && i > 0 && lines[i - 1].trim() === "");
+    const quoteBlock =
+      line.startsWith(">") && lines.slice(i).every((l) => !l.trim() || l.trim().startsWith(">"));
     if (isMarker || quoteBlock) {
       const body = lines.slice(0, i).join("\n").trimEnd();
       if (!body) break;
@@ -191,9 +203,13 @@ function formatBytes(n: number): string {
 
 export function EmailerPage() {
   const [params, setParams] = useSearchParams();
-  const view = (["inbox", "mailboxes", "setup"].includes(params.get("view") ?? "") ? params.get("view") : "inbox") as View;
+  const view = (
+    ["inbox", "mailboxes", "setup"].includes(params.get("view") ?? "") ? params.get("view") : "inbox"
+  ) as View;
   const serviceScope = params.get("service");
-  const folder = (FOLDERS.some((f) => f.id === params.get("folder")) ? params.get("folder") : "inbox") as Folder;
+  const folder = (
+    FOLDERS.some((f) => f.id === params.get("folder")) ? params.get("folder") : "inbox"
+  ) as Folder;
   const mailboxFilter = params.get("mailbox");
   const unassigned = params.get("unassigned") === "1";
   const selectedId = params.get("thread");
@@ -303,7 +319,7 @@ export function EmailerPage() {
     };
   }, []);
 
-  const scopedService = serviceScope ? services.find((s) => s.id === serviceScope) ?? null : null;
+  const scopedService = serviceScope ? (services.find((s) => s.id === serviceScope) ?? null) : null;
   const scopedMailboxes = serviceScope ? mailboxes.filter((m) => m.service_id === serviceScope) : mailboxes;
   const unreadByService = useMemo(
     () => new Map((overview?.summary.services ?? []).map((s) => [s.service_id, s])),
@@ -321,7 +337,10 @@ export function EmailerPage() {
             {scopedService ? (
               <>
                 Conversations for <b>{scopedService.name}</b> —{" "}
-                <button className="em-linkbtn" onClick={() => patchParams({ service: null, mailbox: null, thread: null })}>
+                <button
+                  className="em-linkbtn"
+                  onClick={() => patchParams({ service: null, mailbox: null, thread: null })}
+                >
                   show all services
                 </button>
               </>
@@ -334,7 +353,9 @@ export function EmailerPage() {
           <select
             className="em-scope"
             value={serviceScope ?? ""}
-            onChange={(e) => patchParams({ service: e.target.value || null, mailbox: null, thread: null, unassigned: null })}
+            onChange={(e) =>
+              patchParams({ service: e.target.value || null, mailbox: null, thread: null, unassigned: null })
+            }
             aria-label="Service scope"
           >
             <option value="">All services</option>
@@ -408,16 +429,25 @@ export function EmailerPage() {
                 <button
                   key={f.id}
                   className={`em-rail-item ${active ? "active" : ""}`}
-                  onClick={() => patchParams({ folder: f.id === "inbox" ? null : f.id, mailbox: null, unassigned: null, thread: null })}
+                  onClick={() =>
+                    patchParams({
+                      folder: f.id === "inbox" ? null : f.id,
+                      mailbox: null,
+                      unassigned: null,
+                      thread: null
+                    })
+                  }
                 >
                   <Icon size={14} />
                   <span>{f.label}</span>
                   {f.id === "inbox" && !serviceScope && (overview?.summary.unread ?? 0) > 0 && (
                     <span className="em-count">{overview?.summary.unread}</span>
                   )}
-                  {f.id === "inbox" && serviceScope && (unreadByService.get(serviceScope)?.unread ?? 0) > 0 && (
-                    <span className="em-count">{unreadByService.get(serviceScope)?.unread}</span>
-                  )}
+                  {f.id === "inbox" &&
+                    serviceScope &&
+                    (unreadByService.get(serviceScope)?.unread ?? 0) > 0 && (
+                      <span className="em-count">{unreadByService.get(serviceScope)?.unread}</span>
+                    )}
                 </button>
               );
             })}
@@ -500,7 +530,9 @@ export function EmailerPage() {
                     <Avatar name={t.counterparty_name} address={t.counterparty} />
                     <div className="em-thread-main">
                       <div className="em-thread-top">
-                        <span className="em-thread-who em-ellipsis">{t.counterparty_name || t.counterparty}</span>
+                        <span className="em-thread-who em-ellipsis">
+                          {t.counterparty_name || t.counterparty}
+                        </span>
                         {t.message_count > 1 && <span className="em-thread-n">{t.message_count}</span>}
                         <span className="em-thread-time">{shortStamp(t.last_message_at)}</span>
                       </div>
@@ -603,7 +635,15 @@ export function EmailerPage() {
   );
 }
 
-function EmptyList({ hasMailboxes, searching, onSetup }: { hasMailboxes: boolean; searching: boolean; onSetup: () => void }) {
+function EmptyList({
+  hasMailboxes,
+  searching,
+  onSetup
+}: {
+  hasMailboxes: boolean;
+  searching: boolean;
+  onSetup: () => void;
+}) {
   return (
     <div className="em-empty">
       <Inbox size={26} />
@@ -635,11 +675,16 @@ function ServiceStrip(props: {
   onMailbox: (id: string | null) => void;
   onManage: () => void;
 }) {
-  const [stats, setStats] = useState<{ received_7d: number; sent_7d: number; failed_7d: number } | null>(null);
+  const [stats, setStats] = useState<{ received_7d: number; sent_7d: number; failed_7d: number } | null>(
+    null
+  );
   useEffect(() => {
-    api<{ received_7d: number; sent_7d: number; failed_7d: number }>(`/emailer/services/${props.service.id}/stats`, {
-      silent: true
-    })
+    api<{ received_7d: number; sent_7d: number; failed_7d: number }>(
+      `/emailer/services/${props.service.id}/stats`,
+      {
+        silent: true
+      }
+    )
       .then(setStats)
       .catch(() => setStats(null));
   }, [props.service.id]);
@@ -661,7 +706,10 @@ function ServiceStrip(props: {
           <span className="muted small">No mailbox routes mail to this service yet.</span>
         ) : (
           <>
-            <button className={`em-chip ${!props.activeMailbox ? "active" : ""}`} onClick={() => props.onMailbox(null)}>
+            <button
+              className={`em-chip ${!props.activeMailbox ? "active" : ""}`}
+              onClick={() => props.onMailbox(null)}
+            >
               all addresses
             </button>
             {props.mailboxes.map((m) => (
@@ -772,7 +820,10 @@ function Conversation(props: {
   async function patch(body: Record<string, unknown>, label: string): Promise<void> {
     setBusy(label);
     try {
-      const updated = await api<Thread>(`/emailer/threads/${thread.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      const updated = await api<Thread>(`/emailer/threads/${thread.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body)
+      });
       setData((d) => (d ? { ...d, thread: updated } : d));
       props.onChanged();
     } catch {
@@ -843,7 +894,9 @@ function Conversation(props: {
           <h3>{thread.subject}</h3>
           <div className="em-convo-sub">
             <span>
-              {thread.counterparty_name ? `${thread.counterparty_name} <${thread.counterparty}>` : thread.counterparty}
+              {thread.counterparty_name
+                ? `${thread.counterparty_name} <${thread.counterparty}>`
+                : thread.counterparty}
             </span>
             <span className="muted">↔</span>
             <span className="em-mono">{thread.local_address}</span>
@@ -852,7 +905,11 @@ function Conversation(props: {
                 {thread.service_name}
               </Link>
             ) : !thread.mailbox_id ? (
-              <button className="em-tag warn" onClick={props.onCreateMailbox} title="Create a mailbox for this address">
+              <button
+                className="em-tag warn"
+                onClick={props.onCreateMailbox}
+                title="Create a mailbox for this address"
+              >
                 unassigned — add mailbox
               </button>
             ) : null}
@@ -868,24 +925,49 @@ function Conversation(props: {
           >
             <Star size={15} />
           </button>
-          <button className="em-icon-btn" onClick={() => void patch({ read: false }, "unread")} title="Mark unread" aria-label="Mark unread">
+          <button
+            className="em-icon-btn"
+            onClick={() => void patch({ read: false }, "unread")}
+            title="Mark unread"
+            aria-label="Mark unread"
+          >
             <Mail size={15} />
           </button>
           {thread.status === "open" ? (
-            <button className="em-icon-btn" onClick={() => void patch({ status: "archived" }, "archive")} title="Archive" aria-label="Archive">
+            <button
+              className="em-icon-btn"
+              onClick={() => void patch({ status: "archived" }, "archive")}
+              title="Archive"
+              aria-label="Archive"
+            >
               <Archive size={15} />
             </button>
           ) : (
-            <button className="em-icon-btn" onClick={() => void patch({ status: "open" }, "open")} title="Move to inbox" aria-label="Move to inbox">
+            <button
+              className="em-icon-btn"
+              onClick={() => void patch({ status: "open" }, "open")}
+              title="Move to inbox"
+              aria-label="Move to inbox"
+            >
               <Inbox size={15} />
             </button>
           )}
           {thread.status !== "spam" && (
-            <button className="em-icon-btn" onClick={() => void patch({ status: "spam" }, "spam")} title="Mark as spam" aria-label="Spam">
+            <button
+              className="em-icon-btn"
+              onClick={() => void patch({ status: "spam" }, "spam")}
+              title="Mark as spam"
+              aria-label="Spam"
+            >
               <ShieldAlert size={15} />
             </button>
           )}
-          <button className="em-icon-btn danger" onClick={() => void remove()} title="Delete" aria-label="Delete">
+          <button
+            className="em-icon-btn danger"
+            onClick={() => void remove()}
+            title="Delete"
+            aria-label="Delete"
+          >
             <Trash2 size={15} />
           </button>
         </div>
@@ -920,7 +1002,12 @@ function Conversation(props: {
               )}
             </div>
             {showCc && (
-              <input className="input em-cc" placeholder="Cc (comma separated)" value={cc} onChange={(e) => setCc(e.target.value)} />
+              <input
+                className="input em-cc"
+                placeholder="Cc (comma separated)"
+                value={cc}
+                onChange={(e) => setCc(e.target.value)}
+              />
             )}
             <textarea
               className="input em-reply-box"
@@ -937,7 +1024,11 @@ function Conversation(props: {
             />
             <div className="em-reply-actions">
               {reply && <span className="muted tiny">Draft saved</span>}
-              <button className="primary small" disabled={sending || !reply.trim()} onClick={() => void send()}>
+              <button
+                className="primary small"
+                disabled={sending || !reply.trim()}
+                onClick={() => void send()}
+              >
                 {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send reply
               </button>
             </div>
@@ -948,7 +1039,15 @@ function Conversation(props: {
   );
 }
 
-function MessageCard({ message: m, busy, onRetry }: { message: Message; busy: boolean; onRetry: () => void }) {
+function MessageCard({
+  message: m,
+  busy,
+  onRetry
+}: {
+  message: Message;
+  busy: boolean;
+  onRetry: () => void;
+}) {
   const [showQuoted, setShowQuoted] = useState(false);
   const [mode, setMode] = useState<"text" | "html">(m.text_body ? "text" : m.html_body ? "html" : "text");
   const [remoteImages, setRemoteImages] = useState(false);
@@ -977,7 +1076,8 @@ function MessageCard({ message: m, busy, onRetry }: { message: Message; busy: bo
         <div className="em-msg-meta">
           {out ? (
             <span className="em-dir out" title={`Sent via ${m.source}`}>
-              <ArrowUpRight size={12} /> {m.source === "api" ? "app" : m.source === "dashboard" ? "you" : m.source}
+              <ArrowUpRight size={12} />{" "}
+              {m.source === "api" ? "app" : m.source === "dashboard" ? "you" : m.source}
             </span>
           ) : (
             <span className="em-dir in">
@@ -1003,9 +1103,14 @@ function MessageCard({ message: m, busy, onRetry }: { message: Message; busy: bo
 
       {mode === "html" && m.html_body ? (
         <div className="em-html">
-          <iframe title={`Message ${m.id}`} sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={srcDoc} />
+          <iframe
+            title={`Message ${m.id}`}
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            srcDoc={srcDoc}
+          />
           <button className="em-linkbtn tiny" onClick={() => setRemoteImages((v) => !v)}>
-            {remoteImages ? <EyeOff size={11} /> : <Eye size={11} />} {remoteImages ? "Block" : "Load"} remote images
+            {remoteImages ? <EyeOff size={11} /> : <Eye size={11} />} {remoteImages ? "Block" : "Load"} remote
+            images
           </button>
         </div>
       ) : (
@@ -1013,7 +1118,11 @@ function MessageCard({ message: m, busy, onRetry }: { message: Message; busy: bo
           {body || <span className="muted">(empty message)</span>}
           {quoted && (
             <>
-              <button className="em-quoted-toggle" onClick={() => setShowQuoted((v) => !v)} title="Show quoted text">
+              <button
+                className="em-quoted-toggle"
+                onClick={() => setShowQuoted((v) => !v)}
+                title="Show quoted text"
+              >
                 •••
               </button>
               {showQuoted && <div className="em-quoted">{quoted}</div>}
@@ -1125,7 +1234,9 @@ function ComposeModal(props: {
             <span className="tiny uppercase font-bold muted">From</span>
             <div className="row" style={{ gap: "0.4rem" }}>
               <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)} style={{ flex: 1 }}>
-                <option value="">{props.smtpFrom ? `${props.smtpFrom} (shared default)` : "Shared default From"}</option>
+                <option value="">
+                  {props.smtpFrom ? `${props.smtpFrom} (shared default)` : "Shared default From"}
+                </option>
                 {props.mailboxes.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.address}
@@ -1135,7 +1246,11 @@ function ComposeModal(props: {
               </select>
               {mailbox?.wildcard && (
                 <span className="row" style={{ gap: 0, alignItems: "center" }}>
-                  <input style={{ width: 110 }} value={localPart} onChange={(e) => setLocalPart(e.target.value)} />
+                  <input
+                    style={{ width: 110 }}
+                    value={localPart}
+                    onChange={(e) => setLocalPart(e.target.value)}
+                  />
                   <span className="em-mono muted">{mailbox.address.slice(1)}</span>
                 </span>
               )}
@@ -1147,7 +1262,11 @@ function ComposeModal(props: {
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Cc</span>
-            <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional, comma separated" />
+            <input
+              value={cc}
+              onChange={(e) => setCc(e.target.value)}
+              placeholder="optional, comma separated"
+            />
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Subject</span>
@@ -1167,13 +1286,19 @@ function ComposeModal(props: {
               }}
             />
           </label>
-          {mailbox?.signature && <span className="muted tiny">The mailbox signature is appended automatically.</span>}
+          {mailbox?.signature && (
+            <span className="muted tiny">The mailbox signature is appended automatically.</span>
+          )}
         </div>
         <footer className="modal-footer">
           <button className="ghost" onClick={props.onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={sending || !to.trim() || !subject.trim() || !text.trim()} onClick={() => void send()}>
+          <button
+            className="primary"
+            disabled={sending || !to.trim() || !subject.trim() || !text.trim()}
+            onClick={() => void send()}
+          >
             {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send
           </button>
         </footer>
@@ -1219,7 +1344,10 @@ function MailboxesView(props: {
       if (!ok) return;
     }
     const res = await act(`token-${m.id}`, () =>
-      api<{ token: string; mailbox: Mailbox }>(`/emailer/mailboxes/${m.id}/token`, { method: "POST", body: "{}" })
+      api<{ token: string; mailbox: Mailbox }>(`/emailer/mailboxes/${m.id}/token`, {
+        method: "POST",
+        body: "{}"
+      })
     );
     if (res) {
       setToken({ mailbox: res.mailbox, token: res.token });
@@ -1246,15 +1374,22 @@ function MailboxesView(props: {
 
   async function routeCloudflare(m: Mailbox): Promise<void> {
     const res = await act(`cf-${m.id}`, () =>
-      api<{ zone: string; rule: string }>(`/emailer/mailboxes/${m.id}/cloudflare-route`, { method: "POST", body: "{}" })
+      api<{ zone: string; rule: string }>(`/emailer/mailboxes/${m.id}/cloudflare-route`, {
+        method: "POST",
+        body: "{}"
+      })
     );
-    if (res) toast.success(`${res.rule === "catch_all" ? "Catch-all" : res.rule} on ${res.zone} now routes to the Emailer relay`);
+    if (res)
+      toast.success(
+        `${res.rule === "catch_all" ? "Catch-all" : res.rule} on ${res.zone} now routes to the Emailer relay`
+      );
   }
 
   async function remove(m: Mailbox): Promise<void> {
     const ok = await confirmDialog({
       title: `Delete ${m.address}?`,
-      message: "Its conversations are kept (as unassigned). Mail to this address stops being routed to a service, and its API token stops working.",
+      message:
+        "Its conversations are kept (as unassigned). Mail to this address stops being routed to a service, and its API token stops working.",
       confirmLabel: "Delete mailbox",
       danger: true
     });
@@ -1277,9 +1412,10 @@ function MailboxesView(props: {
         </button>
       </div>
       <p className="muted small">
-        A mailbox is one of your addresses (or <code>*@domain</code> for everything on a domain). Link it to a service to
-        give that service its own inbox; optionally forward each inbound message to the service as a webhook, or let
-        the service send through the Emailer API so its outbound mail shows up in the same conversations.
+        A mailbox is one of your addresses (or <code>*@domain</code> for everything on a domain). Link it to a
+        service to give that service its own inbox; optionally forward each inbound message to the service as
+        a webhook, or let the service send through the Emailer API so its outbound mail shows up in the same
+        conversations.
       </p>
 
       {props.mailboxes.length === 0 ? (
@@ -1312,38 +1448,70 @@ function MailboxesView(props: {
                     <Inbox size={12} /> {m.threads} conversations{m.unread ? ` · ${m.unread} unread` : ""}
                   </span>
                   <span title={m.forward_url ?? ""}>
-                    <Zap size={12} /> {m.forward_url ? <span className="em-mono">{m.forward_url}</span> : <span className="muted">no webhook</span>}
+                    <Zap size={12} />{" "}
+                    {m.forward_url ? (
+                      <span className="em-mono">{m.forward_url}</span>
+                    ) : (
+                      <span className="muted">no webhook</span>
+                    )}
                   </span>
                   <span>
                     <KeyRound size={12} />{" "}
-                    {m.has_api_token ? <span className="em-mono">{m.api_token_prefix}…</span> : <span className="muted">no API token</span>}
+                    {m.has_api_token ? (
+                      <span className="em-mono">{m.api_token_prefix}…</span>
+                    ) : (
+                      <span className="muted">no API token</span>
+                    )}
                   </span>
                 </div>
               </div>
               <div className="em-mailbox-actions">
-                <button className="ghost xsmall" onClick={() => navigate(`/emailer?mailbox=${m.id}&folder=all`)}>
+                <button
+                  className="ghost xsmall"
+                  onClick={() => navigate(`/emailer?mailbox=${m.id}&folder=all`)}
+                >
                   <Inbox size={12} /> Open
                 </button>
                 {!m.wildcard && (
                   <button className="ghost xsmall" disabled={busy !== null} onClick={() => void mintToken(m)}>
-                    {busy === `token-${m.id}` ? <Loader2 size={12} className="spin" /> : <KeyRound size={12} />}{" "}
+                    {busy === `token-${m.id}` ? (
+                      <Loader2 size={12} className="spin" />
+                    ) : (
+                      <KeyRound size={12} />
+                    )}{" "}
                     {m.has_api_token ? "Rotate token" : "API token"}
                   </button>
                 )}
                 {!m.wildcard && m.service_id && (
                   <button className="ghost xsmall" disabled={busy !== null} onClick={() => void injectEnv(m)}>
-                    {busy === `inject-${m.id}` ? <Loader2 size={12} className="spin" /> : <Server size={12} />} Connect service
+                    {busy === `inject-${m.id}` ? (
+                      <Loader2 size={12} className="spin" />
+                    ) : (
+                      <Server size={12} />
+                    )}{" "}
+                    Connect service
                   </button>
                 )}
                 {props.overview?.cloudflare.connected && (
-                  <button className="ghost xsmall" disabled={busy !== null} onClick={() => void routeCloudflare(m)} title="Route this address to the Cloudflare relay Worker">
-                    {busy === `cf-${m.id}` ? <Loader2 size={12} className="spin" /> : <Cloud size={12} />} Route
+                  <button
+                    className="ghost xsmall"
+                    disabled={busy !== null}
+                    onClick={() => void routeCloudflare(m)}
+                    title="Route this address to the Cloudflare relay Worker"
+                  >
+                    {busy === `cf-${m.id}` ? <Loader2 size={12} className="spin" /> : <Cloud size={12} />}{" "}
+                    Route
                   </button>
                 )}
                 <button className="ghost xsmall" onClick={() => setEditing(m)} aria-label="Edit mailbox">
                   <Pencil size={12} />
                 </button>
-                <button className="ghost xsmall text-danger" disabled={busy !== null} onClick={() => void remove(m)} aria-label="Delete mailbox">
+                <button
+                  className="ghost xsmall text-danger"
+                  disabled={busy !== null}
+                  onClick={() => void remove(m)}
+                  aria-label="Delete mailbox"
+                >
                   <Trash2 size={12} />
                 </button>
               </div>
@@ -1396,7 +1564,13 @@ function MailboxModal(props: {
   async function save(): Promise<void> {
     setSaving(true);
     try {
-      const body = JSON.stringify({ address, displayName, serviceId: serviceId || null, forwardUrl, signature });
+      const body = JSON.stringify({
+        address,
+        displayName,
+        serviceId: serviceId || null,
+        forwardUrl,
+        signature
+      });
       if (m) await api(`/emailer/mailboxes/${m.id}`, { method: "PATCH", body });
       else await api("/emailer/mailboxes", { method: "POST", body });
       toast.success(m ? "Mailbox updated" : "Mailbox created");
@@ -1428,11 +1602,19 @@ function MailboxModal(props: {
         <div className="modal-body em-form">
           <label>
             <span className="tiny uppercase font-bold muted">Address</span>
-            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="support@yourapp.com  or  *@yourapp.com" />
+            <input
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="support@yourapp.com  or  *@yourapp.com"
+            />
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Display name</span>
-            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your App Support" />
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Your App Support"
+            />
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Service</span>
@@ -1448,12 +1630,23 @@ function MailboxModal(props: {
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Forward inbound to webhook (optional)</span>
-            <input value={forwardUrl} onChange={(e) => setForwardUrl(e.target.value)} placeholder="http://127.0.0.1:3000/api/inbound-email" />
-            <span className="muted tiny">Each received message is POSTed as JSON (event email.received) to your service.</span>
+            <input
+              value={forwardUrl}
+              onChange={(e) => setForwardUrl(e.target.value)}
+              placeholder="http://127.0.0.1:3000/api/inbound-email"
+            />
+            <span className="muted tiny">
+              Each received message is POSTed as JSON (event email.received) to your service.
+            </span>
           </label>
           <label>
             <span className="tiny uppercase font-bold muted">Signature (optional)</span>
-            <textarea rows={3} value={signature} onChange={(e) => setSignature(e.target.value)} placeholder={"Best regards,\nThe Team"} />
+            <textarea
+              rows={3}
+              value={signature}
+              onChange={(e) => setSignature(e.target.value)}
+              placeholder={"Best regards,\nThe Team"}
+            />
           </label>
         </div>
         <footer className="modal-footer">
@@ -1503,8 +1696,8 @@ function TokenModal(props: { mailbox: Mailbox; token: string; apiUrl: string; on
           <span className="tiny uppercase font-bold muted">Send from your app</span>
           <pre className="em-code">{snippet}</pre>
           <span className="muted tiny">
-            Optional fields: <code>cc</code>, <code>html</code>, and <code>threadId</code> (to reply inside an existing
-            conversation of this mailbox).
+            Optional fields: <code>cc</code>, <code>html</code>, and <code>threadId</code> (to reply inside an
+            existing conversation of this mailbox).
           </span>
         </div>
         <footer className="modal-footer">
@@ -1524,7 +1717,17 @@ function TokenModal(props: { mailbox: Mailbox; token: string; apiUrl: string; on
 // Setup
 // ---------------------------------------------------------------------------
 
-function SetupStep({ n, title, done, children }: { n: number; title: string; done?: boolean; children: ReactNode }) {
+function SetupStep({
+  n,
+  title,
+  done,
+  children
+}: {
+  n: number;
+  title: string;
+  done?: boolean;
+  children: ReactNode;
+}) {
   return (
     <section className={`card em-step ${done ? "done" : ""}`}>
       <div className="em-step-head">
@@ -1544,7 +1747,12 @@ function SetupView(props: {
 }) {
   const o = props.overview;
   const [publicUrl, setPublicUrl] = useState(o?.publicUrl ?? "");
-  const [ingest, setIngest] = useState<{ url: string; token: string; workerScript: string; curlExample: string } | null>(null);
+  const [ingest, setIngest] = useState<{
+    url: string;
+    token: string;
+    workerScript: string;
+    curlExample: string;
+  } | null>(null);
   const [reveal, setReveal] = useState(false);
   const [fallback, setFallback] = useState("");
   const [simTo, setSimTo] = useState("");
@@ -1591,11 +1799,13 @@ function SetupView(props: {
       <SetupStep n={1} title="Outbound: shared SMTP" done={o?.smtp.configured}>
         {o?.smtp.configured ? (
           <p className="muted small">
-            Sending through the shared SMTP from the Email tab. Default From: <b>{o.smtp.from}</b>. Mailboxes send as
-            their own address.
+            Sending through the shared SMTP from the Email tab. Default From: <b>{o.smtp.from}</b>. Mailboxes
+            send as their own address.
           </p>
         ) : (
-          <p className="muted small">Replies and new messages are sent through the shared SMTP credentials.</p>
+          <p className="muted small">
+            Replies and new messages are sent through the shared SMTP credentials.
+          </p>
         )}
         <Link className="button ghost small" to="/email">
           <Server size={14} /> {o?.smtp.configured ? "SMTP settings" : "Configure SMTP"}
@@ -1612,8 +1822,8 @@ function SetupView(props: {
 
       <SetupStep n={3} title="Inbound endpoint" done={Boolean(o?.publicUrl)}>
         <p className="muted small">
-          Mail reaches LocalSURV as an HTTPS POST to the ingest endpoint. Set the public https URL of this control plane
-          (via a tunnel or Edge Ingress) so relays on the internet can reach it.
+          Mail reaches LocalSURV as an HTTPS POST to the ingest endpoint. Set the public https URL of this
+          control plane (via a tunnel or Edge Ingress) so relays on the internet can reach it.
         </p>
         <div className="row" style={{ gap: "0.4rem", flexWrap: "wrap" }}>
           <input
@@ -1628,7 +1838,10 @@ function SetupView(props: {
             disabled={busy !== null || publicUrl.trim() === (o?.publicUrl ?? "")}
             onClick={() =>
               void act("url", async () => {
-                await api("/emailer/settings", { method: "PUT", body: JSON.stringify({ publicUrl: publicUrl.trim() }) });
+                await api("/emailer/settings", {
+                  method: "PUT",
+                  body: JSON.stringify({ publicUrl: publicUrl.trim() })
+                });
                 toast.success("Public URL saved");
                 props.reload();
                 await loadIngest();
@@ -1649,13 +1862,18 @@ function SetupView(props: {
             </div>
             {loopback && (
               <span className="text-warning tiny">
-                <AlertTriangle size={11} /> This is a loopback address — only relays on this machine can reach it.
+                <AlertTriangle size={11} /> This is a loopback address — only relays on this machine can reach
+                it.
               </span>
             )}
             <span className="tiny uppercase font-bold muted">Ingest token (header x-emailer-token)</span>
             <div className="em-secret">
               <code>{reveal ? ingest.token : `${ingest.token.slice(0, 8)}${"•".repeat(24)}`}</code>
-              <button className="ghost xsmall" onClick={() => setReveal((v) => !v)} aria-label={reveal ? "Hide token" : "Reveal token"}>
+              <button
+                className="ghost xsmall"
+                onClick={() => setReveal((v) => !v)}
+                aria-label={reveal ? "Hide token" : "Reveal token"}
+              >
                 {reveal ? <EyeOff size={12} /> : <Eye size={12} />}
               </button>
               <button className="ghost xsmall" onClick={() => void copyText(ingest.token, "Token copied")}>
@@ -1668,7 +1886,8 @@ function SetupView(props: {
                   void act("rotate", async () => {
                     const ok = await confirmDialog({
                       title: "Rotate ingest token?",
-                      message: "Relays using the old token are rejected until updated (redeploy the Cloudflare Worker below).",
+                      message:
+                        "Relays using the old token are rejected until updated (redeploy the Cloudflare Worker below).",
                       confirmLabel: "Rotate",
                       danger: true
                     });
@@ -1689,8 +1908,8 @@ function SetupView(props: {
       <SetupStep n={4} title="Relay: Cloudflare Email Routing (recommended)">
         <p className="muted small">
           A tiny Cloudflare Email Worker receives mail for your domain and posts the raw message to the ingest
-          endpoint. If LocalSURV is unreachable it forwards to a fallback inbox (when set) or asks the sender to retry, so
-          nothing is lost.
+          endpoint. If LocalSURV is unreachable it forwards to a fallback inbox (when set) or asks the sender
+          to retry, so nothing is lost.
         </p>
         {o?.cloudflare.connected ? (
           <>
@@ -1707,20 +1926,24 @@ function SetupView(props: {
                 disabled={busy !== null}
                 onClick={() =>
                   void act("worker", async () => {
-                    const res = await api<{ script: string; ingestUrl: string }>("/emailer/cloudflare/worker", {
-                      method: "POST",
-                      body: JSON.stringify({ fallbackForward: fallback.trim() || null })
-                    });
+                    const res = await api<{ script: string; ingestUrl: string }>(
+                      "/emailer/cloudflare/worker",
+                      {
+                        method: "POST",
+                        body: JSON.stringify({ fallbackForward: fallback.trim() || null })
+                      }
+                    );
                     toast.success(`Worker "${res.script}" deployed → ${res.ingestUrl}`);
                   })
                 }
               >
-                {busy === "worker" ? <Loader2 size={14} className="spin" /> : <Cloud size={14} />} Deploy relay Worker
+                {busy === "worker" ? <Loader2 size={14} className="spin" /> : <Cloud size={14} />} Deploy
+                relay Worker
               </button>
             </div>
             <p className="muted tiny">
-              Then use <b>Route</b> on each mailbox (Mailboxes tab) to point its address — or the catch-all for{" "}
-              <code>*@domain</code> — at the Worker. The token needs <i>Workers Scripts: Edit</i> and{" "}
+              Then use <b>Route</b> on each mailbox (Mailboxes tab) to point its address — or the catch-all
+              for <code>*@domain</code> — at the Worker. The token needs <i>Workers Scripts: Edit</i> and{" "}
               <i>Email Routing Rules: Edit</i>.
             </p>
           </>
@@ -1737,7 +1960,10 @@ function SetupView(props: {
           <details className="em-details">
             <summary>Worker script (manual setup)</summary>
             <pre className="em-code">{ingest.workerScript}</pre>
-            <button className="ghost xsmall" onClick={() => void copyText(ingest.workerScript, "Worker script copied")}>
+            <button
+              className="ghost xsmall"
+              onClick={() => void copyText(ingest.workerScript, "Worker script copied")}
+            >
               <Copy size={12} /> Copy script
             </button>
           </details>
@@ -1747,17 +1973,18 @@ function SetupView(props: {
       <SetupStep n={5} title="Any other relay">
         <p className="muted small">
           Anything that can POST JSON works (n8n, a mail-to-webhook service, your own code). Send either{" "}
-          <code>rawBase64</code> / <code>raw</code> (the full RFC 822 message) or the parsed fields <code>from</code>,{" "}
-          <code>to</code>, <code>subject</code>, <code>text</code>, <code>html</code>, <code>messageId</code>,{" "}
-          <code>inReplyTo</code>. A bare <code>message/rfc822</code> body is accepted too.
+          <code>rawBase64</code> / <code>raw</code> (the full RFC 822 message) or the parsed fields{" "}
+          <code>from</code>, <code>to</code>, <code>subject</code>, <code>text</code>, <code>html</code>,{" "}
+          <code>messageId</code>, <code>inReplyTo</code>. A bare <code>message/rfc822</code> body is accepted
+          too.
         </p>
         {ingest && <pre className="em-code">{ingest.curlExample}</pre>}
       </SetupStep>
 
       <SetupStep n={6} title="Test routing">
         <p className="muted small">
-          Simulate an inbound message (no DNS involved) to check which service it lands on, and that n8n / service
-          webhooks fire.
+          Simulate an inbound message (no DNS involved) to check which service it lands on, and that n8n /
+          service webhooks fire.
         </p>
         <div className="row" style={{ gap: "0.4rem", flexWrap: "wrap" }}>
           <input
@@ -1769,33 +1996,41 @@ function SetupView(props: {
             list="em-sim-to"
           />
           <datalist id="em-sim-to">
-            {props.mailboxes.filter((m) => !m.wildcard).map((m) => (
-              <option key={m.id} value={m.address} />
-            ))}
+            {props.mailboxes
+              .filter((m) => !m.wildcard)
+              .map((m) => (
+                <option key={m.id} value={m.address} />
+              ))}
           </datalist>
           <button
             className="ghost small"
             disabled={busy !== null || !simTo.trim()}
             onClick={() =>
               void act("sim", async () => {
-                const res = await api<{ thread_id: string; mailbox: string | null }>("/emailer/inbound/simulate", {
-                  method: "POST",
-                  body: JSON.stringify({ to: simTo.trim() })
-                });
-                toast.success(res.mailbox ? `Delivered to ${res.mailbox}` : "Delivered — no mailbox matched (unassigned)");
+                const res = await api<{ thread_id: string; mailbox: string | null }>(
+                  "/emailer/inbound/simulate",
+                  {
+                    method: "POST",
+                    body: JSON.stringify({ to: simTo.trim() })
+                  }
+                );
+                toast.success(
+                  res.mailbox ? `Delivered to ${res.mailbox}` : "Delivered — no mailbox matched (unassigned)"
+                );
                 props.onOpenThread(res.thread_id);
               })
             }
           >
-            {busy === "sim" ? <Loader2 size={14} className="spin" /> : <ArrowDownLeft size={14} />} Simulate inbound
+            {busy === "sim" ? <Loader2 size={14} className="spin" /> : <ArrowDownLeft size={14} />} Simulate
+            inbound
           </button>
         </div>
       </SetupStep>
 
       <SetupStep n={7} title="Automate with n8n">
         <p className="muted small">
-          Install the <code>email.received</code> / <code>email.sent</code> events on the n8n tab to triage, auto-reply
-          or route mail with workflows. Workflows can send mail back through a mailbox token.
+          Install the <code>email.received</code> / <code>email.sent</code> events on the n8n tab to triage,
+          auto-reply or route mail with workflows. Workflows can send mail back through a mailbox token.
         </p>
         <Link className="button ghost small" to="/n8n?tab=automations">
           <Zap size={14} /> n8n events

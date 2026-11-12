@@ -173,7 +173,10 @@ function cliSaw(calls: string[][], prefix: string): boolean {
 
 // ---- fake docker + ws capture -------------------------------------------------
 
-function installFakeDocker(ctx: Ctx): { logsRequested: string[]; createRequests: Array<Record<string, unknown>> } {
+function installFakeDocker(ctx: Ctx): {
+  logsRequested: string[];
+  createRequests: Array<Record<string, unknown>>;
+} {
   const logsRequested: string[] = [];
   const createRequests: Array<Record<string, unknown>> = [];
   const fake = {

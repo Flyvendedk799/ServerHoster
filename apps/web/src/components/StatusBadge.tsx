@@ -69,11 +69,7 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
 
   const colors = getColors(s);
 
-  const isTransitioning =
-    s === "building" ||
-    s === "starting" ||
-    s === "stopping" ||
-    s === "provisioning";
+  const isTransitioning = s === "building" || s === "starting" || s === "stopping" || s === "provisioning";
 
   if (dotOnly) {
     return (
@@ -97,9 +93,7 @@ export function StatusBadge({ status, label, dotOnly, className }: Props) {
 
   return (
     <span
-      className={`chip status-badge${
-        isTransitioning ? " is-transitioning" : ""
-      } ${className || ""}`}
+      className={`chip status-badge${isTransitioning ? " is-transitioning" : ""} ${className || ""}`}
       style={{
         background: colors.bg,
         borderColor: colors.border,

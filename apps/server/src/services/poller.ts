@@ -3,6 +3,7 @@ import fs from "node:fs";
 import simpleGit from "simple-git";
 import type { AppContext } from "../types.js";
 import { deployFromGit, applyPostDeployServiceState } from "./deploy.js";
+import { handleIncomingCommit } from "./ci.js";
 import { insertLog, serializeError } from "../lib/core.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
 
@@ -67,8 +68,11 @@ export async function getGithubSyncStatus(ctx: AppContext, serviceId: string) {
       const cloneDir = path.join(ctx.config.projectsDir, serviceId);
       if (fs.existsSync(path.join(cloneDir, ".git"))) {
         latestCommitHash =
-          (await simpleGit(cloneDir).env(buildGitEnv(ctx) as Record<string, string>).revparse(["HEAD"])).trim() ||
-          null;
+          (
+            await simpleGit(cloneDir)
+              .env(buildGitEnv(ctx) as Record<string, string>)
+              .revparse(["HEAD"])
+          ).trim() || null;
       }
     } catch {
       /* no readable clone — fall through to the previous "update available" behavior */
@@ -178,9 +182,23 @@ export async function pollGitUpdatesOnce(ctx: AppContext): Promise<void> {
           : "no baseline";
       // Record the attempt BEFORE deploying so a failed build doesn't re-trigger
       // next tick even if deployFromGit throws.
-      ctx.db
-        .prepare("UPDATE services SET last_attempted_commit = ? WHERE id = ?")
-        .run(remoteHash, row.id);
+      ctx.db.prepare("UPDATE services SET last_attempted_commit = ? WHERE id = ?").run(remoteHash, row.id);
+      const ciPlan = handleIncomingCommit(ctx, {
+        serviceId: row.id,
+        repoUrl: row.github_repo_url,
+        branch,
+        commit: remoteHash,
+        trigger: "gitops-poller"
+      });
+      if (ciPlan === "ci-then-deploy") {
+        insertLog(
+          ctx,
+          row.id,
+          "info",
+          `GitOps: Detected remote commit change (${previous} -> ${remoteHash.slice(0, 7)}). Holding deploy until self-hosted CI passes.`
+        );
+        continue;
+      }
       insertLog(
         ctx,
         row.id,

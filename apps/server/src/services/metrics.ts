@@ -183,7 +183,9 @@ export function parseSmapsRollupPssKb(content: string): number | null {
  * Parse /proc/meminfo. Prefer MemAvailable (accounts for reclaimable cache)
  * over MemFree so alerts match what `free -h` / the kernel report as usable.
  */
-export function parseMeminfo(content: string): { totalKb: number; availableKb: number | null; freeKb: number | null } | null {
+export function parseMeminfo(
+  content: string
+): { totalKb: number; availableKb: number | null; freeKb: number | null } | null {
   const total = content.match(/^MemTotal:\s+(\d+)\s+kB/m);
   if (!total) return null;
   const available = content.match(/^MemAvailable:\s+(\d+)\s+kB/m);
@@ -242,7 +244,11 @@ export function aggregateProcessTreeSample(
   };
 }
 
-export function computeUnaccountedMb(hostUsedMb: number, processAttributedMb: number, dockerAttributedMb: number): number {
+export function computeUnaccountedMb(
+  hostUsedMb: number,
+  processAttributedMb: number,
+  dockerAttributedMb: number
+): number {
   return Math.round(Math.max(0, hostUsedMb - processAttributedMb - dockerAttributedMb) * 10) / 10;
 }
 
@@ -493,7 +499,9 @@ export async function getHostMemoryBreakdown(
   } catch {
     allContainers = [];
   }
-  const topContainers = [...allContainers].sort((a, b) => b.memoryMb - a.memoryMb).slice(0, Math.max(1, limit));
+  const topContainers = [...allContainers]
+    .sort((a, b) => b.memoryMb - a.memoryMb)
+    .slice(0, Math.max(1, limit));
   const dockerAttributedMb = sumContainerMemoryMb(allContainers);
   const processAttributedMb = opts.processAttributedMb ?? lastProcessAttributedMb;
   const measuredMb = Math.round((processAttributedMb + dockerAttributedMb) * 10) / 10;
@@ -511,7 +519,11 @@ export async function getHostMemoryBreakdown(
   };
 }
 
-function resolveComposeProjectName(ctx: AppContext, serviceId: string, stored: string | null | undefined): string | null {
+function resolveComposeProjectName(
+  ctx: AppContext,
+  serviceId: string,
+  stored: string | null | undefined
+): string | null {
   const fromColumn = stored?.trim();
   // Always normalize — stored values should already be clean, but a hand-edited
   // or pre-normalization row must match the label compose actually sets.

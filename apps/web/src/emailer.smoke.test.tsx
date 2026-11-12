@@ -73,7 +73,12 @@ const ROUTES: Record<string, unknown> = {
     ingestUrl: "http://127.0.0.1:8787/emailer/inbound",
     apiUrl: "http://127.0.0.1:8787/emailer/api",
     cloudflare: { connected: false, worker: "localsurv-emailer" },
-    summary: { unread: 1, open: 1, unassigned: 0, services: [{ service_id: "svc-shop", unread: 1, threads: 1, mailboxes: 1, last_message_at: now }] },
+    summary: {
+      unread: 1,
+      open: 1,
+      unassigned: 0,
+      services: [{ service_id: "svc-shop", unread: 1, threads: 1, mailboxes: 1, last_message_at: now }]
+    },
     stats: { received_7d: 1, sent_7d: 1, failed_7d: 0 }
   },
   "/emailer/mailboxes": [MAILBOX],
@@ -187,7 +192,12 @@ const ROUTES: Record<string, unknown> = {
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = new URL(String(input));
   const body = ROUTES[url.pathname] ?? {};
-  return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body)
+  } as Response;
 }) as typeof fetch;
 
 let EmailerPage: ComponentType;

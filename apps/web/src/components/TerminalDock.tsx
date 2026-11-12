@@ -412,10 +412,7 @@ export function TerminalDock() {
             className={`terminal-tab ${activeTab?.session.id === tab.session.id ? "active" : ""}`}
             onClick={() => setActiveId(tab.session.id)}
           >
-            <span
-              className={`term-tab-dot is-${tab.status}`}
-              title={`Session ${tab.status}`}
-            />
+            <span className={`term-tab-dot is-${tab.status}`} title={`Session ${tab.status}`} />
             <Terminal size={14} />
             <span>{tab.session.title || tab.service.name}</span>
             <small>{tab.status}</small>

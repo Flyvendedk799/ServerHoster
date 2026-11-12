@@ -66,7 +66,10 @@ export function loadEnvFileIntoProcess() {
 }
 
 function keyBuffer(secretKey) {
-  return crypto.createHash("sha256").update(secretKey || DEV_KEY_FALLBACK).digest();
+  return crypto
+    .createHash("sha256")
+    .update(secretKey || DEV_KEY_FALLBACK)
+    .digest();
 }
 
 function isEncryptedBlob(value) {
@@ -124,7 +127,9 @@ export function migrateSecretsToStrongKey(secretKey, log = () => {}) {
       if (tryDecrypt(row.value, secretKey) !== null) continue; // already under the strong key
       const plain = tryDecrypt(row.value, ""); // legacy dev-key blob?
       if (plain === null) {
-        log(`[secret-key] WARNING: ${key} decrypts under neither the configured key nor the dev key; left untouched.`);
+        log(
+          `[secret-key] WARNING: ${key} decrypts under neither the configured key nor the dev key; left untouched.`
+        );
         continue;
       }
       set.run(encrypt(plain, secretKey), key);
@@ -134,7 +139,9 @@ export function migrateSecretsToStrongKey(secretKey, log = () => {}) {
     db.close();
   }
   if (migrated.length) {
-    log(`[secret-key] re-encrypted ${migrated.length} secret(s) under SURVHUB_SECRET_KEY: ${migrated.join(", ")}`);
+    log(
+      `[secret-key] re-encrypted ${migrated.length} secret(s) under SURVHUB_SECRET_KEY: ${migrated.join(", ")}`
+    );
   }
   return migrated;
 }

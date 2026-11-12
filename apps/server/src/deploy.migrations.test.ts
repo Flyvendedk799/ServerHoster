@@ -71,10 +71,7 @@ test("diffMigrations reports only unrecorded versions as pending", () => {
 test("diffMigrations flags a pending migration that sorts before the newest applied one", () => {
   // Two branches merged in the wrong order — plain `migration up` refuses this,
   // so the runner has to reach for --include-all.
-  const { pending, outOfOrder } = diffMigrations(
-    ["20260906201000", "20260906210000"],
-    ["20260906210000"]
-  );
+  const { pending, outOfOrder } = diffMigrations(["20260906201000", "20260906210000"], ["20260906210000"]);
   assert.deepEqual(pending, ["20260906201000"]);
   assert.equal(outOfOrder, true);
 });
@@ -102,10 +99,7 @@ type Harness = {
   workdir: string;
 };
 
-async function makeHarness(options: {
-  repoVersions: string[];
-  stacks?: StackSpec[];
-}): Promise<Harness> {
+async function makeHarness(options: { repoVersions: string[]; stacks?: StackSpec[] }): Promise<Harness> {
   const ctx = await buildApp();
   openApps.push(ctx);
 
@@ -147,10 +141,7 @@ async function makeHarness(options: {
 }
 
 /** Fake stack DB whose recorded history grows only when the fake CLI runs. */
-function fakeStack(
-  applied: string[],
-  options: { historyTable?: boolean; lockHeld?: boolean } = {}
-) {
+function fakeStack(applied: string[], options: { historyTable?: boolean; lockHeld?: boolean } = {}) {
   const state = {
     applied: [...applied],
     cliCalls: [] as { local?: boolean; includeAll?: boolean }[],
@@ -449,10 +440,21 @@ test("a stack whose config.toml could not be reapplied is skipped, never migrate
 
 test("deliberate or empty outcomes do not raise an owner notification", () => {
   const base = { resourceId: "r", name: "s", pending: [], applied: [], outOfOrder: false };
-  for (const skipped of ["disabled", "non-local-db", "up-to-date", "no-migrations-dir", "no-supabase-resource"] as const) {
+  for (const skipped of [
+    "disabled",
+    "non-local-db",
+    "up-to-date",
+    "no-migrations-dir",
+    "no-supabase-resource"
+  ] as const) {
     assert.equal(migrationSkipNeedsAttention({ ...base, skipped }), false, skipped);
   }
-  for (const skipped of ["ambiguous-resources", "stack-not-running", "no-history-table", "config-not-reconciled"] as const) {
+  for (const skipped of [
+    "ambiguous-resources",
+    "stack-not-running",
+    "no-history-table",
+    "config-not-reconciled"
+  ] as const) {
     assert.equal(migrationSkipNeedsAttention({ ...base, skipped }), true, skipped);
   }
 });

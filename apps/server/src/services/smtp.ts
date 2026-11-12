@@ -76,7 +76,11 @@ function formatAddress(address: string, name?: string | null): string {
 }
 
 function base64Lines(value: string): string {
-  return (Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g) ?? []).join("\r\n");
+  return (
+    Buffer.from(value, "utf8")
+      .toString("base64")
+      .match(/.{1,76}/g) ?? []
+  ).join("\r\n");
 }
 
 /** Strip CR/LF so caller-supplied values can never inject extra headers. */
@@ -137,7 +141,9 @@ export function buildMimeMessage(mail: OutgoingMail, messageId: string): string 
 export async function sendSmtpMail(ctx: AppContext, mail: OutgoingMail): Promise<{ messageId: string }> {
   const cfg = readSmtpConfig(ctx);
   if (!cfg) {
-    const e = new Error("Configure SMTP credentials on the Email tab first") as Error & { statusCode?: number };
+    const e = new Error("Configure SMTP credentials on the Email tab first") as Error & {
+      statusCode?: number;
+    };
     e.statusCode = 400;
     throw e;
   }

@@ -12,10 +12,10 @@ Two defects keep costing us a debugging session per app. They look like one prob
 database is wrong after a deploy" — but they have different causes, different fixes, and
 different blast radii. They should ship as two changes.
 
-| | Symptom | Cause | Fix belongs in |
-|---|---|---|---|
+|       | Symptom                                                | Cause                                                      | Fix belongs in                   |
+| ----- | ------------------------------------------------------ | ---------------------------------------------------------- | -------------------------------- |
 | **A** | `42501 permission denied for table …` on every request | Provisioning never grants the PostgREST API roles anything | `profiles/supabase.ts` provision |
-| **B** | New migration files in a repo never reach the database | Nothing calls the migration apply outside provisioning | `deploy.ts` (shipped) |
+| **B** | New migration files in a repo never reach the database | Nothing calls the migration apply outside provisioning     | `deploy.ts` (shipped)            |
 
 Both were hit on Havekongen (2026-08-11): saving a garden failed with `42501` even though the
 table had four correct RLS policies, and the fix migration then had to be applied to the live
@@ -30,7 +30,7 @@ Measured on the VPS before writing this, because the design turns on these facts
 - **The resource workdir is the service checkout.** `profiles/supabase.ts:478` records
   `workdir = workdirOverride ?? service.working_dir`. For Havekongen that is
   `/root/.survhub/projects/hvRhvyxXbp0SOIx-Ntfzv` — the same directory the GitOps poller pulls
-  into. New migration files are therefore *already on disk* after a deploy. This is also why
+  into. New migration files are therefore _already on disk_ after a deploy. This is also why
   edge functions pick up code changes on deploy without any extra plumbing.
 - **The CLI ledger is intact.** `supabase_migrations.schema_migrations` on the Havekongen stack
   holds 27 rows against 28 files on disk — exactly one pending, the grants migration added by
@@ -50,7 +50,7 @@ no new ledger to build. The third is the real hazard.
 
 ### Why this is not a migration
 
-The missing grants are a property of *how ServerHoster provisions a stack*, not of any app.
+The missing grants are a property of _how ServerHoster provisions a stack_, not of any app.
 Supabase Cloud sets them up when it creates a project; our provisioner creates the schema and the
 RLS policies and stops. Pushing a grants migration into each app repo — which is what we did for
 Havekongen as a stopgap — means every current and future app has to carry a workaround for a
@@ -82,7 +82,7 @@ the UI as a real step rather than happening invisibly.
 ### The safety check this must not skip
 
 Granting `SELECT` on **all** tables to `anon` is only safe because RLS decides which rows come
-back. If a table has RLS *off*, this grant turns it into a publicly readable table.
+back. If a table has RLS _off_, this grant turns it into a publicly readable table.
 
 So before granting, count tables in `public` where `relrowsecurity` is false. If any exist:
 
@@ -121,7 +121,7 @@ the stack's host ports, and the git hard-reset strips the managed block out of i
 
 The ordering property the proposal cared about is unchanged — migrations still run before the
 new code starts, so the mismatch window is old-code-against-new-schema, which
-expand-then-contract already covers. What is genuinely different: if the *build* then fails, the
+expand-then-contract already covers. What is genuinely different: if the _build_ then fails, the
 schema has already moved while the previous build keeps serving. Same window, wider.
 
 ### What it does
@@ -131,7 +131,7 @@ schema has already moved while the previous build keeps serving. Same window, wi
    `supabase_migrations.schema_migrations`, read straight from the stack. **Nothing pending
    means the CLI is never invoked and no lock is taken** — that is every deploy but a handful.
 3. Otherwise run `supabaseMigrationApply(workdir, { local: true, includeAll })`.
-   `--include-all` is passed only when a pending file sorts *before* the newest applied
+   `--include-all` is passed only when a pending file sorts _before_ the newest applied
    version — two branches merged out of order, which plain `migration up` refuses outright.
 4. Re-read the history table and confirm every pending version is now recorded. The exit code is
    not trusted on its own: a CLI that exits 0 without recording is treated as a failure, because
@@ -145,7 +145,7 @@ Grants are still Part A and still unimplemented.
 
 This is the part to get right. As measured above, one service can carry several active links,
 including to `failed` resources. Migrating a dead duplicate would be silent and wrong; worse, a
-service linked to two *healthy* stacks has no obvious correct answer.
+service linked to two _healthy_ stacks has no obvious correct answer.
 
 **Shipped as** `resolveMigrationTarget`, with one widening: `status` may be `running` **or**
 `ready`. A freshly provisioned stack sits at `ready` and has a perfectly good database, and
@@ -184,7 +184,7 @@ The proposal argued for default **off**: the GitOps poller redeploys within ~60s
 no review gate.
 
 **Shipped as default ON**, deliberately, because that trade already exists. A push to `main`
-*already* ships arbitrary application code to production within 60s with no review gate. The
+_already_ ships arbitrary application code to production within 60s with no review gate. The
 schema was the one part left behind, and leaving it behind is exactly what broke Havekongen and
 Awaire. The reviewer in both cases is the same person, at `git push` time.
 
@@ -224,14 +224,14 @@ idempotent.
 - ~~A service linked to more than one running supabase resource never migrates either of them.~~
   **Done.**
 - A freshly provisioned stack answers PostgREST queries without a hand-applied grants migration.
-  *(Part A, outstanding.)*
+  _(Part A, outstanding.)_
 - `docs/troubleshooting.md` gains a `42501` entry pointing at the repair action.
-  *(Part A, outstanding.)*
+  _(Part A, outstanding.)_
 
 ## Explicitly out of scope
 
 - Rollback / down-migrations. `supabase migration up` is forward-only and we should keep it that
   way; recovery is restore-from-backup.
 - Applying migrations to managed Postgres (`profiles/managedDb.ts`) resources.
-- Reviewing or gating migration *content* — dangerous SQL is the app author's responsibility.
+- Reviewing or gating migration _content_ — dangerous SQL is the app author's responsibility.
 - Data seeding. `supabaseSeed` stays a provision-time concern.

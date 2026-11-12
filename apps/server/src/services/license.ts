@@ -98,7 +98,14 @@ function recordLicenseAudit(
       `INSERT INTO license_audit (id, license_id, action, detail, source_ip, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .run(nanoid(), input.licenseId ?? null, input.action, input.detail ?? null, input.sourceIp ?? null, nowIso());
+    .run(
+      nanoid(),
+      input.licenseId ?? null,
+      input.action,
+      input.detail ?? null,
+      input.sourceIp ?? null,
+      nowIso()
+    );
 }
 
 export function getLicensePublicUrl(ctx: AppContext): string | null {
@@ -134,23 +141,17 @@ export function licenseValidateUrl(ctx: AppContext, requestHost?: string | null)
 }
 
 export function getLicenseOverview(ctx: AppContext, requestHost?: string | null): LicenseOverview {
-  const products = (
-    ctx.db.prepare("SELECT COUNT(*) AS c FROM license_products").get() as { c: number }
-  ).c;
+  const products = (ctx.db.prepare("SELECT COUNT(*) AS c FROM license_products").get() as { c: number }).c;
   const keys_active = (
-    ctx.db
-      .prepare("SELECT COUNT(*) AS c FROM licenses WHERE status = 'active'")
-      .get() as { c: number }
+    ctx.db.prepare("SELECT COUNT(*) AS c FROM licenses WHERE status = 'active'").get() as { c: number }
   ).c;
   const keys_revoked = (
-    ctx.db
-      .prepare("SELECT COUNT(*) AS c FROM licenses WHERE status = 'revoked'")
-      .get() as { c: number }
+    ctx.db.prepare("SELECT COUNT(*) AS c FROM licenses WHERE status = 'revoked'").get() as { c: number }
   ).c;
   const activations = (
-    ctx.db
-      .prepare("SELECT COUNT(*) AS c FROM license_activations WHERE deactivated_at IS NULL")
-      .get() as { c: number }
+    ctx.db.prepare("SELECT COUNT(*) AS c FROM license_activations WHERE deactivated_at IS NULL").get() as {
+      c: number;
+    }
   ).c;
   const validations_24h = (
     ctx.db
@@ -234,8 +235,7 @@ export function updateProduct(
     | undefined;
   if (!row) throw httpError("Product not found", 404);
   const name = patch.name?.trim() || row.name;
-  const description =
-    patch.description === undefined ? row.description : patch.description?.trim() || null;
+  const description = patch.description === undefined ? row.description : patch.description?.trim() || null;
   const max =
     patch.maxActivations === undefined
       ? row.max_activations
@@ -315,9 +315,10 @@ export function listLicenses(ctx: AppContext, productId?: string): LicenseKey[] 
        FROM licenses l
        JOIN license_products p ON p.id = l.product_id
        ORDER BY l.created_at DESC`;
-  const rows = (
-    productId ? ctx.db.prepare(sql).all(productId) : ctx.db.prepare(sql).all()
-  ) as Record<string, unknown>[];
+  const rows = (productId ? ctx.db.prepare(sql).all(productId) : ctx.db.prepare(sql).all()) as Record<
+    string,
+    unknown
+  >[];
   return rows.map(licenseView);
 }
 
@@ -383,9 +384,7 @@ export function generateLicense(
     kind: "system",
     severity: "success",
     title: `License issued for ${product.name}`,
-    body: input.customerEmail
-      ? `Key minted for ${input.customerEmail}`
-      : `Key ${token.slice(0, 14)}… minted`
+    body: input.customerEmail ? `Key minted for ${input.customerEmail}` : `Key ${token.slice(0, 14)}… minted`
   });
 
   void emitN8nEvent(ctx, "license.issued", {
@@ -406,9 +405,7 @@ export function revokeLicense(ctx: AppContext, id: string, actor = "system"): Li
   if (!row) throw httpError("License not found", 404);
   const now = nowIso();
   ctx.db
-    .prepare(
-      `UPDATE licenses SET status = 'revoked', revoked_at = ?, updated_at = ? WHERE id = ?`
-    )
+    .prepare(`UPDATE licenses SET status = 'revoked', revoked_at = ?, updated_at = ? WHERE id = ?`)
     .run(now, now, id);
   writeAuditLog(ctx, {
     actor,
@@ -481,9 +478,7 @@ export function listActivations(ctx: AppContext, licenseId?: string): LicenseAct
        JOIN license_products p ON p.id = l.product_id
        ORDER BY a.created_at DESC
        LIMIT 500`;
-  return (
-    licenseId ? ctx.db.prepare(sql).all(licenseId) : ctx.db.prepare(sql).all()
-  ) as LicenseActivation[];
+  return (licenseId ? ctx.db.prepare(sql).all(licenseId) : ctx.db.prepare(sql).all()) as LicenseActivation[];
 }
 
 export function deactivateActivation(ctx: AppContext, id: string, actor = "system"): void {
@@ -492,9 +487,7 @@ export function deactivateActivation(ctx: AppContext, id: string, actor = "syste
     | undefined;
   if (!row) throw httpError("Activation not found", 404);
   if (!row.deactivated_at) {
-    ctx.db
-      .prepare(`UPDATE license_activations SET deactivated_at = ? WHERE id = ?`)
-      .run(nowIso(), id);
+    ctx.db.prepare(`UPDATE license_activations SET deactivated_at = ? WHERE id = ?`).run(nowIso(), id);
   }
   writeAuditLog(ctx, {
     actor,
@@ -612,7 +605,9 @@ export function validateLicense(
   let isNewActivation = false;
   if (existing) {
     ctx.db
-      .prepare(`UPDATE license_activations SET last_seen_at = ?, device_name = COALESCE(?, device_name) WHERE id = ?`)
+      .prepare(
+        `UPDATE license_activations SET last_seen_at = ?, device_name = COALESCE(?, device_name) WHERE id = ?`
+      )
       .run(now, input.deviceName?.trim() || null, existing.id);
   } else {
     const used = (
@@ -764,15 +759,20 @@ export async function emailLicenseKey(
   try {
     await writeFile(
       cfgPath,
-      [`url = "smtps://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}"`, `mail-from = "${from}"`].join(
-        "\n"
-      ),
+      [
+        `url = "smtps://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}"`,
+        `mail-from = "${from}"`
+      ].join("\n"),
       { mode: 0o600 }
     );
     await writeFile(msgPath, message, { mode: 0o600 });
-    await run("curl", ["--silent", "--show-error", "--config", cfgPath, "--mail-rcpt", to, "--upload-file", msgPath], {
-      timeout: 30000
-    });
+    await run(
+      "curl",
+      ["--silent", "--show-error", "--config", cfgPath, "--mail-rcpt", to, "--upload-file", msgPath],
+      {
+        timeout: 30000
+      }
+    );
   } catch (err) {
     throw httpError(`Failed to send email: ${(err as Error).message}`, 502);
   } finally {

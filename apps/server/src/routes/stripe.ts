@@ -32,7 +32,9 @@ import {
 const limited = { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } };
 
 function body(req: { body?: unknown }): Record<string, unknown> {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
 }
 
 export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): void {
@@ -59,7 +61,11 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
 
   ctx.app.post("/api/stripe/verify/:mode", limited, async (req) => {
     const { mode } = req.params as { mode: string };
-    return { ok: true, credential_path: "account-key" as const, account: await verifyKeys(ctx, actorOf(req), mode, deps) };
+    return {
+      ok: true,
+      credential_path: "account-key" as const,
+      account: await verifyKeys(ctx, actorOf(req), mode, deps)
+    };
   });
 
   // Verify the organization master key against one member account (an app's account, or an explicit acct_…).
@@ -74,7 +80,12 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
   ctx.app.post("/api/stripe/apps/:serviceId/connect", limited, async (req) => {
     const { serviceId } = req.params as { serviceId: string };
     const b = body(req);
-    return connectApp(ctx, actorOf(req), { serviceId, mode: b.mode, confirmLive: b.confirmLive, takeover: b.takeover });
+    return connectApp(ctx, actorOf(req), {
+      serviceId,
+      mode: b.mode,
+      confirmLive: b.confirmLive,
+      takeover: b.takeover
+    });
   });
 
   // Which Stripe member account (acct_…) an app belongs to; null or "" clears it.
@@ -88,7 +99,13 @@ export function registerStripeRoutes(ctx: AppContext, deps: StripeDeps = {}): vo
     return disconnectApp(ctx, actorOf(req), serviceId);
   });
 
-  ctx.app.post("/api/stripe/setup/product-price", limited, async (req) => ensureProductPrice(ctx, actorOf(req), body(req), deps));
-  ctx.app.post("/api/stripe/setup/webhook", limited, async (req) => ensureWebhook(ctx, actorOf(req), body(req), deps));
-  ctx.app.post("/api/stripe/setup/portal", limited, async (req) => ensurePortal(ctx, actorOf(req), body(req), deps));
+  ctx.app.post("/api/stripe/setup/product-price", limited, async (req) =>
+    ensureProductPrice(ctx, actorOf(req), body(req), deps)
+  );
+  ctx.app.post("/api/stripe/setup/webhook", limited, async (req) =>
+    ensureWebhook(ctx, actorOf(req), body(req), deps)
+  );
+  ctx.app.post("/api/stripe/setup/portal", limited, async (req) =>
+    ensurePortal(ctx, actorOf(req), body(req), deps)
+  );
 }

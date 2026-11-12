@@ -2,6 +2,7 @@ import fs from "node:fs";
 import Database from "better-sqlite3";
 import { config } from "./config.js";
 import { API_TOKENS_INDEX_SQL, API_TOKENS_TABLE_SQL } from "./services/apiTokens.js";
+import { ensureCiSchema } from "./services/ci.js";
 
 fs.mkdirSync(config.dataRoot, { recursive: true });
 fs.mkdirSync(config.logsDir, { recursive: true });
@@ -784,3 +785,5 @@ for (const statement of migrations) {
     // No-op: migration already applied.
   }
 }
+
+ensureCiSchema(db);

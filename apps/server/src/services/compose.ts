@@ -321,9 +321,7 @@ export function parseComposePs(raw: string): ComposeContainer[] {
  */
 export function composeStatusFrom(containers: ComposeContainer[]): "running" | "stopped" | "crashed" {
   if (containers.length === 0) return "stopped";
-  const crashed = containers.some(
-    (c) => c.state === "dead" || (c.state === "exited" && c.exitCode !== 0)
-  );
+  const crashed = containers.some((c) => c.state === "dead" || (c.state === "exited" && c.exitCode !== 0));
   const anyUp = containers.some((c) => c.state === "running" || c.state === "restarting");
   if (anyUp) return crashed ? "crashed" : "running";
   return crashed ? "crashed" : "stopped";

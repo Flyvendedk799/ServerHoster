@@ -1,0 +1,1880 @@
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { nanoid } from "nanoid";
+import simpleGit from "simple-git";
+import type { AppContext } from "../types.js";
+import { broadcast, ensureDir, getServiceEnv, insertLog, nowIso, serializeError } from "../lib/core.js";
+import { decryptSecret } from "../security.js";
+import { buildGitEnv, getSecretSetting, injectGitCredentials } from "./settings.js";
+import { createNotification } from "./notifications.js";
+import type { CiSandbox as DockerSandbox } from "./ciDocker.js";
+import {
+  CI_CONFIG_PATH,
+  DEFAULT_CI_CPUS,
+  DEFAULT_CI_IMAGE,
+  DEFAULT_CI_MEMORY_MB,
+  DEFAULT_CI_TIMEOUT_MINUTES,
+  EXAMPLE_CI_YAML,
+  type CiConfig,
+  type CiPlan,
+  CiConfigError,
+  assertImageRef,
+  buildCiEnv,
+  capLog,
+  commitsMatch,
+  createLogRedactor,
+  isCommitSha,
+  parseCiConfig,
+  planForPipeline,
+  redactSecrets,
+  sanitizeLogChunk,
+  stripGitCredentials
+} from "./ciConfig.js";
+import {
+  type CiEvent,
+  isPullRequestRef,
+  laneForPullRequest,
+  laneForPush,
+  parseBranchPatterns,
+  pullRequestRef,
+  shouldRunPullRequest,
+  shouldRunPush
+} from "./ciTriggers.js";
+import { type CommitState, reportCommitStatus } from "./ciStatus.js";
+import {
+  type JobSize,
+  admitJob,
+  detectHostCapacity,
+  effectiveMaxConcurrent,
+  readCiCapacitySettings
+} from "./ciCapacity.js";
+import { chownTree, dirSize, ensureRepoCacheDir, pruneCaches, repoCacheKey } from "./ciCache.js";
+import { addAutoCiOptOut, repoHasCiConfig, startAutoCi } from "./ciAuto.js";
+
+export { CI_CONFIG_PATH, EXAMPLE_CI_YAML, CiConfigError, assertImageRef, parseCiConfig, planForPipeline };
+export type { CiPlan, CiConfig };
+
+export const CI_SCHEMA = `
+CREATE TABLE IF NOT EXISTS ci_pipelines (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  gate_deploy INTEGER NOT NULL DEFAULT 0,
+  config_source TEXT NOT NULL DEFAULT 'repo',
+  inline_config TEXT,
+  image TEXT NOT NULL DEFAULT 'node:22-bookworm',
+  timeout_minutes INTEGER NOT NULL DEFAULT 20,
+  memory_mb INTEGER NOT NULL DEFAULT 2048,
+  cpus REAL NOT NULL DEFAULT 1,
+  trigger_branches TEXT,
+  trigger_pull_requests INTEGER NOT NULL DEFAULT 1,
+  auto_created INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ci_runs (
+  id TEXT PRIMARY KEY,
+  pipeline_id TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  commit_hash TEXT,
+  branch TEXT,
+  status TEXT NOT NULL,
+  trigger_source TEXT NOT NULL,
+  deploy_after INTEGER NOT NULL DEFAULT 0,
+  deploy_status TEXT,
+  config_snapshot TEXT,
+  setup_log TEXT NOT NULL DEFAULT '',
+  failure_step TEXT,
+  error TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  event TEXT NOT NULL DEFAULT 'push',
+  lane TEXT,
+  pr_number INTEGER,
+  git_ref TEXT,
+  status_warning TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ci_runs_service ON ci_runs(service_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ci_runs_pipeline ON ci_runs(pipeline_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS ci_run_steps (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  exit_code INTEGER,
+  log TEXT NOT NULL DEFAULT '',
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ci_steps_run ON ci_run_steps(run_id, position);
+`;
+
+type DbLike = {
+  exec(sql: string): void;
+  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+};
+
+/** Columns added after the first release; CREATE TABLE IF NOT EXISTS does not add them. */
+const CI_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+  { table: "ci_pipelines", column: "trigger_branches", ddl: "trigger_branches TEXT" },
+  {
+    table: "ci_pipelines",
+    column: "trigger_pull_requests",
+    ddl: "trigger_pull_requests INTEGER NOT NULL DEFAULT 1"
+  },
+  { table: "ci_pipelines", column: "auto_created", ddl: "auto_created INTEGER NOT NULL DEFAULT 0" },
+  { table: "ci_runs", column: "event", ddl: "event TEXT NOT NULL DEFAULT 'push'" },
+  { table: "ci_runs", column: "lane", ddl: "lane TEXT" },
+  { table: "ci_runs", column: "pr_number", ddl: "pr_number INTEGER" },
+  { table: "ci_runs", column: "git_ref", ddl: "git_ref TEXT" },
+  { table: "ci_runs", column: "status_warning", ddl: "status_warning TEXT" }
+];
+
+export function ensureCiSchema(db: DbLike): void {
+  db.exec(CI_SCHEMA);
+  for (const migration of CI_MIGRATIONS) {
+    const columns = db.prepare(`PRAGMA table_info(${migration.table})`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === migration.column)) {
+      db.exec(`ALTER TABLE ${migration.table} ADD COLUMN ${migration.ddl}`);
+    }
+  }
+  db.exec(`UPDATE ci_runs SET lane = 'push:' || COALESCE(branch, 'main') WHERE lane IS NULL`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_ci_runs_lane ON ci_runs(pipeline_id, lane, status)");
+}
+
+type PipelineRow = {
+  id: string;
+  service_id: string;
+  name: string;
+  enabled: number;
+  gate_deploy: number;
+  config_source: string;
+  inline_config: string | null;
+  image: string;
+  timeout_minutes: number;
+  memory_mb: number;
+  cpus: number;
+  trigger_branches: string | null;
+  trigger_pull_requests: number;
+  /** 1 = made by "CI for every repository"; it runs only when the repo has ci.yml. */
+  auto_created: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type RunRow = {
+  id: string;
+  pipeline_id: string;
+  service_id: string;
+  commit_hash: string | null;
+  branch: string | null;
+  status: string;
+  trigger_source: string;
+  deploy_after: number;
+  deploy_status: string | null;
+  config_snapshot: string | null;
+  setup_log: string;
+  failure_step: string | null;
+  error: string | null;
+  cancel_requested: number;
+  event: string;
+  lane: string | null;
+  pr_number: number | null;
+  git_ref: string | null;
+  status_warning: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+};
+
+export type CiTrigger = "manual" | "gitops-poller" | "webhook";
+
+export type CheckoutInput = {
+  dir: string;
+  repoUrl: string;
+  branch: string;
+  commit: string | null;
+  /** A ref to fetch instead of cloning `branch`, e.g. refs/pull/12/head. */
+  ref?: string | null;
+  gitEnv: NodeJS.ProcessEnv;
+  redactions: string[];
+  signal?: AbortSignal;
+};
+
+export type CiDeployInput = {
+  serviceId: string;
+  repoUrl: string;
+  branch: string;
+  trigger: CiTrigger;
+  commit: string | null;
+};
+
+export type CiRunDeps = {
+  sandbox?: DockerSandbox;
+  /** Resolves to the commit that was checked out, when it knows it. */
+  checkout?: (input: CheckoutInput) => Promise<string | void>;
+  remoteHead?: (repoUrl: string, branch: string) => Promise<string | null>;
+  deploy?: (input: CiDeployInput) => Promise<{ status: string } | void>;
+};
+
+function httpError(statusCode: number, message: string): Error {
+  const error = new Error(message) as Error & { statusCode: number };
+  error.statusCode = statusCode;
+  return error;
+}
+
+function workRoot(ctx: AppContext): string {
+  return path.join(ctx.config.dataRoot, "ci-workspaces");
+}
+
+function defaultsOf(pipeline: PipelineRow) {
+  return {
+    image: pipeline.image || DEFAULT_CI_IMAGE,
+    timeoutMinutes: pipeline.timeout_minutes || DEFAULT_CI_TIMEOUT_MINUTES,
+    memoryMb: pipeline.memory_mb || DEFAULT_CI_MEMORY_MB,
+    cpus: pipeline.cpus || DEFAULT_CI_CPUS
+  };
+}
+
+function emitRun(ctx: AppContext, runId: string, status: string, serviceId: string): void {
+  broadcast(ctx, { type: "ci_run", runId, status, serviceId });
+}
+
+export function listCiPipelines(ctx: AppContext) {
+  const pipelines = ctx.db
+    .prepare(
+      `SELECT p.*, s.name AS service_name, s.github_repo_url, s.github_branch,
+              (SELECT status FROM ci_runs r WHERE r.pipeline_id = p.id ORDER BY created_at DESC LIMIT 1) AS last_status,
+              (SELECT created_at FROM ci_runs r WHERE r.pipeline_id = p.id ORDER BY created_at DESC LIMIT 1) AS last_run_at,
+              (SELECT commit_hash FROM ci_runs r WHERE r.pipeline_id = p.id ORDER BY created_at DESC LIMIT 1) AS last_commit
+       FROM ci_pipelines p
+       JOIN services s ON s.id = p.service_id
+       ORDER BY p.updated_at DESC`
+    )
+    .all();
+  const attachableServices = ctx.db
+    .prepare(
+      `SELECT id, name, github_repo_url, github_branch FROM services
+       WHERE github_repo_url IS NOT NULL AND trim(github_repo_url) != ''
+         AND id NOT IN (SELECT service_id FROM ci_pipelines)
+       ORDER BY name`
+    )
+    .all();
+  return { pipelines, attachableServices, exampleYaml: EXAMPLE_CI_YAML };
+}
+
+export function listCiRuns(ctx: AppContext, limit = 40) {
+  const capped = Math.min(Math.max(limit, 1), 100);
+  return ctx.db
+    .prepare(
+      `SELECT r.id, r.pipeline_id, r.service_id, s.name AS service_name, r.commit_hash, r.branch,
+              r.status, r.trigger_source, r.deploy_after, r.deploy_status, r.failure_step, r.error,
+              r.event, r.pr_number, r.status_warning, r.started_at, r.finished_at, r.created_at
+       FROM ci_runs r
+       LEFT JOIN services s ON s.id = r.service_id
+       ORDER BY r.created_at DESC
+       LIMIT ?`
+    )
+    .all(capped);
+}
+
+export function getCiRun(ctx: AppContext, runId: string) {
+  const run = ctx.db
+    .prepare(
+      `SELECT r.*, s.name AS service_name
+       FROM ci_runs r
+       LEFT JOIN services s ON s.id = r.service_id
+       WHERE r.id = ?`
+    )
+    .get(runId);
+  if (!run) throw httpError(404, "CI run not found");
+  const steps = ctx.db
+    .prepare("SELECT * FROM ci_run_steps WHERE run_id = ? ORDER BY position ASC")
+    .all(runId);
+  return { ...(run as RunRow), steps };
+}
+
+export type PipelineInput = {
+  serviceId?: string;
+  name?: string;
+  enabled?: boolean;
+  gateDeploy?: boolean;
+  configSource?: "repo" | "inline";
+  inlineConfig?: string | null;
+  image?: string;
+  timeoutMinutes?: number;
+  memoryMb?: number;
+  cpus?: number;
+  /** Blank = deploy branch only, "*" = every branch, else a comma/newline list. */
+  triggerBranches?: string | null;
+  triggerPullRequests?: boolean;
+  /** Internal: created by "CI for every repository". */
+  auto?: boolean;
+};
+
+function normalizeTriggerBranches(raw: string | null | undefined): string | null {
+  try {
+    const patterns = parseBranchPatterns(raw);
+    return patterns.length ? patterns.join(", ") : null;
+  } catch (error) {
+    throw httpError(400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function validatePipelineConfig(input: PipelineInput, current?: PipelineRow): void {
+  const image = input.image ?? current?.image ?? DEFAULT_CI_IMAGE;
+  assertImageRef(image);
+  const source = input.configSource ?? current?.config_source ?? "repo";
+  const inline = input.inlineConfig === undefined ? current?.inline_config : input.inlineConfig;
+  if (source === "inline") {
+    parseCiConfig(inline ?? "", {
+      image,
+      timeoutMinutes: input.timeoutMinutes ?? current?.timeout_minutes ?? DEFAULT_CI_TIMEOUT_MINUTES,
+      memoryMb: input.memoryMb ?? current?.memory_mb ?? DEFAULT_CI_MEMORY_MB,
+      cpus: input.cpus ?? current?.cpus ?? DEFAULT_CI_CPUS
+    });
+  }
+}
+
+export function createCiPipeline(ctx: AppContext, input: PipelineInput) {
+  if (!input.serviceId) throw httpError(400, "Pick a service to attach CI to.");
+  const service = ctx.db
+    .prepare("SELECT id, name, github_repo_url FROM services WHERE id = ?")
+    .get(input.serviceId) as { id: string; name: string; github_repo_url?: string | null } | undefined;
+  if (!service) throw httpError(404, "Service not found");
+  if (!service.github_repo_url)
+    throw httpError(400, "Link the service to a GitHub repository before enabling CI.");
+  const existing = ctx.db.prepare("SELECT id FROM ci_pipelines WHERE service_id = ?").get(service.id) as
+    | { id: string }
+    | undefined;
+  if (existing) throw httpError(409, "This service already has a CI pipeline.");
+  validatePipelineConfig(input);
+  const now = nowIso();
+  const id = nanoid();
+  ctx.db
+    .prepare(
+      `INSERT INTO ci_pipelines
+       (id, service_id, name, enabled, gate_deploy, config_source, inline_config, image, timeout_minutes, memory_mb, cpus,
+        trigger_branches, trigger_pull_requests, auto_created, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      id,
+      service.id,
+      (input.name ?? `${service.name} CI`).slice(0, 80),
+      input.enabled === false ? 0 : 1,
+      input.gateDeploy ? 1 : 0,
+      input.configSource ?? "repo",
+      input.inlineConfig ?? null,
+      assertImageRef(input.image ?? DEFAULT_CI_IMAGE),
+      input.timeoutMinutes ?? DEFAULT_CI_TIMEOUT_MINUTES,
+      input.memoryMb ?? DEFAULT_CI_MEMORY_MB,
+      input.cpus ?? DEFAULT_CI_CPUS,
+      normalizeTriggerBranches(input.triggerBranches),
+      input.triggerPullRequests === false ? 0 : 1,
+      input.auto ? 1 : 0,
+      now,
+      now
+    );
+  return { id };
+}
+
+export function updateCiPipeline(ctx: AppContext, id: string, input: PipelineInput) {
+  const current = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE id = ?").get(id) as
+    | PipelineRow
+    | undefined;
+  if (!current) throw httpError(404, "CI pipeline not found");
+  validatePipelineConfig(input, current);
+  const now = nowIso();
+  ctx.db
+    .prepare(
+      `UPDATE ci_pipelines SET
+         name = ?, enabled = ?, gate_deploy = ?, config_source = ?, inline_config = ?,
+         image = ?, timeout_minutes = ?, memory_mb = ?, cpus = ?,
+         trigger_branches = ?, trigger_pull_requests = ?, auto_created = 0, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      input.name ?? current.name,
+      input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0,
+      input.gateDeploy === undefined ? current.gate_deploy : input.gateDeploy ? 1 : 0,
+      input.configSource ?? current.config_source,
+      input.inlineConfig === undefined ? current.inline_config : input.inlineConfig,
+      assertImageRef(input.image ?? current.image),
+      input.timeoutMinutes ?? current.timeout_minutes,
+      input.memoryMb ?? current.memory_mb,
+      input.cpus ?? current.cpus,
+      input.triggerBranches === undefined
+        ? current.trigger_branches
+        : normalizeTriggerBranches(input.triggerBranches),
+      input.triggerPullRequests === undefined
+        ? current.trigger_pull_requests
+        : input.triggerPullRequests
+          ? 1
+          : 0,
+      now,
+      id
+    );
+  return { id };
+}
+
+export function deleteCiPipeline(ctx: AppContext, id: string): void {
+  const current = ctx.db.prepare("SELECT id, service_id FROM ci_pipelines WHERE id = ?").get(id) as
+    | { id: string; service_id: string }
+    | undefined;
+  if (!current) throw httpError(404, "CI pipeline not found");
+  const active = ctx.db
+    .prepare("SELECT id FROM ci_runs WHERE pipeline_id = ? AND status IN ('queued', 'running') LIMIT 1")
+    .get(id) as { id: string } | undefined;
+  if (active) throw httpError(409, "Cancel the queued or running job before deleting this pipeline.");
+  const runIds = ctx.db.prepare("SELECT id FROM ci_runs WHERE pipeline_id = ?").all(id) as Array<{
+    id: string;
+  }>;
+  for (const run of runIds) {
+    ctx.db.prepare("DELETE FROM ci_run_steps WHERE run_id = ?").run(run.id);
+  }
+  ctx.db.prepare("DELETE FROM ci_runs WHERE pipeline_id = ?").run(id);
+  ctx.db.prepare("DELETE FROM ci_pipelines WHERE id = ?").run(id);
+  // "CI for every repository" must not bring back a pipeline someone removed.
+  addAutoCiOptOut(ctx, current.service_id);
+}
+
+function trimRunHistory(ctx: AppContext, pipelineId: string): void {
+  const stale = ctx.db
+    .prepare(
+      `SELECT id FROM ci_runs
+       WHERE pipeline_id = ? AND status NOT IN ('queued', 'running')
+         AND id NOT IN (
+           SELECT id FROM ci_runs WHERE pipeline_id = ? ORDER BY created_at DESC LIMIT 40
+         )`
+    )
+    .all(pipelineId, pipelineId) as Array<{ id: string }>;
+  for (const run of stale) {
+    ctx.db.prepare("DELETE FROM ci_run_steps WHERE run_id = ?").run(run.id);
+    ctx.db.prepare("DELETE FROM ci_runs WHERE id = ?").run(run.id);
+  }
+}
+
+function deployBranchOf(ctx: AppContext, serviceId: string): string {
+  const row = ctx.db.prepare("SELECT github_branch FROM services WHERE id = ?").get(serviceId) as
+    | { github_branch?: string | null }
+    | undefined;
+  return row?.github_branch || "main";
+}
+
+export function enqueueCiRun(
+  ctx: AppContext,
+  input: {
+    serviceId: string;
+    commit: string | null;
+    branch: string;
+    trigger: CiTrigger;
+    deployAfter: boolean;
+    event?: CiEvent;
+    /** Supersede scope; defaults to the branch's push lane. */
+    lane?: string;
+    prNumber?: number | null;
+    gitRef?: string | null;
+    /** Do not post "pending" to GitHub yet (the repo may not have ci.yml). */
+    quietStatus?: boolean;
+  }
+): { id: string; deduped: boolean } {
+  const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE service_id = ?").get(input.serviceId) as
+    | PipelineRow
+    | undefined;
+  if (!pipeline || !pipeline.enabled) throw httpError(409, "CI is not enabled for this service.");
+  const commit = input.commit?.trim() ? input.commit.trim() : null;
+  if (commit && !isCommitSha(commit)) throw httpError(400, "Not a commit id.");
+  if (input.gitRef && !isPullRequestRef(input.gitRef)) throw httpError(400, "Not a pull request ref.");
+  const event: CiEvent = input.event ?? (input.trigger === "manual" ? "manual" : "push");
+  const lane = input.lane ?? laneForPush(input.branch);
+  // Only the deploy branch's push lane may ever deploy.
+  const deployLane = laneForPush(deployBranchOf(ctx, input.serviceId));
+  const deployAfter = input.deployAfter && event !== "pull_request" && lane === deployLane;
+  if (commit) {
+    const existing = ctx.db
+      .prepare(
+        `SELECT id, deploy_after FROM ci_runs
+         WHERE service_id = ? AND commit_hash = ? AND lane = ? AND status IN ('queued', 'running')
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(input.serviceId, commit, lane) as { id: string; deploy_after: number } | undefined;
+    if (existing) {
+      if (deployAfter && !existing.deploy_after) {
+        ctx.db.prepare("UPDATE ci_runs SET deploy_after = 1 WHERE id = ?").run(existing.id);
+      }
+      return { id: existing.id, deduped: true };
+    }
+  }
+  const now = nowIso();
+  const id = nanoid();
+  const superseded = ctx.db
+    .prepare(`SELECT * FROM ci_runs WHERE pipeline_id = ? AND lane = ? AND status IN ('queued', 'running')`)
+    .all(pipeline.id, lane) as RunRow[];
+  // A newer commit makes the older queued run pointless. A queued deploy keeps
+  // its intent: the newer run in the same lane deploys instead.
+  const inheritDeploy =
+    lane === deployLane && superseded.some((run) => run.status === "queued" && run.deploy_after);
+  for (const old of superseded) {
+    if (old.status === "queued") {
+      ctx.db
+        .prepare(
+          `UPDATE ci_runs SET status = 'cancelled', finished_at = ?, error = 'Superseded by a newer commit', cancel_requested = 1
+           WHERE id = ? AND status = 'queued'`
+        )
+        .run(now, old.id);
+      emitRun(ctx, old.id, "cancelled", old.service_id);
+      reportStatus(ctx, old, "error", "Superseded by a newer commit");
+    } else if (lane !== deployLane) {
+      // Pull requests and other branches never deploy, so a running job for an
+      // older commit is wasted CPU. The deploy lane keeps running and is
+      // simply not deployed when it finishes behind a newer commit.
+      ctx.db.prepare("UPDATE ci_runs SET cancel_requested = 1 WHERE id = ?").run(old.id);
+    }
+  }
+  ctx.db
+    .prepare(
+      `INSERT INTO ci_runs
+       (id, pipeline_id, service_id, commit_hash, branch, status, trigger_source, deploy_after, setup_log, cancel_requested,
+        event, lane, pr_number, git_ref, created_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, '', 0, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      id,
+      pipeline.id,
+      input.serviceId,
+      commit,
+      input.branch,
+      input.trigger,
+      deployAfter || inheritDeploy ? 1 : 0,
+      event,
+      lane,
+      input.prNumber ?? null,
+      input.gitRef ?? null,
+      now
+    );
+  trimRunHistory(ctx, pipeline.id);
+  emitRun(ctx, id, "queued", input.serviceId);
+  if (!input.quietStatus) {
+    reportStatus(
+      ctx,
+      { id, commit_hash: commit, pipeline_id: pipeline.id, service_id: input.serviceId },
+      "pending",
+      "Queued on ServerHoster"
+    );
+  }
+  kickCi(ctx);
+  return { id, deduped: false };
+}
+
+type EnqueueInput = Parameters<typeof enqueueCiRun>[1];
+
+/**
+ * Pipelines made by "CI for every repository" only run for repos that have
+ * ci.yml. Ask GitHub first, so a repo without one is not cloned on every push
+ * and gets no commit status. If GitHub cannot answer, queue anyway; the runner
+ * then skips the run quietly when the file is missing.
+ */
+function queueIfRepoHasCiConfig(ctx: AppContext, input: EnqueueInput): void {
+  const service = ctx.db.prepare("SELECT github_repo_url FROM services WHERE id = ?").get(input.serviceId) as
+    | { github_repo_url?: string | null }
+    | undefined;
+  const repoUrl = service?.github_repo_url;
+  if (!repoUrl) return;
+  const ref = input.commit && isCommitSha(input.commit) ? input.commit : input.gitRef || input.branch;
+  void repoHasCiConfig(ctx, repoUrl, ref)
+    .then((has) => {
+      if (has === false) return;
+      enqueueCiRun(ctx, { ...input, quietStatus: has !== true });
+    })
+    .catch((error: unknown) => {
+      serviceLog(ctx, input.serviceId, "warn", `CI: could not queue a run: ${serializeError(error)}`);
+    });
+}
+
+/**
+ * Called when GitOps or a GitHub push webhook sees a new commit.
+ * Returns the plan the caller should follow. A gate does not deploy here;
+ * the runner deploys after the job passes, and only if the branch still
+ * points at the commit that was tested.
+ */
+export function handleIncomingCommit(
+  ctx: AppContext,
+  input: {
+    serviceId: string;
+    repoUrl: string;
+    branch: string;
+    commit: string;
+    trigger: "gitops-poller" | "webhook";
+  }
+): CiPlan {
+  const pipeline = ctx.db
+    .prepare("SELECT enabled, gate_deploy, auto_created FROM ci_pipelines WHERE service_id = ?")
+    .get(input.serviceId) as { enabled: number; gate_deploy: number; auto_created: number } | undefined;
+  const plan = planForPipeline(pipeline);
+  if (plan === "deploy-only") return plan;
+  const queueInput: EnqueueInput = {
+    serviceId: input.serviceId,
+    commit: isCommitSha(input.commit) ? input.commit : null,
+    branch: input.branch,
+    trigger: input.trigger,
+    deployAfter: plan === "ci-then-deploy"
+  };
+  // An automatic pipeline never holds a deploy, so it can check for ci.yml first.
+  if (pipeline?.auto_created && plan === "deploy-and-ci") {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return plan;
+  }
+  try {
+    enqueueCiRun(ctx, queueInput);
+  } catch (error) {
+    // With the gate off the caller still deploys; a CI queue error must not stop it.
+    // With the gate on, nothing deploys untested, so the error goes up.
+    if (plan === "ci-then-deploy") throw error;
+    serviceLog(ctx, input.serviceId, "warn", `CI: could not queue a run: ${serializeError(error)}`);
+  }
+  return plan;
+}
+
+export type TriggerOutcome = { queued: true; runId: string } | { queued: false; reason: string };
+
+/** A push to a branch other than the deploy branch: test it, never deploy it. */
+export function handleBranchPush(
+  ctx: AppContext,
+  input: { serviceId: string; branch: string; commit: string }
+): TriggerOutcome {
+  const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE service_id = ?").get(input.serviceId) as
+    | PipelineRow
+    | undefined;
+  if (!pipeline || !pipeline.enabled) return { queued: false, reason: "no enabled CI pipeline" };
+  const deployBranch = deployBranchOf(ctx, input.serviceId);
+  if (input.branch === deployBranch)
+    return { queued: false, reason: "deploy branch is handled by the deploy flow" };
+  if (!shouldRunPush(pipeline, input.branch, deployBranch)) {
+    return { queued: false, reason: `branch ${input.branch} is not in the pipeline's branch filter` };
+  }
+  const queueInput: EnqueueInput = {
+    serviceId: input.serviceId,
+    commit: isCommitSha(input.commit) ? input.commit : null,
+    branch: input.branch,
+    trigger: "webhook",
+    deployAfter: false,
+    event: "push",
+    lane: laneForPush(input.branch)
+  };
+  if (pipeline.auto_created) {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return { queued: false, reason: `queued if the commit has ${CI_CONFIG_PATH}` };
+  }
+  const queued = enqueueCiRun(ctx, queueInput);
+  return { queued: true, runId: queued.id };
+}
+
+export type PullRequestEvent = {
+  serviceId: string;
+  action: string;
+  number: number;
+  headSha: string;
+  headBranch: string;
+  baseBranch: string;
+  isFork: boolean;
+};
+
+/** opened / synchronize / reopened: test the PR head; closed: stop its runs. */
+export function handlePullRequest(ctx: AppContext, input: PullRequestEvent): TriggerOutcome {
+  const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE service_id = ?").get(input.serviceId) as
+    | PipelineRow
+    | undefined;
+  if (!pipeline || !pipeline.enabled) return { queued: false, reason: "no enabled CI pipeline" };
+  const lane = laneForPullRequest(input.number);
+  if (input.action === "closed") {
+    const active = ctx.db
+      .prepare(
+        `SELECT id FROM ci_runs WHERE pipeline_id = ? AND lane = ? AND status IN ('queued', 'running')`
+      )
+      .all(pipeline.id, lane) as Array<{ id: string }>;
+    for (const run of active) {
+      try {
+        requestCancelCiRun(ctx, run.id);
+      } catch {
+        /* finished meanwhile */
+      }
+    }
+    return { queued: false, reason: `pull request closed; cancelled ${active.length} run(s)` };
+  }
+  const decision = shouldRunPullRequest(
+    pipeline,
+    {
+      action: input.action,
+      baseBranch: input.baseBranch,
+      headBranch: input.headBranch,
+      isFork: input.isFork
+    },
+    deployBranchOf(ctx, input.serviceId)
+  );
+  if (!decision.run) {
+    const reasons: Record<typeof decision.reason, string> = {
+      action: `action "${input.action}" does not start CI`,
+      disabled: "pull request runs are off for this pipeline",
+      fork: "pull requests from forks are not run on this host",
+      "base-branch": `base branch ${input.baseBranch} is not in the pipeline's branch filter`,
+      "branch-name": "the head branch name is not a valid git branch name"
+    };
+    return { queued: false, reason: reasons[decision.reason] };
+  }
+  if (!isCommitSha(input.headSha)) return { queued: false, reason: "pull request has no head commit" };
+  const queueInput: EnqueueInput = {
+    serviceId: input.serviceId,
+    commit: input.headSha,
+    branch: input.headBranch,
+    trigger: "webhook",
+    deployAfter: false,
+    event: "pull_request",
+    lane,
+    prNumber: input.number,
+    gitRef: pullRequestRef(input.number)
+  };
+  if (pipeline.auto_created) {
+    queueIfRepoHasCiConfig(ctx, queueInput);
+    return { queued: false, reason: `queued if the pull request has ${CI_CONFIG_PATH}` };
+  }
+  const queued = enqueueCiRun(ctx, queueInput);
+  return { queued: true, runId: queued.id };
+}
+
+export async function queueManualCiRun(ctx: AppContext, pipelineId: string): Promise<{ id: string }> {
+  const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE id = ?").get(pipelineId) as
+    | PipelineRow
+    | undefined;
+  if (!pipeline) throw httpError(404, "CI pipeline not found");
+  if (!pipeline.enabled) throw httpError(409, "Enable the pipeline before running it.");
+  const service = ctx.db
+    .prepare("SELECT github_repo_url, github_branch FROM services WHERE id = ?")
+    .get(pipeline.service_id) as
+    | { github_repo_url?: string | null; github_branch?: string | null }
+    | undefined;
+  if (!service?.github_repo_url) throw httpError(400, "The service is no longer linked to a repository.");
+  const branch = service.github_branch || "main";
+  let commit: string | null = null;
+  try {
+    commit = await remoteHead(ctx, service.github_repo_url, branch);
+    if (!isCommitSha(commit)) commit = null;
+  } catch {
+    commit = null;
+  }
+  const queued = enqueueCiRun(ctx, {
+    serviceId: pipeline.service_id,
+    commit,
+    branch,
+    trigger: "manual",
+    deployAfter: false
+  });
+  return { id: queued.id };
+}
+
+export function requestCancelCiRun(ctx: AppContext, runId: string): void {
+  const run = ctx.db.prepare("SELECT * FROM ci_runs WHERE id = ?").get(runId) as RunRow | undefined;
+  if (!run) throw httpError(404, "CI run not found");
+  if (run.status !== "queued" && run.status !== "running") {
+    throw httpError(409, "This run has already finished.");
+  }
+  const now = nowIso();
+  if (run.status === "queued") {
+    ctx.db
+      .prepare(
+        `UPDATE ci_runs SET status = 'cancelled', cancel_requested = 1, finished_at = ?, error = 'Cancelled' WHERE id = ?`
+      )
+      .run(now, runId);
+    emitRun(ctx, runId, "cancelled", run.service_id);
+    reportStatus(ctx, run, "error", "Cancelled");
+    return;
+  }
+  ctx.db.prepare("UPDATE ci_runs SET cancel_requested = 1 WHERE id = ?").run(runId);
+}
+
+function projectSecrets(ctx: AppContext, projectId: string | null): Record<string, string> {
+  if (!projectId) return {};
+  let rows: Array<{ key: string; value: string; is_secret: number }> = [];
+  try {
+    rows = ctx.db
+      .prepare("SELECT key, value, is_secret FROM project_env_vars WHERE project_id = ?")
+      .all(projectId) as Array<{ key: string; value: string; is_secret: number }>;
+  } catch {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    out[row.key] = row.is_secret ? decryptSecret(row.value, ctx.config.secretKey) : row.value;
+  }
+  return out;
+}
+
+function secretBag(ctx: AppContext, serviceId: string, projectId: string | null): Record<string, string> {
+  return { ...projectSecrets(ctx, projectId), ...getServiceEnv(ctx, serviceId, true) };
+}
+
+function githubPat(ctx: AppContext): string | null {
+  try {
+    return getSecretSetting(ctx, "github_pat");
+  } catch {
+    return null;
+  }
+}
+
+async function remoteHead(ctx: AppContext, repoUrl: string, branch: string): Promise<string | null> {
+  const git = simpleGit().env(buildGitEnv(ctx) as Record<string, string>);
+  const authed = injectGitCredentials(ctx, repoUrl);
+  const remotes = await git.listRemote(["--heads", authed, branch]);
+  return remotes.split("\t")[0]?.trim() || null;
+}
+
+class CiAbortError extends Error {
+  constructor() {
+    super("CI stopped");
+    this.name = "CiAbortError";
+  }
+}
+
+function runGit(
+  args: string[],
+  options: { cwd?: string; env: NodeJS.ProcessEnv; signal?: AbortSignal }
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new CiAbortError());
+      return;
+    }
+    // Own process group, so a stop also kills git-remote-https and ssh, which
+    // hold the pipes open and would keep "close" from ever firing.
+    const child = spawn("git", args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32"
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (buf: Buffer) => {
+      stdout += buf.toString("utf8");
+    });
+    child.stderr?.on("data", (buf: Buffer) => {
+      stderr += buf.toString("utf8");
+    });
+    const kill = () => {
+      killProcessTree(child.pid, () => child.kill("SIGKILL"));
+      // Do not wait for "close": a stuck descendant can keep the pipes open.
+      reject(new CiAbortError());
+    };
+    options.signal?.addEventListener("abort", kill, { once: true });
+    child.on("error", (error) => {
+      options.signal?.removeEventListener("abort", kill);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      options.signal?.removeEventListener("abort", kill);
+      if (options.signal?.aborted) {
+        reject(new CiAbortError());
+        return;
+      }
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr.trim() || `git ${args[0] ?? "command"} exited ${code}`));
+    });
+  });
+}
+
+function killProcessTree(pid: number | undefined, fallback: () => void): void {
+  if (pid && process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL");
+      return;
+    } catch {
+      /* group already gone; fall through */
+    }
+  }
+  const runFallback = (): void => {
+    try {
+      fallback();
+    } catch {
+      /* already exited */
+    }
+  };
+  if (pid && process.platform === "win32") {
+    // taskkill /T walks the tree from this pid, so the parent must still be
+    // alive when it runs: only fall back to killing it directly if taskkill fails.
+    try {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+      killer.on("error", runFallback);
+      killer.on("exit", (code) => {
+        if (code !== 0) runFallback();
+      });
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  runFallback();
+}
+
+/**
+ * Settle as soon as the signal fires, even if `work` ignores it. The caller
+ * keeps one deadline across checkout, image pull and the job, and its slot
+ * is not held by a step that never returns.
+ */
+export function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(new CiAbortError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new CiAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+/** Returns the commit that is checked out. */
+export async function checkoutCiWorkspace(input: CheckoutInput): Promise<string> {
+  if (input.signal?.aborted) throw new CiAbortError();
+  await fs.promises.rm(input.dir, { recursive: true, force: true });
+  if (input.signal?.aborted) throw new CiAbortError();
+  ensureDir(path.dirname(input.dir));
+  const env = input.gitEnv;
+  const gitError = (error: unknown): Error => {
+    if (error instanceof CiAbortError) return error;
+    return new Error(redactSecrets(serializeError(error), input.redactions));
+  };
+  if (input.commit && !isCommitSha(input.commit)) throw new Error("Not a commit id.");
+  if (input.ref) {
+    // Pull requests: fetch only the PR head (shallow), never a branch clone.
+    if (!isPullRequestRef(input.ref)) throw new Error("Not a pull request ref.");
+    try {
+      ensureDir(input.dir);
+      await runGit(["init", "--quiet", input.dir], { env, signal: input.signal });
+      await runGit(["remote", "add", "origin", input.repoUrl], { cwd: input.dir, env, signal: input.signal });
+      await runGit(["fetch", "--depth", "1", "--no-tags", "origin", input.ref], {
+        cwd: input.dir,
+        env,
+        signal: input.signal
+      });
+      await runGit(["checkout", "--quiet", "--detach", "FETCH_HEAD"], {
+        cwd: input.dir,
+        env,
+        signal: input.signal
+      });
+    } catch (error) {
+      throw gitError(error);
+    }
+  } else {
+    try {
+      await runGit(
+        [
+          "clone",
+          "--branch",
+          input.branch,
+          "--single-branch",
+          "--depth",
+          "1",
+          "--",
+          input.repoUrl,
+          input.dir
+        ],
+        { env, signal: input.signal }
+      );
+    } catch (error) {
+      throw gitError(error);
+    }
+  }
+  let head = "";
+  try {
+    head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
+  } catch (error) {
+    throw gitError(error);
+  }
+  if (input.commit) {
+    if (!commitsMatch(head, input.commit)) {
+      try {
+        await runGit(["fetch", "--depth", "1", "origin", input.commit], {
+          cwd: input.dir,
+          env,
+          signal: input.signal
+        });
+        await runGit(["checkout", "--detach", input.commit], { cwd: input.dir, env, signal: input.signal });
+        head = (await runGit(["rev-parse", "HEAD"], { cwd: input.dir, env, signal: input.signal })).trim();
+      } catch (error) {
+        throw gitError(error);
+      }
+      if (!commitsMatch(head, input.commit)) {
+        throw new Error(`Checked out ${head.slice(0, 7)}, expected ${input.commit.slice(0, 7)}.`);
+      }
+    }
+  }
+  const publicUrl = stripGitCredentials(input.repoUrl);
+  try {
+    await runGit(["remote", "set-url", "origin", publicUrl], { cwd: input.dir, env, signal: input.signal });
+  } catch (error) {
+    throw gitError(error);
+  }
+  return head;
+}
+
+function safeRemoveWorkspace(ctx: AppContext, dir: string): void {
+  const root = path.resolve(workRoot(ctx));
+  const target = path.resolve(dir);
+  if (target !== root && !target.startsWith(root + path.sep)) return;
+  fs.rmSync(target, { recursive: true, force: true });
+}
+
+function isCancelled(ctx: AppContext, runId: string): boolean {
+  const row = ctx.db.prepare("SELECT cancel_requested FROM ci_runs WHERE id = ?").get(runId) as
+    | { cancel_requested: number }
+    | undefined;
+  return !row || row.cancel_requested === 1;
+}
+
+/** A newer run in the same lane (pull requests and other branches do not count). */
+function hasNewerActiveRun(ctx: AppContext, run: RunRow): boolean {
+  const newer = ctx.db
+    .prepare(
+      `SELECT id FROM ci_runs
+       WHERE service_id = ? AND id != ? AND created_at > ? AND status IN ('queued', 'running')
+         AND COALESCE(lane, 'push:' || COALESCE(branch, 'main')) = ?
+       LIMIT 1`
+    )
+    .get(run.service_id, run.id, run.created_at, run.lane ?? laneForPush(run.branch || "main")) as
+    | { id: string }
+    | undefined;
+  return Boolean(newer);
+}
+
+async function defaultSandbox(ctx: AppContext): Promise<DockerSandbox> {
+  const { dockerCiSandbox } = await import("./ciDocker.js");
+  return dockerCiSandbox(ctx.docker);
+}
+
+async function defaultDeploy(ctx: AppContext, input: CiDeployInput): Promise<{ status: string }> {
+  const { deployFromGit, applyPostDeployServiceState } = await import("./deploy.js");
+  const trigger = input.trigger === "manual" ? "gitops-poller" : input.trigger;
+  const deployment = await deployFromGit(ctx, input.serviceId, input.repoUrl, input.branch, trigger, {
+    commit: input.commit
+  });
+  await applyPostDeployServiceState(ctx, input.serviceId, deployment, { startAfterDeploy: true });
+  if (deployment.status !== "success") {
+    const log = deployment.build_log?.trim() ?? "";
+    const tail = log ? log.split("\n").slice(-5).join("\n") : "Deploy failed";
+    throw new Error(tail.slice(0, 1500));
+  }
+  return deployment;
+}
+
+function serviceLog(
+  ctx: AppContext,
+  serviceId: string,
+  level: "info" | "warn" | "error",
+  message: string
+): void {
+  try {
+    insertLog(ctx, serviceId, level, message);
+  } catch {
+    /* a missing logs table must not fail the CI result */
+  }
+}
+
+function notify(
+  ctx: AppContext,
+  input: { severity: "success" | "error" | "warning"; title: string; body: string; serviceId: string }
+): void {
+  try {
+    createNotification(ctx, { kind: "deployment", ...input });
+  } catch {
+    /* notifications are best-effort */
+  }
+}
+
+type StatusRun = Pick<RunRow, "id" | "commit_hash" | "pipeline_id" | "service_id">;
+
+/**
+ * Post a commit status for this run. Fire and forget: errors become a warning
+ * on the run, never a failure.
+ */
+function reportStatus(ctx: AppContext, run: StatusRun, state: CommitState, description: string): void {
+  let target: { repoUrl: string | null; pipelineName: string } | undefined;
+  try {
+    target = ctx.db
+      .prepare(
+        `SELECT s.github_repo_url AS repoUrl, p.name AS pipelineName
+         FROM ci_pipelines p JOIN services s ON s.id = p.service_id WHERE p.id = ?`
+      )
+      .get(run.pipeline_id) as { repoUrl: string | null; pipelineName: string } | undefined;
+  } catch {
+    return;
+  }
+  if (!target?.repoUrl) return;
+  void reportCommitStatus(
+    ctx,
+    { runId: run.id, repoUrl: target.repoUrl, commit: run.commit_hash, pipelineName: target.pipelineName },
+    state,
+    description
+  ).then((result) => {
+    if (result.ok || !("warning" in result)) return;
+    try {
+      const info = ctx.db
+        .prepare("UPDATE ci_runs SET status_warning = ? WHERE id = ? AND status_warning IS NULL")
+        .run(result.warning.slice(0, 500), run.id) as { changes?: number };
+      if (info.changes) serviceLog(ctx, run.service_id, "warn", `CI: ${result.warning}`);
+    } catch {
+      /* the run may be gone */
+    }
+  });
+}
+
+function humanDuration(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+/** Jobs holding (or about to hold) host capacity: run id -> requested size. */
+const reservations = new Map<string, JobSize>();
+const runRepoKeys = new Map<string, string>();
+let capacityNote: string | null = null;
+
+export function ciSchedulerState(ctx: AppContext) {
+  const host = detectHostCapacity();
+  const settings = readCiCapacitySettings(ctx);
+  return {
+    host,
+    settings,
+    effectiveMaxConcurrent: effectiveMaxConcurrent(settings, host),
+    running: reservations.size,
+    reservedMemoryMb: [...reservations.values()].reduce((sum, job) => sum + job.memoryMb, 0),
+    reservedCpus: [...reservations.values()].reduce((sum, job) => sum + job.cpus, 0),
+    waiting: capacityNote
+  };
+}
+
+export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDeps = {}): Promise<void> {
+  const run = ctx.db.prepare("SELECT * FROM ci_runs WHERE id = ?").get(runId) as RunRow | undefined;
+  if (!run || run.status !== "running") return;
+  const pipeline = ctx.db.prepare("SELECT * FROM ci_pipelines WHERE id = ?").get(run.pipeline_id) as
+    | PipelineRow
+    | undefined;
+  const service = ctx.db
+    .prepare("SELECT id, name, project_id, github_repo_url, github_branch FROM services WHERE id = ?")
+    .get(run.service_id) as
+    | {
+        id: string;
+        name: string;
+        project_id?: string | null;
+        github_repo_url?: string | null;
+        github_branch?: string | null;
+      }
+    | undefined;
+
+  const workspace = path.join(workRoot(ctx), runId);
+  // An automatic pipeline stays silent on GitHub until the commit turns out to have ci.yml.
+  let quiet = pipeline?.auto_created === 1;
+  const fail = (message: string, failureStep: string | null = null, state: CommitState = "error") => {
+    const now = nowIso();
+    ctx.db
+      .prepare(
+        `UPDATE ci_run_steps SET status = 'skipped', finished_at = ? WHERE run_id = ? AND status IN ('pending', 'running')`
+      )
+      .run(now, runId);
+    ctx.db
+      .prepare(
+        `UPDATE ci_runs SET status = 'failed', error = ?, failure_step = ?, finished_at = ? WHERE id = ? AND status = 'running'`
+      )
+      .run(message.slice(0, 2000), failureStep, now, runId);
+    emitRun(ctx, runId, "failed", run.service_id);
+    if (!quiet) reportStatus(ctx, run, state, message);
+    serviceLog(ctx, run.service_id, "error", `CI failed: ${message}`);
+    notify(ctx, {
+      severity: "error",
+      title: `CI failed${service?.name ? `: ${service.name}` : ""}`,
+      body: message,
+      serviceId: run.service_id
+    });
+  };
+
+  let started = Date.now();
+  const abort = new AbortController();
+  let timeoutMinutes = pipeline?.timeout_minutes || DEFAULT_CI_TIMEOUT_MINUTES;
+  let stopWatch: ReturnType<typeof setInterval> | undefined;
+  let diskWatch: ReturnType<typeof setInterval> | undefined;
+  let finishLogs = (): void => undefined;
+  /** Waiting for host capacity does not count toward the job's timeout. */
+  let waitingForCapacity = false;
+  let stopReason: "disk" | null = null;
+  const capacity = readCiCapacitySettings(ctx);
+  const timedOutMessage = (): string =>
+    stopReason === "disk"
+      ? `The workspace grew past ${capacity.workspaceMaxMb} MB and the job was stopped.`
+      : `Timed out after ${timeoutMinutes} minutes.`;
+
+  try {
+    if (!pipeline || !service?.github_repo_url) {
+      fail("The pipeline or its repository is gone.");
+      return;
+    }
+    if (isCancelled(ctx, runId)) {
+      markCancelled(ctx, run);
+      return;
+    }
+
+    stopWatch = setInterval(() => {
+      if (abort.signal.aborted) return;
+      if (isCancelled(ctx, runId)) abort.abort();
+      else if (!waitingForCapacity && Date.now() - started >= timeoutMinutes * 60_000) abort.abort();
+    }, 250);
+    stopWatch.unref();
+    if (!quiet) reportStatus(ctx, run, "pending", "Running on ServerHoster");
+
+    // Bind-mounted workspaces cannot be size-limited by Docker, so check it.
+    let measuring = false;
+    diskWatch = setInterval(() => {
+      if (measuring || abort.signal.aborted) return;
+      measuring = true;
+      const limit = capacity.workspaceMaxMb * 1024 * 1024;
+      void dirSize(workspace, limit)
+        .then((size) => {
+          if (size > limit && !abort.signal.aborted) {
+            stopReason = "disk";
+            abort.abort();
+          }
+        })
+        .finally(() => {
+          measuring = false;
+        });
+    }, 30_000);
+    diskWatch.unref();
+
+    const branch = run.branch || service.github_branch || "main";
+    const pat = githubPat(ctx);
+    const authedUrl = injectGitCredentials(ctx, service.github_repo_url);
+    const redactions = [pat, authedUrl].filter((value): value is string => Boolean(value));
+    serviceLog(
+      ctx,
+      service.id,
+      "info",
+      `CI: checking out ${branch}${run.commit_hash ? ` @ ${run.commit_hash.slice(0, 7)}` : ""}.`
+    );
+    const checkout = deps.checkout ?? checkoutCiWorkspace;
+    const checkedOut = await untilAborted(
+      checkout({
+        dir: workspace,
+        repoUrl: authedUrl,
+        branch,
+        commit: run.commit_hash,
+        ref: run.git_ref,
+        gitEnv: buildGitEnv(ctx),
+        redactions,
+        signal: abort.signal
+      }),
+      abort.signal
+    );
+    // A run queued without a commit (a webhook with no `after`, or a manual run
+    // whose ls-remote failed) tests whatever the branch head was at checkout.
+    // Record that commit, so the gate deploys exactly it and the head check runs.
+    if (!run.commit_hash && isCommitSha(checkedOut)) {
+      run.commit_hash = checkedOut;
+      ctx.db.prepare("UPDATE ci_runs SET commit_hash = ? WHERE id = ?").run(checkedOut, runId);
+      if (!quiet) reportStatus(ctx, run, "pending", "Running on ServerHoster");
+    }
+
+    let source = pipeline.inline_config ?? "";
+    if (pipeline.config_source !== "inline") {
+      const read = readRepoCiConfig(workspace);
+      if ("error" in read) {
+        if (pipeline.auto_created && read.missing) {
+          ctx.db
+            .prepare(
+              `UPDATE ci_runs SET status = 'skipped', error = ?, finished_at = ? WHERE id = ? AND status = 'running'`
+            )
+            .run(`No ${CI_CONFIG_PATH} in this commit; nothing to run.`, nowIso(), runId);
+          emitRun(ctx, runId, "skipped", run.service_id);
+          return;
+        }
+        fail(read.error);
+        return;
+      }
+      source = read.source;
+    }
+    // The commit has a config (or the pipeline is inline): report on GitHub from here on,
+    // so a broken ci.yml shows up on the commit too.
+    if (quiet) {
+      quiet = false;
+      reportStatus(ctx, run, "pending", "Running on ServerHoster");
+    }
+    const config = parseCiConfig(source, defaultsOf(pipeline));
+    timeoutMinutes = config.timeoutMinutes;
+    if (isCancelled(ctx, runId)) {
+      markCancelled(ctx, run);
+      return;
+    }
+    if (abort.signal.aborted || Date.now() - started >= timeoutMinutes * 60_000) {
+      fail(timedOutMessage(), stopReason ?? "timeout", "failure");
+      return;
+    }
+    ctx.db.prepare("UPDATE ci_runs SET config_snapshot = ? WHERE id = ?").run(
+      JSON.stringify({
+        image: config.image,
+        timeoutMinutes: config.timeoutMinutes,
+        memoryMb: config.memoryMb,
+        cpus: config.cpus,
+        steps: config.steps.map((step) => step.name),
+        secrets: config.secrets
+      }),
+      runId
+    );
+
+    config.steps.forEach((step, position) => {
+      ctx.db
+        .prepare(
+          `INSERT INTO ci_run_steps (id, run_id, position, name, status, log, started_at, finished_at)
+           VALUES (?, ?, ?, ?, 'pending', '', NULL, NULL)`
+        )
+        .run(nanoid(), runId, position, step.name);
+    });
+
+    const available = secretBag(ctx, service.id, service.project_id ?? null);
+    const built = buildCiEnv(config, available, {
+      commit: run.commit_hash,
+      branch,
+      serviceName: service.name
+    });
+    const hide = [...redactions, ...built.redactions];
+    const logs = new Map<number, string>();
+    let lastFlush = 0;
+    const stepId = (position: number): string | undefined => {
+      const row = ctx.db
+        .prepare("SELECT id FROM ci_run_steps WHERE run_id = ? AND position = ?")
+        .get(runId, position) as { id: string } | undefined;
+      return row?.id;
+    };
+    const flush = (force: boolean) => {
+      const at = Date.now();
+      if (!force && at - lastFlush < 1000) return;
+      lastFlush = at;
+      const setup = logs.get(-1);
+      if (setup !== undefined)
+        ctx.db.prepare("UPDATE ci_runs SET setup_log = ? WHERE id = ?").run(setup, runId);
+      for (const [position, text] of logs) {
+        if (position < 0) continue;
+        ctx.db
+          .prepare("UPDATE ci_run_steps SET log = ? WHERE run_id = ? AND position = ?")
+          .run(text, runId, position);
+      }
+    };
+    const redactors = new Map<number, ReturnType<typeof createLogRedactor>>();
+    const publish = (position: number, clean: string) => {
+      if (!clean) return;
+      logs.set(position, capLog(logs.get(position) ?? "", clean));
+      broadcast(ctx, {
+        type: "ci_log",
+        runId,
+        stepId: position < 0 ? null : stepId(position),
+        stepIndex: position,
+        line: clean,
+        timestamp: Date.now()
+      });
+      flush(false);
+    };
+    const write = (position: number, chunk: string) => {
+      let redactor = redactors.get(position);
+      if (!redactor) {
+        redactor = createLogRedactor(hide);
+        redactors.set(position, redactor);
+      }
+      publish(position, redactor.push(sanitizeLogChunk(chunk)));
+    };
+    finishLogs = () => {
+      for (const [position, redactor] of redactors) publish(position, redactor.flush());
+      flush(true);
+    };
+
+    // The claim reserved the pipeline's defaults; ci.yml may ask for more.
+    const want: JobSize = { memoryMb: config.memoryMb, cpus: config.cpus };
+    const waitStart = Date.now();
+    waitingForCapacity = true;
+    let waitedNote = false;
+    for (;;) {
+      const others = [...reservations.entries()].filter(([id]) => id !== runId).map(([, size]) => size);
+      const admission = admitJob(others, want, detectHostCapacity(), readCiCapacitySettings(ctx));
+      if (admission.admit) break;
+      if (!waitedNote) {
+        write(-1, `Waiting for host capacity: ${admission.reason}.\n`);
+        waitedNote = true;
+      }
+      if (isCancelled(ctx, runId) || abort.signal.aborted) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    reservations.set(runId, want);
+    waitingForCapacity = false;
+    started += Date.now() - waitStart;
+    if (isCancelled(ctx, runId)) {
+      markCancelled(ctx, run);
+      return;
+    }
+
+    // Per-repo dependency cache, and an unprivileged owner when we are root.
+    let cacheDir: string | null = null;
+    if (capacity.cacheMaxMb > 0) {
+      try {
+        cacheDir = await ensureRepoCacheDir(ctx, service.github_repo_url);
+        runRepoKeys.set(runId, repoCacheKey(service.github_repo_url));
+      } catch (error) {
+        write(-1, `Dependency cache unavailable: ${serializeError(error)}\n`);
+      }
+    }
+    if (process.platform === "linux" && typeof process.getuid === "function" && process.getuid() === 0) {
+      const { CI_ROOT_FALLBACK_UID } = await import("./ciDocker.js");
+      await untilAborted(chownTree(workspace, CI_ROOT_FALLBACK_UID, CI_ROOT_FALLBACK_UID), abort.signal);
+      if (cacheDir) {
+        await untilAborted(chownTree(cacheDir, CI_ROOT_FALLBACK_UID, CI_ROOT_FALLBACK_UID), abort.signal);
+      }
+    }
+
+    const sandbox = deps.sandbox ?? (await defaultSandbox(ctx));
+    const remaining = Math.max(1_000, timeoutMinutes * 60_000 - (Date.now() - started));
+    // The sandbox watches the signal itself; the race makes sure a Docker call
+    // that never answers cannot keep the run, its slot or its workspace alive.
+    if (!deps.sandbox) {
+      abort.signal.addEventListener(
+        "abort",
+        () => {
+          void removeRunContainers(ctx, runId);
+        },
+        { once: true }
+      );
+    }
+    const result = await untilAborted(
+      sandbox.run({
+        runId,
+        image: config.image,
+        workspace,
+        env: built.env,
+        timeoutMs: remaining,
+        signal: abort.signal,
+        memoryMb: config.memoryMb,
+        cpus: config.cpus,
+        cacheDir,
+        readonlyRootfs: capacity.readonlyRootfs,
+        hostCpus: detectHostCapacity().cpus,
+        steps: config.steps,
+        onSetupLog: (chunk) => write(-1, chunk),
+        onLog: (index, chunk) => write(index, chunk),
+        onStep: (index, status, exitCode) => {
+          const stamp = nowIso();
+          ctx.db
+            .prepare(
+              `UPDATE ci_run_steps SET status = ?, exit_code = ?,
+               started_at = COALESCE(started_at, ?),
+               finished_at = CASE WHEN ? IN ('passed', 'failed', 'skipped') THEN ? ELSE finished_at END
+             WHERE run_id = ? AND position = ?`
+            )
+            .run(status, exitCode, stamp, status, stamp, runId, index);
+        },
+        isCancelled: () => isCancelled(ctx, runId)
+      }),
+      abort.signal
+    );
+    finishLogs();
+
+    if (result.cancelled || isCancelled(ctx, runId)) {
+      markCancelled(ctx, run);
+      return;
+    }
+    if (result.timedOut) {
+      fail(timedOutMessage(), stopReason ?? "timeout", "failure");
+      return;
+    }
+    if (result.failedStep !== null) {
+      const name = config.steps[result.failedStep]?.name ?? "step";
+      fail(`Step "${name}" failed.`, name, "failure");
+      return;
+    }
+
+    ctx.db
+      .prepare(`UPDATE ci_runs SET status = 'passed', finished_at = ?, error = NULL WHERE id = ?`)
+      .run(nowIso(), runId);
+    emitRun(ctx, runId, "passed", run.service_id);
+    reportStatus(ctx, run, "success", `Passed in ${humanDuration(Date.now() - started)}`);
+    serviceLog(
+      ctx,
+      service.id,
+      "info",
+      `CI passed${run.commit_hash ? ` for ${run.commit_hash.slice(0, 7)}` : ""}.`
+    );
+    notify(ctx, {
+      severity: "success",
+      title: `CI passed: ${service.name}`,
+      body: run.commit_hash ? `Commit ${run.commit_hash.slice(0, 7)} on ${branch}.` : `Branch ${branch}.`,
+      serviceId: service.id
+    });
+
+    const fresh = ctx.db.prepare("SELECT deploy_after FROM ci_runs WHERE id = ?").get(runId) as
+      | { deploy_after: number }
+      | undefined;
+    if (fresh?.deploy_after) {
+      ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'pending' WHERE id = ?").run(runId);
+      await deployIfCurrent(
+        ctx,
+        { ...run, branch, deploy_after: fresh.deploy_after },
+        service.github_repo_url,
+        deps
+      );
+    }
+  } catch (error) {
+    if (isCancelled(ctx, runId)) markCancelled(ctx, run);
+    else if (abort.signal.aborted || error instanceof CiAbortError) {
+      fail(timedOutMessage(), stopReason ?? "timeout", "failure");
+    } else {
+      fail(redactSecrets(serializeError(error), [githubPat(ctx)]));
+    }
+  } finally {
+    if (stopWatch) clearInterval(stopWatch);
+    if (diskWatch) clearInterval(diskWatch);
+    reservations.delete(runId);
+    finishLogs();
+    safeRemoveWorkspace(ctx, workspace);
+    const repoKey = runRepoKeys.get(runId);
+    runRepoKeys.delete(runId);
+    if (repoKey) scheduleCachePrune(ctx, repoKey);
+  }
+}
+
+const lastPrune = new Map<string, number>();
+
+/** At most hourly per repo, and never while one of its jobs is running. */
+function scheduleCachePrune(ctx: AppContext, repoKey: string): void {
+  const now = Date.now();
+  if (now - (lastPrune.get(repoKey) ?? 0) < 60 * 60_000) return;
+  lastPrune.set(repoKey, now);
+  const busy = new Set(runRepoKeys.values());
+  void pruneCaches(ctx, { maxMb: readCiCapacitySettings(ctx).cacheMaxMb, busy, onlyKey: repoKey })
+    .then((removed) => {
+      if (removed.length) ctx.app.log.info({ removed }, "CI: dependency cache over its size cap, cleared");
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * Read `.survhub/ci.yml` from the checkout without following a symlink out of
+ * it. A repo could otherwise point the file at a host path and get its
+ * contents echoed back in the parse error.
+ */
+function readRepoCiConfig(workspace: string): { source: string } | { error: string; missing?: boolean } {
+  const missing = `No ${CI_CONFIG_PATH} in this commit. Add that file, or switch the pipeline to inline config.`;
+  const filePath = path.join(workspace, CI_CONFIG_PATH);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch {
+    return { error: missing, missing: true };
+  }
+  if (!stat.isFile()) return { error: `${CI_CONFIG_PATH} must be a regular file, not a link or directory.` };
+  try {
+    const root = fs.realpathSync(workspace);
+    const real = fs.realpathSync(filePath);
+    if (!real.startsWith(root + path.sep)) {
+      return { error: `${CI_CONFIG_PATH} must be inside the repository.` };
+    }
+    return { source: fs.readFileSync(real, "utf8") };
+  } catch {
+    return { error: missing };
+  }
+}
+
+async function removeRunContainers(ctx: AppContext, runId: string): Promise<void> {
+  try {
+    const { removeCiRunContainers } = await import("./ciDocker.js");
+    await removeCiRunContainers(ctx.docker, runId);
+  } catch (error) {
+    ctx.app.log.warn({ err: error, runId }, "CI: could not remove the run container");
+  }
+}
+
+function markCancelled(ctx: AppContext, run: RunRow): void {
+  ctx.db
+    .prepare(
+      `UPDATE ci_runs SET status = 'cancelled', cancel_requested = 1, finished_at = ?, error = 'Cancelled'
+       WHERE id = ? AND status IN ('queued', 'running')`
+    )
+    .run(nowIso(), run.id);
+  emitRun(ctx, run.id, "cancelled", run.service_id);
+  reportStatus(ctx, run, "error", "Cancelled");
+  serviceLog(ctx, run.service_id, "warn", "CI run cancelled.");
+}
+
+async function deployIfCurrent(
+  ctx: AppContext,
+  run: RunRow,
+  repoUrl: string,
+  deps: CiRunDeps
+): Promise<void> {
+  const branch = run.branch || "main";
+  const deployBranch = deployBranchOf(ctx, run.service_id);
+  if (
+    run.event === "pull_request" ||
+    branch !== deployBranch ||
+    (run.lane && run.lane !== laneForPush(deployBranch))
+  ) {
+    ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
+    serviceLog(
+      ctx,
+      run.service_id,
+      "warn",
+      `CI passed on ${branch}, which is not the deploy branch — not deploying.`
+    );
+    return;
+  }
+  if (draining) {
+    ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
+    serviceLog(ctx, run.service_id, "warn", "CI passed while ServerHoster is shutting down — not deploying.");
+    return;
+  }
+  if (hasNewerActiveRun(ctx, run)) {
+    ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
+    serviceLog(
+      ctx,
+      run.service_id,
+      "info",
+      "CI passed, but a newer commit is already queued — not deploying this one."
+    );
+    return;
+  }
+  try {
+    const head = deps.remoteHead
+      ? await deps.remoteHead(repoUrl, branch)
+      : await remoteHead(ctx, repoUrl, branch);
+    if (run.commit_hash && !commitsMatch(head, run.commit_hash)) {
+      ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'skipped' WHERE id = ?").run(run.id);
+      serviceLog(
+        ctx,
+        run.service_id,
+        "info",
+        `CI passed for ${run.commit_hash.slice(0, 7)}, but ${branch} has moved. Waiting for the newer commit.`
+      );
+      return;
+    }
+    const deploy = deps.deploy ?? ((input) => defaultDeploy(ctx, input));
+    const deployed = await deploy({
+      serviceId: run.service_id,
+      repoUrl,
+      branch,
+      trigger: (run.trigger_source as CiTrigger) || "gitops-poller",
+      commit: run.commit_hash
+    });
+    if (deployed && deployed.status !== "success") {
+      throw new Error("Deploy failed");
+    }
+    ctx.db.prepare("UPDATE ci_runs SET deploy_status = 'success' WHERE id = ?").run(run.id);
+    serviceLog(ctx, run.service_id, "info", "CI passed — deploying this commit.");
+  } catch (error) {
+    const message = redactSecrets(serializeError(error), [githubPat(ctx)]);
+    ctx.db
+      .prepare("UPDATE ci_runs SET deploy_status = 'failed', error = ? WHERE id = ?")
+      .run(message.slice(0, 2000), run.id);
+    serviceLog(ctx, run.service_id, "error", `CI passed but deploy failed: ${message}`);
+    notify(ctx, {
+      severity: "error",
+      title: "CI passed, deploy failed",
+      body: message,
+      serviceId: run.service_id
+    });
+  }
+}
+
+const inflight = new Set<string>();
+const inflightJobs = new Map<string, Promise<void>>();
+let filling = false;
+let autostart = true;
+let draining = false;
+
+/** Tests disable this so queueing a run does not clone a repository. */
+export function setCiAutostart(enabled: boolean): void {
+  autostart = enabled;
+  draining = false;
+}
+
+/**
+ * Claim the oldest queued run if `admit` lets it start. Strict FIFO: when the
+ * oldest run does not fit, nothing behind it jumps the queue.
+ */
+function claimNext(ctx: AppContext, admit: (size: JobSize) => boolean): { id: string; size: JobSize } | null {
+  for (;;) {
+    const row = ctx.db
+      .prepare(
+        `SELECT r.id, r.service_id, r.cancel_requested, p.memory_mb, p.cpus
+         FROM ci_runs r LEFT JOIN ci_pipelines p ON p.id = r.pipeline_id
+         WHERE r.status = 'queued' ORDER BY r.created_at ASC LIMIT 1`
+      )
+      .get() as
+      | {
+          id: string;
+          service_id: string;
+          cancel_requested: number;
+          memory_mb: number | null;
+          cpus: number | null;
+        }
+      | undefined;
+    if (!row) return null;
+    if (row.cancel_requested) {
+      ctx.db
+        .prepare(
+          `UPDATE ci_runs SET status = 'cancelled', finished_at = ?, error = 'Cancelled' WHERE id = ? AND status = 'queued'`
+        )
+        .run(nowIso(), row.id);
+      emitRun(ctx, row.id, "cancelled", row.service_id);
+      continue;
+    }
+    const size: JobSize = {
+      memoryMb: row.memory_mb || DEFAULT_CI_MEMORY_MB,
+      cpus: row.cpus || DEFAULT_CI_CPUS
+    };
+    if (!admit(size)) return null;
+    const info = ctx.db
+      .prepare(`UPDATE ci_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`)
+      .run(nowIso(), row.id) as { changes?: number };
+    if (!info.changes) continue;
+    emitRun(ctx, row.id, "running", row.service_id);
+    return { id: row.id, size };
+  }
+}
+
+type CiExecutor = (ctx: AppContext, runId: string) => Promise<void>;
+let executor: CiExecutor = (ctx, runId) => executeCiRun(ctx, runId);
+
+/** Tests replace the executor to exercise the scheduler without Docker or git. */
+export function setCiExecutorForTests(next: CiExecutor | null): void {
+  executor = next ?? ((ctx, runId) => executeCiRun(ctx, runId));
+}
+
+export function kickCi(ctx: AppContext): void {
+  if (!autostart || draining || filling) return;
+  filling = true;
+  try {
+    const settings = readCiCapacitySettings(ctx);
+    while (!draining && autostart) {
+      let blocked: string | null = null;
+      const claimed = claimNext(ctx, (size) => {
+        const admission = admitJob([...reservations.values()], size, detectHostCapacity(), settings);
+        if (!admission.admit) blocked = admission.reason;
+        return admission.admit;
+      });
+      capacityNote = blocked;
+      if (!claimed) return;
+      const id = claimed.id;
+      inflight.add(id);
+      reservations.set(id, claimed.size);
+      const job = executor(ctx, id)
+        .catch((error) => {
+          try {
+            ctx.app.log.error({ err: error }, "CI run failed");
+          } catch {
+            /* test contexts may not have a logger */
+          }
+        })
+        .finally(() => {
+          inflight.delete(id);
+          inflightJobs.delete(id);
+          reservations.delete(id);
+          kickCi(ctx);
+        });
+      inflightJobs.set(id, job);
+    }
+  } finally {
+    filling = false;
+  }
+}
+
+export function recoverCi(ctx: AppContext): void {
+  ctx.db
+    .prepare(`DELETE FROM ci_run_steps WHERE run_id IN (SELECT id FROM ci_runs WHERE status = 'running')`)
+    .run();
+  ctx.db
+    .prepare(
+      `UPDATE ci_runs SET status = 'queued', started_at = NULL, setup_log = '' WHERE status = 'running'`
+    )
+    .run();
+}
+
+export function startCiLoop(ctx: AppContext): () => Promise<void> {
+  draining = false;
+  autostart = true;
+  ensureCiSchema(ctx.db);
+  recoverCi(ctx);
+  void import("./ciDocker.js")
+    .then(({ removeCiContainers }) => removeCiContainers(ctx.docker))
+    .catch(() => {
+      /* Docker may be down; the run will say so when it starts */
+    });
+  void import("./ciNetwork.js")
+    .then(({ applyCiFirewall }) => applyCiFirewall())
+    .then((status) => {
+      if (!status.applied) ctx.app.log.warn(`CI: ${status.note}`);
+    })
+    .catch(() => undefined);
+  const prune = () =>
+    void pruneCaches(ctx, {
+      maxMb: readCiCapacitySettings(ctx).cacheMaxMb,
+      busy: new Set(runRepoKeys.values())
+    }).catch(() => undefined);
+  prune();
+  const pruneTimer = setInterval(prune, 6 * 60 * 60_000);
+  pruneTimer.unref();
+  const pending = ctx.db
+    .prepare(
+      `SELECT id FROM ci_runs WHERE status = 'passed' AND deploy_after = 1 AND deploy_status = 'pending'`
+    )
+    .all() as Array<{ id: string }>;
+  for (const row of pending) {
+    const run = ctx.db.prepare("SELECT * FROM ci_runs WHERE id = ?").get(row.id) as RunRow;
+    const service = ctx.db
+      .prepare("SELECT github_repo_url FROM services WHERE id = ?")
+      .get(run.service_id) as { github_repo_url?: string | null } | undefined;
+    if (service?.github_repo_url) {
+      void deployIfCurrent(ctx, run, service.github_repo_url, {}).catch(() => undefined);
+    }
+  }
+  const timer = setInterval(() => kickCi(ctx), 2000);
+  kickCi(ctx);
+  const stopAutoCi = startAutoCi(ctx);
+  return async () => {
+    draining = true;
+    autostart = false;
+    clearInterval(timer);
+    clearInterval(pruneTimer);
+    stopAutoCi();
+    for (const id of inflight) {
+      try {
+        requestCancelCiRun(ctx, id);
+      } catch {
+        /* the run already finished */
+      }
+    }
+    await Promise.allSettled([...inflightJobs.values()]);
+    try {
+      const { removeCiContainers } = await import("./ciDocker.js");
+      await removeCiContainers(ctx.docker);
+    } catch {
+      /* Docker may already be down */
+    }
+  };
+}

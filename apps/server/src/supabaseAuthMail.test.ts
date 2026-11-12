@@ -58,7 +58,10 @@ test("applyAuthMailToToml: leaves an operator's own template section untouched",
   ].join("\n");
   const out = applyAuthMailToToml(before, "https://dinredaktion.dk", SMTP);
   assert.ok(out.includes('subject = "Bekræft din e-mailadresse"'), "keeps the custom subject");
-  assert.ok(out.includes('content_path = "./supabase/templates/da/confirmation.html"'), "keeps the custom path");
+  assert.ok(
+    out.includes('content_path = "./supabase/templates/da/confirmation.html"'),
+    "keeps the custom path"
+  );
   assert.equal(out.match(/\[auth\.email\.template\.confirmation\]/g)?.length, 1, "no duplicate section");
 });
 

@@ -159,7 +159,11 @@ test("resolvePersistedRelPaths: auto can be disabled", async () => {
   try {
     const id = seedService(ctx, { auto: false });
     const clone = makeClone(ctx, id, { "uploads/.keep": "" });
-    assert.deepEqual(resolvePersistedRelPaths(ctx, id, clone), [], "no auto-detect when auto:false and no paths");
+    assert.deepEqual(
+      resolvePersistedRelPaths(ctx, id, clone),
+      [],
+      "no auto-detect when auto:false and no paths"
+    );
     assert.equal(readPersistedConfig(ctx, id).auto, false);
   } finally {
     await gracefulShutdown(ctx);

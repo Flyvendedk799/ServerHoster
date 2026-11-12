@@ -164,8 +164,7 @@ test("GET /services: www is still ranked below the apex", async () => {
  * pinned here rather than depending on a host that reproduces it.
  */
 test("mergeListeners: ss alone still identifies the holder when lsof sees nothing", () => {
-  const ssLine =
-    'LISTEN 0 511 0.0.0.0:3021 0.0.0.0:* users:(("next-server (v1",pid=2519967,fd=21))';
+  const ssLine = 'LISTEN 0 511 0.0.0.0:3021 0.0.0.0:* users:(("next-server (v1",pid=2519967,fd=21))';
   const merged = mergeListeners({ lsof: "", ss: ssLine });
   assert.equal(merged.occupied, true);
   assert.deepEqual(merged.pids, [2519967]);
@@ -376,9 +375,10 @@ test("POST /services/:id/env: setting a key twice replaces it, never duplicates"
 test("env_vars carries a unique index on (service_id, key)", async () => {
   const ctx = await buildApp();
   try {
-    const indexes = ctx.db
-      .prepare("PRAGMA index_list('env_vars')")
-      .all() as Array<{ name: string; unique: number }>;
+    const indexes = ctx.db.prepare("PRAGMA index_list('env_vars')").all() as Array<{
+      name: string;
+      unique: number;
+    }>;
     const unique = indexes.find((i) => i.name === "idx_env_vars_service_key");
     assert.ok(unique, "expected idx_env_vars_service_key");
     assert.equal(unique.unique, 1);

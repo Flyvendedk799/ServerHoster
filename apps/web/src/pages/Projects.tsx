@@ -183,9 +183,7 @@ export function ProjectsPage() {
                             label={s?.running > 0 ? "Healthy" : "Idle"}
                             dotOnly
                           />
-                          <span className="font-semibold">
-                            {s?.running || 0} running
-                          </span>
+                          <span className="font-semibold">{s?.running || 0} running</span>
                         </>
                       )}
                     </div>
