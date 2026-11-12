@@ -168,6 +168,54 @@ describe("CI for every repository: pipelines", { skip }, () => {
   });
 });
 
+describe("CI for every repository: one pipeline per repo", { skip }, () => {
+  function seedSharedRepo(): void {
+    const insert = ctx.db.prepare(
+      "INSERT INTO services (id, name, project_id, github_repo_url, github_branch) VALUES (?, ?, 'proj', ?, ?)"
+    );
+    insert.run("web", "Rentora", "https://github.com/flyvende/HighendEvent", "main");
+    insert.run("api", "Rentora API", "https://github.com/Flyvende/highendevent.git", "main");
+    insert.run("worker", "Rentora Worker", "https://github.com/flyvende/HighendEvent/", "main");
+    insert.run("staging", "Rentora staging", "https://github.com/flyvende/HighendEvent", "staging");
+  }
+
+  test("services sharing a repo and branch get one pipeline; another branch gets its own", async () => {
+    seedSharedRepo();
+    setAutoCiEnabled(ctx, true);
+    assert.equal(await syncAutoCiPipelines(ctx), 2);
+    assert.ok(pipelineOf("web"));
+    assert.equal(pipelineOf("api"), undefined);
+    assert.equal(pipelineOf("worker"), undefined);
+    assert.ok(pipelineOf("staging"));
+    assert.equal(await syncAutoCiPipelines(ctx), 0);
+  });
+
+  test("existing duplicate automatic pipelines are removed, edited ones are kept", async () => {
+    seedSharedRepo();
+    const { createCiPipeline } = await import("./services/ci.js");
+    for (const id of ["web", "api", "worker"]) {
+      createCiPipeline(ctx, { serviceId: id, configSource: "repo", gateDeploy: false, auto: true });
+    }
+    updateCiPipeline(ctx, pipelineOf("worker")!.id, { gateDeploy: true });
+    setAutoCiEnabled(ctx, true);
+    await syncAutoCiPipelines(ctx);
+    assert.equal(pipelineOf("web"), undefined);
+    assert.equal(pipelineOf("api"), undefined);
+    assert.equal(pipelineOf("worker")?.auto_created, 0);
+    assert.ok(pipelineOf("staging"));
+  });
+
+  test("deleting the repo's pipeline does not hand it to a sibling service", async () => {
+    seedSharedRepo();
+    setAutoCiEnabled(ctx, true);
+    await syncAutoCiPipelines(ctx);
+    deleteCiPipeline(ctx, pipelineOf("web")!.id);
+    assert.equal(await syncAutoCiPipelines(ctx), 0);
+    assert.equal(pipelineOf("api"), undefined);
+    assert.equal(pipelineOf("worker"), undefined);
+  });
+});
+
 describe("CI for every repository: triggers", { skip }, () => {
   test("a repo without ci.yml is not queued and not cloned", async () => {
     seedServices();

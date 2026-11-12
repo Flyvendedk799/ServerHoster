@@ -1151,6 +1151,15 @@ function humanDuration(ms: number): string {
 
 /** Jobs holding (or about to hold) host capacity: run id -> requested size. */
 const reservations = new Map<string, JobSize>();
+/**
+ * Runs past the capacity check, i.e. actually using the host. A claimed run
+ * that is still waiting holds a reservation (so the claimer does not over-claim)
+ * but must not count as load for other waiting runs, or two waiting runs can
+ * block each other forever.
+ */
+const admittedRuns = new Set<string>();
+/** Claimed runs waiting for capacity, oldest first. Only the head may start. */
+const capacityWaiters: string[] = [];
 const runRepoKeys = new Map<string, string>();
 let capacityNote: string | null = null;
 
@@ -1413,18 +1422,34 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     const waitStart = Date.now();
     waitingForCapacity = true;
     let waitedNote = false;
-    for (;;) {
-      const others = [...reservations.entries()].filter(([id]) => id !== runId).map(([, size]) => size);
-      const admission = admitJob(others, want, detectHostCapacity(), readCiCapacitySettings(ctx));
-      if (admission.admit) break;
-      if (!waitedNote) {
-        write(-1, `Waiting for host capacity: ${admission.reason}.\n`);
-        waitedNote = true;
+    capacityWaiters.push(runId);
+    try {
+      for (;;) {
+        const admission =
+          capacityWaiters[0] === runId
+            ? admitJob(
+                [...reservations.entries()]
+                  .filter(([id]) => id !== runId && admittedRuns.has(id))
+                  .map(([, size]) => size),
+                want,
+                detectHostCapacity(),
+                readCiCapacitySettings(ctx)
+              )
+            : ({ admit: false, reason: "an earlier job is next in line" } as const);
+        if (admission.admit) break;
+        if (!waitedNote) {
+          write(-1, `Waiting for host capacity: ${admission.reason}.\n`);
+          waitedNote = true;
+        }
+        if (isCancelled(ctx, runId) || abort.signal.aborted) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      if (isCancelled(ctx, runId) || abort.signal.aborted) break;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } finally {
+      const at = capacityWaiters.indexOf(runId);
+      if (at >= 0) capacityWaiters.splice(at, 1);
     }
     reservations.set(runId, want);
+    admittedRuns.add(runId);
     waitingForCapacity = false;
     started += Date.now() - waitStart;
     if (isCancelled(ctx, runId)) {
@@ -1551,6 +1576,7 @@ export async function executeCiRun(ctx: AppContext, runId: string, deps: CiRunDe
     if (stopWatch) clearInterval(stopWatch);
     if (diskWatch) clearInterval(diskWatch);
     reservations.delete(runId);
+    admittedRuns.delete(runId);
     finishLogs();
     safeRemoveWorkspace(ctx, workspace);
     const repoKey = runRepoKeys.get(runId);
@@ -1795,6 +1821,7 @@ export function kickCi(ctx: AppContext): void {
           inflight.delete(id);
           inflightJobs.delete(id);
           reservations.delete(id);
+          admittedRuns.delete(id);
           kickCi(ctx);
         });
       inflightJobs.set(id, job);

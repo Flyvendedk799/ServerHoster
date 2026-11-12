@@ -96,23 +96,79 @@ export async function repoHasCiConfig(
   }
 }
 
-/** Give every GitHub-linked service a pipeline. Returns how many were created. */
+/**
+ * One automatic pipeline per repository and deploy branch. Several services
+ * often deploy from the same repo (web, API, worker); one pipeline per service
+ * would run the same job several times for every push.
+ */
+function repoBranchKey(repoUrl: string, branch: string | null | undefined): string {
+  const name = parseRepoFullName(repoUrl.trim()) ?? repoUrl.trim();
+  return `${name.toLowerCase()}#${branch || "main"}`;
+}
+
+/**
+ * Remove automatic pipelines that repeat another pipeline for the same repo
+ * and branch. A pipeline someone edited is never removed; otherwise the
+ * oldest one stays. Returns how many were removed.
+ */
+async function dropDuplicateAutoPipelines(ctx: AppContext): Promise<number> {
+  const { deleteCiPipeline } = await import("./ci.js");
+  const rows = ctx.db
+    .prepare(
+      `SELECT p.id, p.auto_created, s.github_repo_url AS repoUrl, s.github_branch AS branch
+       FROM ci_pipelines p JOIN services s ON s.id = p.service_id
+       WHERE s.github_repo_url IS NOT NULL AND s.github_repo_url != ''
+       ORDER BY p.auto_created ASC, p.created_at ASC, p.id ASC`
+    )
+    .all() as Array<{ id: string; auto_created: number; repoUrl: string; branch: string | null }>;
+  const kept = new Set<string>();
+  let removed = 0;
+  for (const row of rows) {
+    const key = repoBranchKey(row.repoUrl, row.branch);
+    if (!kept.has(key)) {
+      kept.add(key);
+      continue;
+    }
+    if (!row.auto_created) continue;
+    try {
+      deleteCiPipeline(ctx, row.id);
+      removed += 1;
+    } catch {
+      /* a run is active; try again on the next sync */
+    }
+  }
+  if (removed) ctx.app.log.info(`CI: removed ${removed} duplicate automatic pipeline(s)`);
+  return removed;
+}
+
+/** Give every GitHub-linked repo and branch a pipeline. Returns how many were created. */
 export async function syncAutoCiPipelines(ctx: AppContext): Promise<number> {
   if (!isAutoCiEnabled(ctx)) return 0;
+  await dropDuplicateAutoPipelines(ctx);
   const { createCiPipeline } = await import("./ci.js");
   const skip = optOuts(ctx);
-  const missing = ctx.db
+  const services = ctx.db
     .prepare(
-      `SELECT s.id FROM services s
+      `SELECT s.id, s.github_repo_url AS repoUrl, s.github_branch AS branch,
+              EXISTS (SELECT 1 FROM ci_pipelines p WHERE p.service_id = s.id) AS hasPipeline
+       FROM services s
        WHERE s.github_repo_url IS NOT NULL AND s.github_repo_url != ''
-         AND NOT EXISTS (SELECT 1 FROM ci_pipelines p WHERE p.service_id = s.id)`
+       ORDER BY s.rowid`
     )
-    .all() as Array<{ id: string }>;
+    .all() as Array<{ id: string; repoUrl: string; branch: string | null; hasPipeline: number }>;
+  // A removed pipeline also keeps its repo's other services from getting one.
+  const covered = new Set(
+    services
+      .filter((row) => row.hasPipeline || skip.has(row.id))
+      .map((row) => repoBranchKey(row.repoUrl, row.branch))
+  );
   let created = 0;
-  for (const row of missing) {
-    if (skip.has(row.id)) continue;
+  for (const row of services) {
+    const key = repoBranchKey(row.repoUrl, row.branch);
+    if (covered.has(key)) continue;
     try {
       createCiPipeline(ctx, { serviceId: row.id, configSource: "repo", gateDeploy: false, auto: true });
+      covered.add(key);
       created += 1;
     } catch (error) {
       ctx.app.log.warn({ err: error, serviceId: row.id }, "CI: could not create the automatic pipeline");

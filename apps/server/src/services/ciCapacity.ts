@@ -6,6 +6,7 @@
  * running jobs stays under a fraction of the machine, leaving the rest for the
  * services ServerHoster actually hosts. Jobs that do not fit wait in the queue.
  */
+import fs from "node:fs";
 import os from "node:os";
 import type { AppContext } from "../types.js";
 import { getSetting, setSetting, deleteSetting } from "./settings.js";
@@ -27,6 +28,26 @@ export function setHostCapacityForTests(host: HostCapacity | null): void {
   hostOverride = host;
 }
 
+/**
+ * RAM the host can hand out without swapping. On Linux os.freemem() is MemFree,
+ * which leaves out reclaimable page cache and is usually a fraction of what is
+ * really available, so read MemAvailable instead.
+ */
+export function availableMemMb(meminfo: string | null = readMeminfo()): number {
+  const match = meminfo ? /^MemAvailable:\s+(\d+)\s*kB/m.exec(meminfo) : null;
+  if (match) return Math.floor(Number(match[1]) / 1024);
+  return Math.floor(os.freemem() / 1024 / 1024);
+}
+
+function readMeminfo(): string | null {
+  if (process.platform !== "linux") return null;
+  try {
+    return fs.readFileSync("/proc/meminfo", "utf8");
+  } catch {
+    return null;
+  }
+}
+
 export function detectHostCapacity(): HostCapacity {
   if (hostOverride) return hostOverride;
   const cpus =
@@ -34,7 +55,7 @@ export function detectHostCapacity(): HostCapacity {
   return {
     cpus: Math.max(1, cpus),
     totalMemMb: Math.floor(os.totalmem() / 1024 / 1024),
-    freeMemMb: Math.floor(os.freemem() / 1024 / 1024)
+    freeMemMb: availableMemMb()
   };
 }
 
