@@ -15,6 +15,14 @@ const deploySchema = z.object({
   branch: z.string().trim().optional()
 });
 const rollbackSchema = z.object({ serviceId: z.string(), deploymentId: z.string() });
+const deploymentsListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+  serviceId: z.string().trim().min(1).optional(),
+  summary: z
+    .enum(["1", "true", "0", "false"])
+    .optional()
+    .transform((v) => v === "1" || v === "true")
+});
 const syncStatusBatchSchema = z.object({
   serviceIds: z.array(z.string()).max(50).default([])
 });
@@ -63,9 +71,26 @@ export function registerDeploymentRoutes(ctx: AppContext): void {
     return rollbackDeployment(ctx, p.serviceId, p.deploymentId);
   });
 
-  ctx.app.get("/deployments", async () =>
-    ctx.db.prepare("SELECT * FROM deployments ORDER BY created_at DESC").all()
-  );
+  // Optional query params keep this cheap for pollers: the full table with
+  // every build_log was ~35 MB, and the dashboard re-fetched it on each
+  // metrics sample (multiple TB/month of egress with one tab left open).
+  //   ?limit=N      newest N rows (1..1000)
+  //   ?serviceId=X  only deployments of one service
+  //   ?summary=1    omit build_log
+  // With no params the response is unchanged for existing API clients.
+  ctx.app.get("/deployments", async (req) => {
+    const q = deploymentsListQuery.parse(req.query ?? {});
+    const where = q.serviceId ? "WHERE service_id = ?" : "";
+    const limit = q.limit ? "LIMIT ?" : "";
+    const params: Array<string | number> = [];
+    if (q.serviceId) params.push(q.serviceId);
+    if (q.limit) params.push(q.limit);
+    const rows = ctx.db
+      .prepare(`SELECT * FROM deployments ${where} ORDER BY created_at DESC ${limit}`)
+      .all(...params) as Array<Record<string, unknown>>;
+    if (!q.summary) return rows;
+    return rows.map(({ build_log: _omit, ...rest }) => rest);
+  });
 
   /**
    * Sequence 6 — service deployment timeline. Returns the last N

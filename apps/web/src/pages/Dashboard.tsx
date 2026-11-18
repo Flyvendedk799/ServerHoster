@@ -110,7 +110,7 @@ export function DashboardPage() {
         api<SystemHealth>("/health/system", { silent: true }),
         api<ServiceRow[]>("/services", { silent: true }),
         api<MetricsMap>("/metrics/services", { silent: true }),
-        api<Deployment[]>("/deployments", { silent: true })
+        api<Deployment[]>("/deployments?limit=6&summary=1", { silent: true })
       ]);
       setMetrics(m);
       setHealth(h);

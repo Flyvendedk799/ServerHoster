@@ -118,11 +118,15 @@ export function DeploymentsPage() {
   async function load(): Promise<void> {
     try {
       const [d, s] = await Promise.all([
-        api<Deployment[]>("/deployments", { silent: true }),
+        api<Deployment[]>(
+          filterServiceId
+            ? `/deployments?limit=100&serviceId=${encodeURIComponent(filterServiceId)}`
+            : "/deployments?limit=100",
+          { silent: true }
+        ),
         api<Service[]>("/services", { silent: true })
       ]);
-      const filteredDeploys = filterServiceId ? d.filter((item) => item.service_id === filterServiceId) : d;
-      setDeployments(filteredDeploys);
+      setDeployments(d);
       setServices(s);
       if (!form.serviceId && s.length > 0) {
         setForm((prev) => ({ ...prev, serviceId: filterServiceId || s[0].id }));
