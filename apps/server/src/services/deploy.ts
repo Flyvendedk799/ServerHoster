@@ -2059,8 +2059,13 @@ export function findDeployDependents(ctx: AppContext, serviceId: string): string
     .filter((row) => {
       if (primaryRepo && normalizeRepoUrl(row.github_repo_url) === primaryRepo) return false;
       const dir = row.working_dir ? path.resolve(row.working_dir) : "";
-      const sharesCheckout = !!primaryDir && !!dir && (dir === primaryDir || dir.startsWith(primaryDir + path.sep));
-      return sharesCheckout || row.env_from_service_id === serviceId || parseDependsOn(row.depends_on).includes(serviceId);
+      const sharesCheckout =
+        !!primaryDir && !!dir && (dir === primaryDir || dir.startsWith(primaryDir + path.sep));
+      return (
+        sharesCheckout ||
+        row.env_from_service_id === serviceId ||
+        parseDependsOn(row.depends_on).includes(serviceId)
+      );
     })
     .map((row) => row.id);
 }

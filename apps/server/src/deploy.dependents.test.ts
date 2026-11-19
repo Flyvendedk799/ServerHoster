@@ -65,7 +65,11 @@ describe("findDeployDependents", () => {
   });
 
   test("skips services deployed from the same repo (they deploy themselves)", () => {
-    add("companion", { dir: "/data/projects/companion", repo: "https://www.github.com/Acme/app.git", envFrom: "app" });
+    add("companion", {
+      dir: "/data/projects/companion",
+      repo: "https://www.github.com/Acme/app.git",
+      envFrom: "app"
+    });
     assert.deepEqual(findDeployDependents(ctx, "app"), []);
   });
 

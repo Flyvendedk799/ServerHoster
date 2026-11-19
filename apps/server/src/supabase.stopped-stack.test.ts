@@ -41,10 +41,9 @@ test("starts only stopped containers, database first", async () => {
 });
 
 test("a container that fails to start does not stop the others", async () => {
-  const { ctx, started } = fakeCtx(
-    { supabase_db_app: "exited", supabase_auth_app: "exited" },
-    ["supabase_db_app"]
-  );
+  const { ctx, started } = fakeCtx({ supabase_db_app: "exited", supabase_auth_app: "exited" }, [
+    "supabase_db_app"
+  ]);
   await startStoppedStackContainers(ctx, "/nonexistent-workdir");
   assert.deepEqual(started, ["supabase_auth_app"]);
 });
