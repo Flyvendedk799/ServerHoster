@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ensureExecutable } from "./services/terminals.js";
 
-test("ensureExecutable restores a stripped execute bit", () => {
+test("ensureExecutable restores a stripped execute bit", { skip: process.platform === "win32" }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-exec-"));
   const helper = path.join(dir, "spawn-helper");
   fs.writeFileSync(helper, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
@@ -17,7 +17,7 @@ test("ensureExecutable restores a stripped execute bit", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("ensureExecutable leaves already-executable files alone", () => {
+test("ensureExecutable leaves already-executable files alone", { skip: process.platform === "win32" }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "survhub-exec-"));
   const helper = path.join(dir, "spawn-helper");
   fs.writeFileSync(helper, "#!/bin/sh\nexit 0\n", { mode: 0o755 });

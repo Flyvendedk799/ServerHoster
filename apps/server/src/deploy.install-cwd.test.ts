@@ -215,7 +215,10 @@ test("pythonEntryCommand: framework-aware commands bind 0.0.0.0:$PORT via the ve
   try {
     fs.writeFileSync(path.join(fastapi, "main.py"), "from fastapi import FastAPI\napp = FastAPI()\n");
     const cmd = pythonEntryCommand(fastapi);
-    assert.match(cmd, /\.venv\/bin\/python -m uvicorn main:app --host 0\.0\.0\.0 --port \$PORT/);
+    assert.match(
+      cmd,
+      /\.venv[\\/](?:bin[\\/]python|Scripts[\\/]python\.exe) -m uvicorn main:app --host 0\.0\.0\.0 --port \$PORT/
+    );
   } finally {
     fs.rmSync(fastapi, { recursive: true, force: true });
   }
