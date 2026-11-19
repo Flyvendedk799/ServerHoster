@@ -17,7 +17,14 @@ import {
   updateServiceStatus
 } from "../lib/core.js";
 import type { AppContext, BuildType } from "../types.js";
-import { getServiceEnvWithLinks, startService, stopService, withLock } from "./runtime.js";
+import {
+  getServiceEnvWithLinks,
+  parseDependsOn,
+  restartService,
+  startService,
+  stopService,
+  withLock
+} from "./runtime.js";
 import { resolveComposeConfig, writeComposeEnvFile } from "./compose.js";
 import { composeBuild } from "./composeRuntime.js";
 import { buildGitEnv, injectGitCredentials } from "./settings.js";
@@ -2019,6 +2026,71 @@ async function deployFromGitLocked(
   };
 }
 
+/**
+ * Services that must be restarted when `serviceId` is redeployed, because they
+ * run the code or config it just changed. A service qualifies when it is a
+ * different service that
+ *   - runs from the deployed service's checkout (same working_dir or a subfolder,
+ *     e.g. a worker started with `npm run worker` in the app's folder),
+ *   - inherits its env (`env_from_service_id`), or
+ *   - lists it in `depends_on`.
+ * Services built from the same git repo are skipped: they get their own deploy
+ * from the same push, and restarting them here would race that deploy.
+ */
+export function findDeployDependents(ctx: AppContext, serviceId: string): string[] {
+  const primary = ctx.db
+    .prepare("SELECT working_dir, github_repo_url FROM services WHERE id = ?")
+    .get(serviceId) as { working_dir?: string | null; github_repo_url?: string | null } | undefined;
+  if (!primary) return [];
+  const primaryDir = primary.working_dir ? path.resolve(primary.working_dir) : "";
+  const primaryRepo = normalizeRepoUrl(primary.github_repo_url);
+  const rows = ctx.db
+    .prepare(
+      "SELECT id, working_dir, github_repo_url, env_from_service_id, depends_on FROM services WHERE id != ?"
+    )
+    .all(serviceId) as Array<{
+    id: string;
+    working_dir?: string | null;
+    github_repo_url?: string | null;
+    env_from_service_id?: string | null;
+    depends_on?: string | null;
+  }>;
+  return rows
+    .filter((row) => {
+      if (primaryRepo && normalizeRepoUrl(row.github_repo_url) === primaryRepo) return false;
+      const dir = row.working_dir ? path.resolve(row.working_dir) : "";
+      const sharesCheckout = !!primaryDir && !!dir && (dir === primaryDir || dir.startsWith(primaryDir + path.sep));
+      return sharesCheckout || row.env_from_service_id === serviceId || parseDependsOn(row.depends_on).includes(serviceId);
+    })
+    .map((row) => row.id);
+}
+
+function normalizeRepoUrl(url: string | null | undefined): string {
+  return (url ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?/, "")
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+}
+
+/** Restart running dependents (see findDeployDependents) so they pick up the new code and env. */
+async function restartDeployDependents(ctx: AppContext, serviceId: string): Promise<void> {
+  for (const depId of findDeployDependents(ctx, serviceId)) {
+    const dep = ctx.db.prepare("SELECT status FROM services WHERE id = ?").get(depId) as
+      | { status?: string }
+      | undefined;
+    // Leave stopped/crashed dependents alone: they may be stopped on purpose.
+    if (dep?.status !== "running") continue;
+    insertLog(ctx, depId, "info", `Restarting because related service ${serviceId} was redeployed.`);
+    try {
+      await restartService(ctx, depId);
+    } catch (error) {
+      insertLog(ctx, depId, "error", `Restart after related deploy failed: ${serializeError(error)}`);
+    }
+  }
+}
+
 /** Sync DB status and optional autostart after deployFromGit (GitHub deploy or redeploy). */
 export async function applyPostDeployServiceState(
   ctx: AppContext,
@@ -2047,6 +2119,7 @@ export async function applyPostDeployServiceState(
         updateServiceStatus(ctx, serviceId, "stopped");
         insertLog(ctx, serviceId, "error", `Start after deploy failed: ${serializeError(error)}`);
       }
+      await restartDeployDependents(ctx, serviceId);
     } else {
       updateServiceStatus(ctx, serviceId, "stopped");
     }
