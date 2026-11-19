@@ -1,3 +1,4 @@
+import os from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nanoid } from "nanoid";
@@ -33,7 +34,7 @@ function seedService(ctx: Awaited<ReturnType<typeof buildApp>>, name: string, po
       name,
       "process",
       "node x.js",
-      "/tmp",
+      os.tmpdir(),
       "",
       "",
       port,

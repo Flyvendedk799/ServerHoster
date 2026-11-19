@@ -1,3 +1,4 @@
+import os from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nanoid } from "nanoid";
@@ -51,7 +52,7 @@ function seedService(
       name,
       "process",
       command,
-      "/tmp",
+      os.tmpdir(),
       "",
       "",
       null,
