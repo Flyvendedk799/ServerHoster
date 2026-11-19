@@ -68,7 +68,7 @@ test("sanitizedHostEnv: strips SURVHUB_* and operator tokens, keeps benign host 
     assert.equal(env.SURVHUB_SECRET_KEY, undefined, "the master key must never reach a child");
     assert.equal(env.GITHUB_TOKEN, undefined);
     assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
-    assert.ok(env.PATH, "benign host vars (PATH) still pass through so builds/tools work");
+    assert.ok(env.PATH ?? env.Path, "benign host vars (PATH) still pass through so builds/tools work");
   } finally {
     delete process.env.SURVHUB_TESTLEAK;
     delete process.env.GITHUB_TOKEN;
@@ -124,7 +124,10 @@ test("DATA_DIR: every service gets a persistent dir that survives redeploys", as
   }
 });
 
-test("assertWithinServiceDir: confines working_dir to the service's own clone", async () => {
+test("assertWithinServiceDir: confines working_dir to the projects directory", async () => {
+  // Since 61b7b19 a working_dir may point at any clone under projectsDir, so
+  // monorepo services and workers can share one checkout. Anything outside
+  // projectsDir is still rejected.
   const ctx = await buildApp();
   try {
     const id = "svc-confine";
@@ -136,20 +139,18 @@ test("assertWithinServiceDir: confines working_dir to the service's own clone", 
       () => assertWithinServiceDir(ctx, id, path.join(base, "backend")),
       "a nested app dir is allowed"
     );
-    assert.throws(
+    fs.mkdirSync(path.join(ctx.config.projectsDir, "another-service"), { recursive: true });
+    assert.doesNotThrow(
       () => assertWithinServiceDir(ctx, id, path.join(ctx.config.projectsDir, "another-service")),
-      /inside the service/,
-      "another service's clone is rejected"
+      "another service's clone is allowed (shared checkout)"
     );
-    // sibling-prefix bug guard: /projects/svc-confineX must not count as inside /projects/svc-confine
-    fs.mkdirSync(path.join(ctx.config.projectsDir, id + "X"), { recursive: true });
+    // sibling-prefix bug guard: <projectsDir>X must not count as inside <projectsDir>
+    const sibling = ctx.config.projectsDir.replace(/[\\/]+$/, "") + "X";
+    fs.mkdirSync(sibling, { recursive: true });
+    assert.throws(() => assertWithinServiceDir(ctx, id, sibling), /inside the projects directory/);
     assert.throws(
-      () => assertWithinServiceDir(ctx, id, path.join(ctx.config.projectsDir, id + "X")),
-      /inside the service/
-    );
-    assert.throws(
-      () => assertWithinServiceDir(ctx, id, "/etc"),
-      /inside the service/,
+      () => assertWithinServiceDir(ctx, id, path.resolve("/etc")),
+      /inside the projects directory/,
       "a host path is rejected"
     );
   } finally {

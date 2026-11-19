@@ -401,12 +401,20 @@ export async function persistSupabaseStackInfo(
 
   const workdir = workdirOf(resource);
   const localApiPort = workdir ? supabaseApiPortFromConfig(workdir) : null;
-  const ports: Record<string, number> = { ...statusInfo.ports };
-  // statusInfo.ports.api is only populated from a loopback Project URL, so a
-  // missing one means status reported a public origin (`[api] external_url`).
-  // config.toml still knows the real host port, and the tunnel ingress needs
-  // it to have a reachable target.
-  if (!ports.api && localApiPort) ports.api = localApiPort;
+  // Merge over the stored ports: a partial status output (some fields
+  // missing) must not drop ports recorded earlier.
+  let storedPorts: Record<string, number> = {};
+  try {
+    storedPorts = JSON.parse(resource.ports_json || "{}") as Record<string, number>;
+  } catch {
+    storedPorts = {};
+  }
+  const ports: Record<string, number> = { ...storedPorts, ...statusInfo.ports };
+  // statusInfo.ports.api is only populated from a loopback Project URL, so an
+  // api_url without it means status reported a public origin (`[api]
+  // external_url`). config.toml still knows the real host port, and the tunnel
+  // ingress needs it to have a reachable target.
+  if (!statusInfo.ports.api && localApiPort && (statusInfo.api_url || !ports.api)) ports.api = localApiPort;
 
   const config: Record<string, unknown> = { ...resourceConfig(resource) };
   if (statusInfo.api_url) {

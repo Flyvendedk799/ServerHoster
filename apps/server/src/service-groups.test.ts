@@ -1,3 +1,4 @@
+import os from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nanoid } from "nanoid";
@@ -51,7 +52,7 @@ function seedService(
       name,
       "process",
       command,
-      "/tmp",
+      os.tmpdir(),
       "",
       "",
       null,
@@ -124,8 +125,8 @@ test("service group start-all returns per-service results", async () => {
   try {
     const headers = await auth(ctx);
     const projectId = seedProject(ctx);
-    const one = seedService(ctx, projectId, "start-one", "true");
-    const two = seedService(ctx, projectId, "start-two", "true");
+    const one = seedService(ctx, projectId, "start-one", "node --version");
+    const two = seedService(ctx, projectId, "start-two", "node --version");
     const create = await ctx.app.inject({
       method: "POST",
       url: "/service-groups",

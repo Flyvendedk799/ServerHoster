@@ -1,3 +1,4 @@
+import os from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nanoid } from "nanoid";
@@ -33,7 +34,7 @@ function seedService(ctx: Awaited<ReturnType<typeof buildApp>>, name: string, po
       name,
       "process",
       "node x.js",
-      "/tmp",
+      os.tmpdir(),
       "",
       "",
       port,
@@ -149,7 +150,9 @@ test("POST /services/:id/force-restart: recovers a service wedged at 'stopping'"
     // held action lock, and a runtime that no longer exists. A fast, harmless
     // command + auto_restart off keeps the follow-up start deterministic.
     ctx.db
-      .prepare("UPDATE services SET status = 'stopping', command = 'true', auto_restart = 0 WHERE id = ?")
+      .prepare(
+        "UPDATE services SET status = 'stopping', command = 'node --version', auto_restart = 0 WHERE id = ?"
+      )
       .run(id);
     ctx.actionLocks.add(id);
 

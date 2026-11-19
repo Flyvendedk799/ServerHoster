@@ -295,13 +295,13 @@ test("writeFunctionEnvFile: generated + provided values, minus disabled, mode 06
     assert.ok(!content.includes(JWT_SECRET), "JWT secret never lands in the function env file");
 
     const mode = fs.statSync(result.path).mode & 0o777;
-    assert.equal(mode, 0o600, "env file must be 0600");
+    if (process.platform !== "win32") assert.equal(mode, 0o600, "env file must be 0600");
 
     // Rewrites keep the mode and apply changes.
     setResourceSecret(ctx, resource.id, "OPENAI_API_KEY", "sk-rotated-key", false);
     const rewritten = writeFunctionEnvFile(ctx, resource.id);
     assert.ok(fs.readFileSync(rewritten.path, "utf8").includes("sk-rotated-key"));
-    assert.equal(fs.statSync(rewritten.path).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(fs.statSync(rewritten.path).mode & 0o777, 0o600);
   } finally {
     await gracefulShutdown(ctx);
   }
@@ -379,7 +379,7 @@ test("provision with functions: env file written, serve spawned with --env-file,
     const content = fs.readFileSync(envFile, "utf8");
     assert.ok(content.includes(ANON_KEY), "env file carries the generated anon key");
     assert.match(content, /AI_KEY_ENCRYPTION_KEY=/, "generated AI key included");
-    assert.equal(fs.statSync(envFile).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(fs.statSync(envFile).mode & 0o777, 0o600);
 
     // Process identity recorded in config_json.functions.
     const fnState = resourceConfig(resource).functions as Record<string, unknown>;
