@@ -177,6 +177,25 @@ function serializeResource(ctx: AppContext, resource: ManagedResourceRow) {
   };
 }
 
+/**
+ * serializeResource with the status checked against the actual containers
+ * (profile.status) instead of the stored value, which can say "running" for a
+ * stack whose containers died weeks ago. Only settled states are overridden;
+ * provisioning/error keep the stored value. Not persisted: boot reconcile uses
+ * the stored "running" to know which stacks to bring back up.
+ */
+async function serializeResourceLive(ctx: AppContext, resource: ManagedResourceRow) {
+  const out = serializeResource(ctx, resource);
+  if (!["ready", "running", "degraded", "stopped"].includes(resource.status)) return out;
+  try {
+    const live = await getProfile(resource.profile)?.status?.(ctx, resource.id);
+    if (live) out.status = live;
+  } catch {
+    // Docker unreachable: keep the stored status.
+  }
+  return out;
+}
+
 function serializeLink(link: ServiceResourceLinkRow) {
   return {
     id: link.id,
@@ -306,7 +325,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
   });
 
   ctx.app.get("/resources", async () => {
-    return listResources(ctx).map((resource) => serializeResource(ctx, resource));
+    return Promise.all(listResources(ctx).map((resource) => serializeResourceLive(ctx, resource)));
   });
 
   /**
@@ -327,7 +346,7 @@ export function registerResourceRoutes(ctx: AppContext): void {
   ctx.app.get("/resources/:id", async (req) => {
     const resource = getResource(ctx, (req.params as { id: string }).id);
     if (!resource) throw new Error("Resource not found");
-    return serializeResource(ctx, resource);
+    return serializeResourceLive(ctx, resource);
   });
 
   /**

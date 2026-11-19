@@ -353,6 +353,30 @@ async function listSupabaseContainers(ctx: AppContext, workdir: string): Promise
   }
 }
 
+/**
+ * `docker start` every stopped container of the stack, database first (the
+ * other services fail fast without it). Best effort: a container that won't
+ * start is left for `supabase start` / the status check to report.
+ */
+export async function startStoppedStackContainers(ctx: AppContext, workdir: string): Promise<string[]> {
+  const names = (await listSupabaseContainers(ctx, workdir)).sort(
+    (a, b) => Number(b.startsWith("supabase_db_")) - Number(a.startsWith("supabase_db_"))
+  );
+  const started: string[] = [];
+  for (const name of names) {
+    try {
+      const container = ctx.docker.getContainer(name);
+      const info = await container.inspect();
+      if (info.State?.Running || info.State?.Status === "running") continue;
+      await container.start();
+      started.push(name);
+    } catch {
+      // Leave it to the CLI / status check.
+    }
+  }
+  return started;
+}
+
 function workdirOf(resource: ManagedResourceRow): string | null {
   const config = resourceConfig(resource);
   return typeof config.workdir === "string" && config.workdir ? config.workdir : null;
@@ -481,7 +505,24 @@ export async function supabaseResourceAction(
     emitResourceStatus(ctx, resourceId, "stopped");
   }
   if (action === "start" || action === "restart") {
-    await supabaseStart(workdir, supabaseStartEnv(ctx));
+    // A stack whose containers exist but are stopped (host reboot, OOM kill)
+    // trips the CLI: with nothing up it fails "supabase start is already
+    // running", and once the db is up it reports success while the rest stay
+    // stopped. Start the existing containers ourselves around the CLI call.
+    await startStoppedStackContainers(ctx, workdir);
+    try {
+      await supabaseStart(workdir, supabaseStartEnv(ctx));
+    } catch (error) {
+      const { status } = await supabaseStackStatus(ctx, resourceId);
+      if (status !== "running") throw error;
+      emitProvisionStep(
+        ctx,
+        resourceId,
+        "start",
+        `supabase start reported an error but every container is running: ${serializeError(error)}`
+      );
+    }
+    await startStoppedStackContainers(ctx, workdir);
     // Re-read `supabase status` so the recorded ports/URLs/keys follow
     // supabase/config.toml changes instead of going stale (best effort — a
     // status/parse failure keeps the last known-good values; the stack itself
